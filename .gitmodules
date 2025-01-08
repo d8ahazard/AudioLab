@@ -1,0 +1,3 @@
+[submodule "modules/versatile_audio_super_resolution"]
+	path = modules/versatile_audio_super_resolution
+	url = https://github.com/d8ahazard/versatile_audio_super_resolution
