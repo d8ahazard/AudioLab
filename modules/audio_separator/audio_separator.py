@@ -417,7 +417,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             self.overlap_MDX = 0.99
         if self.overlap_MDX < 0.0:
             self.overlap_MDX = 0.0
-        model_folder = os.path.join(app_path, "checkpoint")
+        model_folder = os.path.join(app_path, "models", "audio_separator")
         os.makedirs(model_folder, exist_ok=True)
         """
 
@@ -470,7 +470,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             download_url_to_file(remote_url_mdxv3, os.path.join(model_folder, 'MDX23C-8KFFT-InstVoc_HQ.ckpt'))
         if not os.path.isfile(os.path.join(model_folder, 'model_2_stem_full_band_8k.yaml')):
             download_url_to_file(remote_url_conf_mdxv3,
-                                           os.path.join(model_folder, 'model_2_stem_full_band_8k.yaml'))
+                                 os.path.join(model_folder, 'model_2_stem_full_band_8k.yaml'))
 
         with open(os.path.join(model_folder, 'model_2_stem_full_band_8k.yaml')) as f:
             config_mdxv3 = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
@@ -487,10 +487,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
         remote_url_vl_conf = 'https://github.com/ZFTurbo/Music-Source-Separation-Training/releases/download/v1.0.0/config_vocals_segm_models.yaml'
         if not os.path.isfile(os.path.join(model_folder, 'model_vocals_segm_models_sdr_9.77.ckpt')):
             download_url_to_file(remote_url_vitlarge,
-                                           os.path.join(model_folder, 'model_vocals_segm_models_sdr_9.77.ckpt'))
+                                 os.path.join(model_folder, 'model_vocals_segm_models_sdr_9.77.ckpt'))
         if not os.path.isfile(os.path.join(model_folder, 'config_vocals_segm_models.yaml')):
             download_url_to_file(remote_url_vl_conf,
-                                           os.path.join(model_folder, 'config_vocals_segm_models.yaml'))
+                                 os.path.join(model_folder, 'config_vocals_segm_models.yaml'))
 
         with open(os.path.join(model_folder, 'config_vocals_segm_models.yaml')) as f:
             config_vl = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
@@ -736,8 +736,7 @@ def predict_with_model():
             print('Error. No such file: {}. Please check path!'.format(input_audio))
             return
     output_folder = options['output_folder']
-    if not os.path.isdir(output_folder):
-        os.mkdir(output_folder)
+    os.makedirs(output_folder, exist_ok=True)
 
     model = EnsembleDemucsMDXMusicSeparationModel(options)
 
@@ -861,12 +860,5 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
     print("Options: ", options)
 
     out_files = predict_with_model()
-    # Enumerate out files, convert to mp3, delete the source .wav
-    for i, file in enumerate(out_files):
-        if file.endswith(".wav"):
-            mp3_file = file.replace(".wav", ".mp3")
-            os.system(f'ffmpeg -i "{file}" -q:a 0 "{mp3_file}"')
-            out_files[i] = mp3_file
-            os.remove(file)
     print('Time: {:.0f} sec'.format(time() - start_time))
     return out_files
