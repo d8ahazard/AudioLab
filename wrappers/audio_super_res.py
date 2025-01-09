@@ -130,9 +130,8 @@ class AudioSuperRes(BaseWrapper):
         output_folder = os.path.join(output_path, "super_res")
         os.makedirs(output_folder, exist_ok=True)
         temp_folder = os.path.join(output_folder, "temp")
-
         os.makedirs(temp_folder, exist_ok=True)
-        # Delete any files in the temp folder
+
         for temp_file in os.listdir(temp_folder):
             os.remove(os.path.join(temp_folder, temp_file))
 
@@ -140,7 +139,7 @@ class AudioSuperRes(BaseWrapper):
         outputs = []
         for tgt_file in inputs:
             print(f"Processing {tgt_file}")
-            tgt_name, tgt_ext = os.path.splitext(os.path.basename(tgt_file))
+            tgt_name, _ = os.path.splitext(os.path.basename(tgt_file))
             audio, sr = librosa.load(tgt_file, sr=self.sr * 2, mono=False)
             audio = audio.T
             is_stereo = len(audio.shape) == 2
@@ -166,10 +165,9 @@ class AudioSuperRes(BaseWrapper):
 
             chunks_per_channel = [process_chunks(channel) for channel in audio_channels]
 
-            reconstructed_channels = [np.zeros((1, len(audio) * self.sr // sr), dtype=np.float32) for _ in
-                                      audio_channels]
+            reconstructed_channels = [np.zeros((len(audio) * self.sr // sr), dtype=np.float32) for _ in audio_channels]
 
-            total_chunks = sum([len(chunks) for chunks in chunks_per_channel])
+            total_chunks = sum(len(chunks) for chunks in chunks_per_channel)
             total_steps = total_chunks * ddim_steps
             progress_tqdm = tqdm(total=total_steps, desc="Processing", unit="steps", position=0, leave=True)
 
@@ -179,7 +177,7 @@ class AudioSuperRes(BaseWrapper):
             for ch_idx, chunks in enumerate(chunks_per_channel):
                 for i, chunk in enumerate(chunks):
                     temp_wav = os.path.join(temp_folder, f"chunk{ch_idx}_{i}.wav")
-                    sf.write(temp_wav, chunk, sr, format="WAV")
+                    sf.write(temp_wav, chunk, sr, format="WAV", subtype="PCM_16")
 
                     out_chunk = super_resolution(
                         self.audiosr,
@@ -192,23 +190,21 @@ class AudioSuperRes(BaseWrapper):
                     )[0]
 
                     start = i * (output_chunk_samples - output_overlap_samples)
-                    end = start + len(out_chunk.T)
-                    try:
-                        aligned_chunk = match_array_shapes(out_chunk.flatten(),
-                                                           reconstructed_channels[ch_idx][0, start:end])
-                        reconstructed_channels[ch_idx][0, start:end] += aligned_chunk
-                    except Exception as e:
-                        print(f"Exception: {e}. Start: {start}, End: {end}, Chunk Length: {len(out_chunk.T)}")
+                    end = start + out_chunk.shape[1]
+                    reconstructed_channels[ch_idx][start:end] += out_chunk.flatten()
 
-            reconstructed_audio = np.stack(reconstructed_channels, axis=-1) if is_stereo else reconstructed_channels[0]
+            reconstructed_audio = (
+                np.stack(reconstructed_channels, axis=-1) if is_stereo else reconstructed_channels[0]
+            )
             reconstructed_audio = np.clip(reconstructed_audio, -1.0, 1.0).astype(np.float32)
 
             output_file = os.path.join(output_folder, f"super_res_{tgt_name}.wav")
-            sf.write(output_file, reconstructed_audio.T, self.sr, format="WAV")
+            sf.write(output_file, reconstructed_audio, self.sr, format="WAV", subtype="PCM_16")
 
             for temp_file in os.listdir(temp_folder):
                 os.remove(os.path.join(temp_folder, temp_file))
             outputs.append(output_file)
+
         self.clean()
         return outputs
 
