@@ -1,6 +1,7 @@
+import os
 import re
 from abc import abstractmethod
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Tuple
 
 import pydantic
 import gradio as gr
@@ -150,3 +151,41 @@ class BaseWrapper:
 
         self.arg_handler.register_element(class_name, arg_key, elem)
         return elem
+
+    @staticmethod
+    def filter_inputs(inputs: List[str], input_type: str = "audio") -> Tuple[List[str], List[str]]:
+        """
+        Filter the inputs to only include files that exist.
+        """
+        filtered_inputs, outputs = [], []
+        extensions = []
+        match input_type:
+            case "audio":
+                extensions = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]
+            case "image":
+                extensions = ["jpg", "jpeg", "png"]
+            case "video":
+                extensions = ["mp4", "mov", "avi"]
+            case "text":
+                extensions = ["txt", "csv", "json"]
+            case _:
+                print(f"Unknown input type: {input_type}")
+                pass
+        if input_type == "audio":
+            extensions = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]
+        if input_type == "image":
+            extensions = ["jpg", "jpeg", "png"]
+        if input_type == "video":
+            extensions = ["mp4", "mov", "avi"]
+        if input_type == "text":
+            extensions = ["txt", "csv", "json"]
+        if len(extensions) == 0:
+            return filtered_inputs, outputs
+
+        for input_file in inputs:
+            file, ext = os.path.splitext(input_file)
+            if ext[1:] in extensions:
+                filtered_inputs.append(input_file)
+            else:
+                outputs.append(input_file)
+        return filtered_inputs, outputs

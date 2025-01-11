@@ -778,12 +778,12 @@ def predict_with_model():
         sf.write(out_path, inst, sr, subtype=output_format)
         output_files.append(out_path)
 
-        if options['vocals_only'] is False:
-            inst2 = (result['bass'] + result['drums'] + result['other'])
-            output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum2')
-            out_path = os.path.join(output_folder, output_name)
-            sf.write(out_path, inst2, sr, subtype=output_format)
-            output_files.append(out_path)
+        # if options['vocals_only'] is False:
+        #     inst2 = (result['bass'] + result['drums'] + result['other'])
+        #     output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum2')
+        #     out_path = os.path.join(output_folder, output_name)
+        #     sf.write(out_path, inst2, sr, subtype=output_format)
+        #     output_files.append(out_path)
 
         current_step += 1
         callback(current_step, f"Completed processing {input_audio}", total_steps)
@@ -832,19 +832,6 @@ def match_array_shapes(array_1: np.ndarray, array_2: np.ndarray):
         padding = array_2.shape[1] - array_1.shape[1]
         array_1 = np.pad(array_1, ((0, 0), (0, padding)), 'constant', constant_values=0)
     return array_1
-
-
-def sep_music(audio_path: str, project_path: str) -> str:
-    use_cuda = torch.cuda.is_available()
-    out_dir = os.path.join(project_path, "separated")
-    out_files = separate_music([audio_path], out_dir, cpu=not use_cuda, vocals_only=False)
-    if not out_files:
-        return ""
-    for file in out_files:
-        if "vocal" in file:
-            print(f"Found vocal file: {file}")
-            return file
-    return ""
 
 
 def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False,

@@ -17,14 +17,27 @@ class AudioCompare(BaseWrapper):
         output_folder = os.path.join(output_path, "comparisons")
         os.makedirs(output_folder, exist_ok=True)
 
+        inputs, _ = self.filter_inputs(inputs, "audio")
+
+        # Initialize progress tracking
+        total_steps = len(inputs) * 2 + 1  # Load, process, and generate visualization
+        current_step = 0
+        if callback:
+            callback(0, f"Starting audio comparison of {len(inputs)} tracks", total_steps)
+
         # Load and normalize audio tracks
         waveforms = []
         sample_rate = 44100  # Resample to a common sample rate
+        outputs = inputs
+
         for file in inputs:
             audio = AudioSegment.from_file(file)
             samples = np.array(audio.get_array_of_samples()) / (2 ** 15)
             resampled = resample(samples, int(len(samples) * sample_rate / audio.frame_rate))
             waveforms.append(resampled)
+            current_step += 1
+            if callback:
+                callback(current_step, f"Loaded and resampled {os.path.basename(file)}", total_steps)
 
         # Determine the shortest waveform to align lengths
         min_length = min(len(w) for w in waveforms)
@@ -32,6 +45,9 @@ class AudioCompare(BaseWrapper):
 
         # Generate difference waveform
         differences = np.abs(waveforms[0] - waveforms[1]) if len(waveforms) > 1 else waveforms[0]
+        current_step += 1
+        if callback:
+            callback(current_step, "Calculated differences", total_steps)
 
         # Visualization
         plt.figure(figsize=(15, 8))
@@ -52,17 +68,22 @@ class AudioCompare(BaseWrapper):
         # Combined visualization
         plt.subplot(3, 1, 3)
         combined_image = self.generate_combined_image(waveforms[0], waveforms[1] if len(waveforms) > 1 else None)
-        # plt.imshow(combined_image, cmap='viridis', aspect='auto')
-        # plt.title("Combined Visualization")
+        plt.imshow(combined_image, cmap='viridis', aspect='auto')
+        plt.title("Combined Visualization")
 
         output_file = os.path.join(output_folder, "comparison.png")
         plt.tight_layout()
         plt.savefig(output_file)
         plt.close()
 
-        return [output_file]
+        current_step += 1
+        if callback:
+            callback(current_step, f"Saved visualization to {output_file}", total_steps)
 
-    def generate_combined_image(self, waveform1: np.ndarray, waveform2: np.ndarray = None) -> np.ndarray:
+        return [output_file] + outputs
+
+    @staticmethod
+    def generate_combined_image(waveform1: np.ndarray, waveform2: np.ndarray = None) -> np.ndarray:
         """Generate a visual representation combining both waveforms and their differences."""
         height, width = 400, len(waveform1)
         canvas = np.zeros((height, width), dtype=np.float32)

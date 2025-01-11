@@ -17,8 +17,6 @@ os.makedirs(hf_dir, exist_ok=True)
 os.makedirs(transformers_dir, exist_ok=True)
 # Set HF_HUB_CACHE_DIR to the model_path
 os.environ["HF_HOME"] = hf_dir
-# Set transformers cache to the model_path
-os.environ["TRANSFORMERS_CACHE"] = transformers_dir
 
 project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
@@ -87,10 +85,15 @@ def get_image_files(file_paths: List[str]) -> List[str]:
 def process(processors: List[str], inputs: List[str], progress=gr.Progress(), settings=None) -> List[str]:
     outputs = []
 
-    def progress_callback(step):
-        progress(step)
+    def progress_callback(
+            step: float | tuple[int, int | None] | None,
+            desc: str | None = None,
+            total: int | None = None
+    ):
+        progress(step, desc, total)
 
     progress(0, f"Processing with {len(processors)} processors...")
+    all_outputs = []
     for processor_name in processors:
         tgt_processor = get_processor(processor_name)
         processor_key = tgt_processor.title.replace(' ', '')
@@ -102,6 +105,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress(), se
             print(f"{key}: {processor_settings[key]}")
         print("---------------------------------------------------------------------")
         outputs = tgt_processor.process_audio(inputs, progress_callback, **processor_settings)
+        all_outputs.extend(outputs)
         inputs = outputs
     # output_files, output_audio_select, output_audio_preview, output_image_preview, progress_display
     output_audio_files = get_audio_files(outputs)
@@ -121,7 +125,7 @@ if __name__ == '__main__':
     arg_handler = BaseWrapper().arg_handler
 
     # Render the UI
-    with gr.Blocks(title='FaceFusion') as ui:
+    with gr.Blocks(title='AudioLab') as ui:
         processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=wrappers)
         progress_display = gr.HTML(label='Progress', value='')
 
@@ -143,7 +147,7 @@ if __name__ == '__main__':
             with gr.Column():
                 output_files = gr.File(label='Output Files', file_count='multiple', file_types=['audio', 'video'],
                                        interactive=False)
-                output_audio_select = gr.Dropdown(label='Output Preview', visible=False)
+                output_audio_select = gr.Dropdown(label='Output Preview', visible=False, interactive=True)
                 output_audio_preview = gr.Audio(label='Output Audio', visible=False)
                 output_image_preview = gr.Image(label='Output Image', visible=False)
 

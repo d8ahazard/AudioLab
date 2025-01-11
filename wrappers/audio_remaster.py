@@ -20,12 +20,14 @@ class AudioRemaster(BaseWrapper):
     def process_audio(self, inputs: List[str], callback: Callable = None, **kwargs: Dict[str, Any]) -> List[str]:
         output_folder = os.path.join(output_path, "remastered")
         mg.log(print)
-        outputs = []
+        inputs, outputs = self.filter_inputs(inputs, "audio")
         reference_file = kwargs.get("reference")
         if not reference_file:
             raise ValueError("Reference track not provided")
-
+        callback(0, f"Remastering {len(inputs)} audio files", len(inputs))
+        callback_step = 0
         for input_file in inputs:
+            callback(callback_step, f"Remastering {input_file}", len(inputs))
             inputs_name, inputs_ext = os.path.splitext(os.path.basename(input_file))
             output_file = os.path.join(output_folder, f"{inputs_name}_remastered{inputs_ext}")
             mg.process(
@@ -39,6 +41,7 @@ class AudioRemaster(BaseWrapper):
                 ],
             )
             outputs.append(output_file)
+            callback_step += 1
         return outputs
 
     def register_api_endpoint(self, api) -> Any:
