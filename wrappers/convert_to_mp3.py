@@ -52,7 +52,6 @@ class ConvertToMp3(BaseWrapper):
 
                     print(f"Processed file: {out_file}")
                     inputs[i] = out_file
-                    os.remove(file)  # Remove the original file if conversion succeeds
                 except Exception as e:
                     print(f"Error processing {file_name}: {e}")
                     continue

@@ -174,7 +174,7 @@ class AudioSeparator(BaseWrapper):
                 [input_file], output_dir, cpu=False, overlap_demucs=0.1, overlap_VOCFT=0.1,
                 overlap_VitLarge=1, overlap_InstVoc=1, weight_InstVoc=8, weight_VOCFT=1,
                 weight_VitLarge=5, single_onnx=False, large_gpu=True, BigShifts=7,
-                vocals_only=False, use_VOCFT=True   , output_format="FLOAT", callback=callback
+                vocals_only=not separate_stems, use_VOCFT=True, output_format="FLOAT", callback=callback
             )
             # 1) Separate either into multiple stems or just vocals/instrumental
             # if separate_stems:
@@ -203,7 +203,8 @@ class AudioSeparator(BaseWrapper):
             if separate_stems:
                 separated_stems = [stem for stem in separated_stems if "(Instrumental 2)" not in stem]
             else:
-                separated_stems = [stem for stem in separated_stems if "(Vocals)" in stem or "(Instrumental)" in stem and "(Instrumental 2)" not in stem]
+                separated_stems = [stem for stem in separated_stems if
+                                   "(Vocals)" in stem or "(Instrumental)" in stem and "(Instrumental 2)" not in stem]
             # Delete stems in all_stems that are not in separated_stems
             for stem in all_stems:
                 if stem not in separated_stems:
@@ -231,17 +232,25 @@ class AudioSeparator(BaseWrapper):
                     # Typically [main_vocals_no_bg, bg_only]
                     if len(out_files) > 1:
                         inst_key = "Instrumental"
-                        bg_only = [f for f in out_files if inst_key in f][0]
-                        main_vocals = [f for f in out_files if inst_key not in f][0]
+                        bg_only_files = [f for f in out_files if inst_key in f]
+                        main_vocals_files = [f for f in out_files if inst_key not in f]
+                        bg_only = bg_only_files[0] if bg_only_files else None
+                        main_vocals = main_vocals_files[0] if main_vocals_files else None
                         # Return the BG voc stem to user as well
-                        renamed_bg = self._rename_file(
-                            original_basename, bg_only
-                        )
-                        outputs.append(renamed_bg)
-                        current_path = main_vocals
+                        if bg_only:
+                            renamed_bg = self._rename_file(
+                                original_basename, bg_only
+                            )
+
+                            outputs.append(renamed_bg)
+                        # If we have a main vocals stem, we'll use that as the current path
+                        if main_vocals:
+                            current_path = main_vocals
                     else:
                         # Fallback if only one output
                         current_path = out_files[0]
+                if not current_path:
+                    continue
 
                 # 3) Reverb Removal
                 if self._should_apply_transform(stem_basename, reverb_removal):
@@ -409,7 +418,7 @@ class AudioSeparator(BaseWrapper):
         Simple check to see if it's a "vocal" stem.
         We look for '(Vocals)' or 'Vocal' in the name
         """
-        return "(Vocals)" in name or "Vocal" in name
+        return "(Vocals)" in name and not "(Instrumental)" in name
 
     def register_api_endpoint(self, api) -> Any:
         pass
