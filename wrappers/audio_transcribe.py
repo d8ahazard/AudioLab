@@ -25,7 +25,7 @@ class AudioTranscribe(BaseWrapper):
         os.makedirs(output_folder, exist_ok=True)
 
         # 1. Transcribe with original whisper (batched)
-        self.model = whisperx.load_model("large-v2", device, compute_type=compute_type)
+        self.model = whisperx.load_model("large-v3", device, compute_type=compute_type)
         inputs, _ = self.filter_inputs(inputs, "audio")
         json_outputs = []  # Separate list for JSON files
         instrum_keys = ["_instrum", "_bass", "_drum", "_other"]

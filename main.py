@@ -160,15 +160,26 @@ def start_training(
         learning_rate: float,
         lr_decay: float,
         sampling_rate: str,
+        progress=gr.Progress()
 ) -> str:
     log = f"Starting training with {len(inputs)} voice files for voice: {voice_name}.\n"
 
+    def progress_callback(
+            step: float | tuple[int, int | None] | None,
+            desc: str | None = None,
+            total: int | None = None
+    ):
+        progress(step, desc, total)
+
+    #progress(0, f"Processing with {len(processors)} processors...")
+
     # Ensure target directory exists
-    target_dir = os.path.join(output_path, "voices", voice_name)
+    voice_dir = os.path.join(output_path, "voices", voice_name)
+    target_dir = os.path.join(voice_dir, "raw")
     os.makedirs(target_dir, exist_ok=True)
     if separate_audio_first:
         log += "Separating vocals from audio files...\n"
-        vocal_files, bg_vocal_files = separate_vocal(inputs)
+        vocal_files, bg_vocal_files = separate_vocal(inputs, progress_callback)
         inputs = vocal_files
         log += f"Separated {len(inputs)} vocal files.\n"
     # Copy input files to the target directory
@@ -185,17 +196,19 @@ def start_training(
     try:
         train_rvc_model(
             trainset_dir=target_dir,
-            exp_dir=target_dir,
+            exp_dir=voice_dir,
             voice_name=voice_name,
             sr=sampling_rate,
             total_epoch=total_epochs,
             batch_size=batch_size,
             lr=learning_rate,
             lr_decay=lr_decay,
+
         )
         log += "Training completed successfully.\n"
     except Exception as e:
         log += f"Error during training: {str(e)}\n"
+        traceback.print_exc()
 
     return log
 

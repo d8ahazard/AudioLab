@@ -5,6 +5,7 @@ cog
 demucs>=4.0.1
 diffusers>=0.32.1
 einops>=0.8.0
+ffmpeg
 ffmpeg_progress_yield
 ftfy>=6.3.1
 gradio>=5.12.0
