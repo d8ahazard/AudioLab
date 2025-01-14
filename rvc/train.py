@@ -340,7 +340,7 @@ def run_training_epoch(epoch, hps, nets, optims, schedulers, train_loader, logge
         savee(
             ckpt, hps.model.sr, hps.name, epoch, hps.version, hps
         )
-        logger.info(f"saving final ckpt:{hps.name}")
+        logger.info(f"saving final ckpt: {hps.name}")
         time.sleep(1)
         # os._exit(2333333)
 
@@ -415,8 +415,9 @@ def run_new(
     # Maybe not maybe?
     hps.train.seed = kwargs.get("seed", 42)  # Default seed
     hps.train.epochs = total_epochs
-    hps.version = kwargs.get("version", "1.0")  # Optional versioning
-    hps.name = kwargs.get("name", "default_experiment")  # Default experiment name
+    hps.version = "v2"  # Optional versioning
+    voice_name = os.path.basename(exp_dir)
+    hps.name = kwargs.get("name", voice_name)  # Default experiment name
 
     for key, value in hparams.items():
         if key not in hps:

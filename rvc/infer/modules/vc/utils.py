@@ -1,18 +1,37 @@
-from transformers import HubertModel, HubertConfig
+import os
+
+from fairseq import checkpoint_utils
+
+from handlers.config import model_path
 
 
-def load_hubert(hubert_path="assets/hubert/hubert_base.pt", device='cpu', is_half=False):
-    # Load the Hubert configuration and model weights
-    config = HubertConfig.from_pretrained(hubert_path)
-    hubert_model = HubertModel.from_pretrained(hubert_path, config=config)
+def get_index_path_from_model(sid):
+    index_root = os.path.join(model_path, "trained")
+    return next(
+        (
+            f
+            for f in [
+                os.path.join(root, name)
 
-    # Move the model to the desired device
-    hubert_model = hubert_model.to(device)
+                for root, _, files in os.walk(index_root, topdown=False)
+                for name in files
+                if name.endswith(".index") and "trained" not in name
+            ]
+            if sid.split(".")[0] in f
+        ),
+        "",
+    )
 
-    # Adjust precision if necessary
-    if is_half:
+
+def load_hubert(config):
+    models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
+        [os.path.join(model_path, "rvc", "hubert_base.pt")],
+        suffix="",
+    )
+    hubert_model = models[0]
+    hubert_model = hubert_model.to(config.device)
+    if config.is_half:
         hubert_model = hubert_model.half()
     else:
         hubert_model = hubert_model.float()
-
     return hubert_model.eval()

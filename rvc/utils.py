@@ -560,7 +560,7 @@ def savee(ckpt, sr, name, epoch, version, hps):
         opt["info"] = "%sepoch" % epoch
         opt["sr"] = sr
         opt["version"] = version
-        save_path = str(Path(hps.save_dir) / f"{name}.pth")
+        save_path = os.path.join(model_path, "cloned", f"{name}_final.pth")
         torch.save(opt, save_path)
         print(f"Saved model to {save_path}")
         return "Success."
@@ -571,7 +571,7 @@ def savee(ckpt, sr, name, epoch, version, hps):
 def show_info(path):
     try:
         a = torch.load(path, map_location="cpu")
-        return "模型信息:%s\n采样率:%s\n模型是否输入音高引导:%s\n版本:%s" % (
+        return "Model Info: %s\nSampling Rate: %s\nDoes the model use pitch guidance: %s\nVersion: %s" % (
             a.get("info", "None"),
             a.get("sr", "None"),
             a.get("f0", "None"),
@@ -775,7 +775,8 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
         opt["f0"] = 1 if f0 else 0
         opt["version"] = version
         opt["info"] = info
-        torch.save(opt, "assets/weights/%s.pth" % name)
+        out_file = os.path.join(model_path, "merged", f"{name}.pth")
+        torch.save(opt, out_file)
         return "Success."
     except:
         return traceback.format_exc()

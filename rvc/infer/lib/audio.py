@@ -7,7 +7,7 @@ import av
 from io import BytesIO
 
 
-def audio2(input_file, output_file, container_fmt, sr=44100):
+def wav2(input_file, output_file, container_fmt, sr=44100):
     """
     Convert audio input_file -> output_file with a certain container_fmt (e.g., 'wav', 'ogg'),
     forcing sample rate (sr) and single-channel (mono).
@@ -57,7 +57,7 @@ def load_audio(file_path, sr=16000):
     try:
         # Decode to PCM float32 in memory
         with open(file_path, "rb") as f, BytesIO() as out_buf:
-            audio2(f, out_buf, "f32le", sr=sr)  # decode -> float32, 1-channel
+            wav2(f, out_buf, "f32le", sr=sr)  # decode -> float32, 1-channel
             return np.frombuffer(out_buf.getvalue(), dtype=np.float32).flatten()
 
     except AttributeError:

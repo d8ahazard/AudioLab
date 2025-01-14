@@ -1,7 +1,8 @@
 import torch
 import onnxsim
 import onnx
-from infer.lib.infer_pack.models_onnx import SynthesizerTrnMsNSFsidM
+from rvc.infer.lib.infer_pack.models_onnx import SynthesizerTrnMsNSFsidM
+
 
 def export_onnx(ModelPath, ExportedPath):
     cpt = torch.load(ModelPath, map_location="cpu")

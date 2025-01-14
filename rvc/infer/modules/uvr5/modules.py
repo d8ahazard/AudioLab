@@ -2,15 +2,15 @@ import os
 import traceback
 import logging
 
-from .mdxnet import MDXNetDereverb
-from .vr import AudioPre, AudioPreDeEcho
 
 logger = logging.getLogger(__name__)
 
 import ffmpeg
 import torch
 
-from rvc.configs.config import Config
+from configs.config import Config
+from rvc.infer.modules.uvr5.mdxnet import MDXNetDereverb
+from rvc.infer.modules.uvr5.vr import AudioPre, AudioPreDeEcho
 
 config = Config()
 

@@ -22,5 +22,12 @@ python -m pip install torch>=2.4.1 torchvision>=0.19.1 torchaudio>=2.4.1 --extra
 echo Installing torchlibrosa and librosa...
 python -m pip install torchlibrosa>=0.0.9 librosa>=0.10.2.post1
 
+git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git
+cd Python-Wrapper-for-World-Vocoder
+git submodule update --init
+pip install -r requirements.txt
+pip install .
+cd ..
+
 echo All dependencies installed successfully!
 pause

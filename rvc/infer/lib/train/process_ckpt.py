@@ -1,13 +1,13 @@
+import logging
 import os
-import sys
 import traceback
 from collections import OrderedDict
 
 import torch
 
-from i18n.i18n import I18nAuto
+from handlers.config import model_path
 
-i18n = I18nAuto()
+logger = logging.getLogger(__name__)
 
 
 def savee(ckpt, sr, if_f0, name, epoch, version, hps):
@@ -42,9 +42,12 @@ def savee(ckpt, sr, if_f0, name, epoch, version, hps):
         opt["sr"] = sr
         opt["f0"] = if_f0
         opt["version"] = version
-        torch.save(opt, "assets/weights/%s.pth" % name)
+        out_file = os.path.join(model_path, "trained", f"{name}_final.pth")
+        torch.save(opt, out_file)
         return "Success."
-    except:
+    except Exception as e:
+        logger.error(f"Error in savee: {e}")
+        traceback.print_exc()
         return traceback.format_exc()
 
 
@@ -236,12 +239,12 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
             if key == "emb_g.weight" and ckpt1[key].shape != ckpt2[key].shape:
                 min_shape0 = min(ckpt1[key].shape[0], ckpt2[key].shape[0])
                 opt["weight"][key] = (
-                    alpha1 * (ckpt1[key][:min_shape0].float())
-                    + (1 - alpha1) * (ckpt2[key][:min_shape0].float())
+                        alpha1 * (ckpt1[key][:min_shape0].float())
+                        + (1 - alpha1) * (ckpt2[key][:min_shape0].float())
                 ).half()
             else:
                 opt["weight"][key] = (
-                    alpha1 * (ckpt1[key].float()) + (1 - alpha1) * (ckpt2[key].float())
+                        alpha1 * (ckpt1[key].float()) + (1 - alpha1) * (ckpt2[key].float())
                 ).half()
         # except:
         #     pdb.set_trace()
@@ -252,7 +255,7 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
         elif(sr=="32k"):opt["config"] = [513, 32, 192, 192, 768, 2, 6, 3, 0, "1", [3, 7, 11], [[1, 3, 5], [1, 3, 5], [1, 3, 5]], [10, 4, 2, 2, 2], 512, [16, 16, 4, 4,4], 109, 256, 32000]
         """
         opt["sr"] = sr
-        opt["f0"] = 1 if f0 == i18n("是") else 0
+        opt["f0"] = 1 if f0 == "Yes" else 0
         opt["version"] = version
         opt["info"] = info
         torch.save(opt, "assets/weights/%s.pth" % name)

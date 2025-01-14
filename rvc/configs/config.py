@@ -43,6 +43,7 @@ class Config:
         self.json_config = self.load_config_json()
         self.gpu_mem = None
         self.instead = ""
+        self.dml = True
         self.x_pad, self.x_query, self.x_center, self.x_max = self.device_config()
 
     @staticmethod

@@ -8,7 +8,9 @@ from typing import List
 import gradio as gr
 from torchaudio._extension import _init_dll_path
 
-from handlers.rvc_trainer import train_rvc_model
+#from handlers.rvc_trainer import train_rvc_model
+from layouts.rvc_infer import render
+from layouts.rvc_train import render as rvc_render
 from wrappers.audio_separator import AudioSeparator
 from wrappers.base_wrapper import BaseWrapper
 from handlers.config import model_path, output_path
@@ -194,17 +196,17 @@ def start_training(
     # Call train_rvc_model
     log += "Starting training process...\n"
     try:
-        train_rvc_model(
-            trainset_dir=target_dir,
-            exp_dir=voice_dir,
-            voice_name=voice_name,
-            sr=sampling_rate,
-            total_epoch=total_epochs,
-            batch_size=batch_size,
-            lr=learning_rate,
-            lr_decay=lr_decay,
-
-        )
+        # train_rvc_model(
+        #     trainset_dir=target_dir,
+        #     exp_dir=voice_dir,
+        #     voice_name=voice_name,
+        #     sr=sampling_rate,
+        #     total_epoch=total_epochs,
+        #     batch_size=batch_size,
+        #     lr=learning_rate,
+        #     lr_decay=lr_decay,
+        #
+        # )
         log += "Training completed successfully.\n"
     except Exception as e:
         log += f"Error during training: {str(e)}\n"
@@ -264,54 +266,56 @@ if __name__ == '__main__':
                     outputs=[output_files, output_audio_select, output_audio_preview, output_image_preview,
                              progress_display]
                 )
-
             with gr.Tab(label='Clone'):
-                with gr.Row():
-                    start_training_button = gr.Button(value='Start Training')
-                    cancel_training_button = gr.Button(value='Cancel Training')
-                with gr.Row():
-                    with gr.Column():
-                        voice_name = gr.Textbox(label='Voice Name', placeholder='Enter the name for the voice.')
-
-                        # Add training parameters as sliders
-                        total_epochs = gr.Slider(
-                            label='Total Epochs', minimum=1, maximum=100, step=1, value=20
-                        )
-                        batch_size = gr.Slider(
-                            label='Batch Size', minimum=1, maximum=64, step=1, value=8
-                        )
-                        learning_rate = gr.Slider(
-                            label='Learning Rate', minimum=1e-6, maximum=1e-2, step=1e-6, value=1.8e-4
-                        )
-                        lr_decay = gr.Slider(
-                            label='Learning Rate Decay', minimum=0.8, maximum=1.0, step=0.01, value=0.99
-                        )
-                        sampling_rate = gr.Dropdown(
-                            label='Sampling Rate',
-                            choices=['32k', '40k', '48k'],
-                            value='48k'
-                        )
-                        do_separate_audio_first = gr.Checkbox(label='Separate Audio First', value=True)
-                    with gr.Column():
-                        input_voice_files = gr.File(label='Input Voice Files', file_count='multiple',
-                                                    file_types=['audio'])
-
-                    with gr.Column():
-                        output_log = gr.Textbox(label='Output Log', value='')
-
-                # Connect the start_training function
-                start_training_button.click(
-                    fn=start_training,
-                    inputs=[
-                        input_voice_files,
-                        do_separate_audio_first,
-                        voice_name,
-                        total_epochs,
-                        batch_size,
-                        learning_rate,
-                        lr_decay,
-                        sampling_rate,
-                    ],
-                    outputs=[output_log]
-                )
+                render()
+            with gr.Tab(label='Train'):
+                rvc_render()
+                # with gr.Row():
+                #     start_training_button = gr.Button(value='Start Training')
+                #     cancel_training_button = gr.Button(value='Cancel Training')
+                # with gr.Row():
+                #     with gr.Column():
+                #         voice_name = gr.Textbox(label='Voice Name', placeholder='Enter the name for the voice.')
+                #
+                #         # Add training parameters as sliders
+                #         total_epochs = gr.Slider(
+                #             label='Total Epochs', minimum=1, maximum=100, step=1, value=20
+                #         )
+                #         batch_size = gr.Slider(
+                #             label='Batch Size', minimum=1, maximum=64, step=1, value=8
+                #         )
+                #         learning_rate = gr.Slider(
+                #             label='Learning Rate', minimum=1e-6, maximum=1e-2, step=1e-6, value=1.8e-4
+                #         )
+                #         lr_decay = gr.Slider(
+                #             label='Learning Rate Decay', minimum=0.8, maximum=1.0, step=0.01, value=0.99
+                #         )
+                #         sampling_rate = gr.Dropdown(
+                #             label='Sampling Rate',
+                #             choices=['32k', '40k', '48k'],
+                #             value='48k'
+                #         )
+                #         do_separate_audio_first = gr.Checkbox(label='Separate Audio First', value=True)
+                #     with gr.Column():
+                #         input_voice_files = gr.File(label='Input Voice Files', file_count='multiple',
+                #                                     file_types=['audio'])
+                #
+                #     with gr.Column():
+                #         output_log = gr.Textbox(label='Output Log', value='')
+                #
+                # # Connect the start_training function
+                # start_training_button.click(
+                #     fn=start_training,
+                #     inputs=[
+                #         input_voice_files,
+                #         do_separate_audio_first,
+                #         voice_name,
+                #         total_epochs,
+                #         batch_size,
+                #         learning_rate,
+                #         lr_decay,
+                #         sampling_rate,
+                #     ],
+                #     outputs=[output_log]
+                # )
     ui.launch()

@@ -1,105 +1,268 @@
+import traceback
 import logging
-from pathlib import Path
-from typing import Optional
+
 
 import numpy as np
+import soundfile as sf
 import torch
+from io import BytesIO
 
-from rvc.lib.models import RVCModel
-from rvc.infer.lib.audio import load_audio
+from handlers.config import output_path
+from rvc.infer.lib.audio import load_audio, wav2
+from rvc.infer.lib.infer_pack.models import (
+    SynthesizerTrnMs256NSFsid,
+    SynthesizerTrnMs256NSFsid_nono,
+    SynthesizerTrnMs768NSFsid,
+    SynthesizerTrnMs768NSFsid_nono,
+)
 from rvc.infer.modules.vc.pipeline import Pipeline
-from rvc.infer.modules.vc.utils import load_hubert
+from rvc.infer.modules.vc.utils import *
 
 logger = logging.getLogger(__name__)
 
 
 class VC:
     def __init__(self, config):
-        self.config = config
+        self.n_spk = None
+        self.tgt_sr = None
         self.net_g = None
         self.pipeline = None
         self.cpt = None
-        self.tgt_sr = None
+        self.version = None
+        self.if_f0 = None
+        self.version = None
         self.hubert_model = None
 
-    def get_vc(self, rmvpe_path, hubert_path):
-        if self.hubert_model is None:
-            self.hubert_model = load_hubert(
-                hubert_path=str(hubert_path), device=self.config.device, is_half=self.config.is_half
+        self.config = config
+
+    def get_vc(self, sid, *to_return_protect):
+        logger.info("Get sid: " + sid)
+
+        to_return_protect1 = {
+            "visible": self.if_f0 != 0,
+            "value": (
+                to_return_protect[1] if self.if_f0 != 0 and to_return_protect else 0.33
+            ),
+            "__type__": "update",
+        }
+
+        if sid == "" or sid == []:
+            if (
+                    self.hubert_model is not None
+            ):
+                logger.info("Clean model cache")
+                del (self.net_g, self.n_spk, self.hubert_model, self.tgt_sr)  # ,cpt
+                self.hubert_model = self.net_g = self.n_spk = self.hubert_model = (
+                    self.tgt_sr
+                ) = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self.if_f0 = self.cpt.get("f0", 1)
+                self.version = self.cpt.get("version", "v2")
+                if self.version == "v1":
+                    if self.if_f0 == 1:
+                        self.net_g = SynthesizerTrnMs256NSFsid(
+                            *self.cpt["config"], is_half=self.config.is_half
+                        )
+                    else:
+                        self.net_g = SynthesizerTrnMs256NSFsid_nono(*self.cpt["config"])
+                elif self.version == "v2":
+                    if self.if_f0 == 1:
+                        self.net_g = SynthesizerTrnMs768NSFsid(
+                            *self.cpt["config"], is_half=self.config.is_half
+                        )
+                    else:
+                        self.net_g = SynthesizerTrnMs768NSFsid_nono(*self.cpt["config"])
+                del self.net_g, self.cpt
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return (
+                {"visible": False, "__type__": "update"},
+                {
+                    "visible": True,
+                    "value": to_return_protect1,
+                    "__type__": "update",
+                }
             )
+        person = os.path.join(model_path, "trained", sid)
+        # person = f'{os.getenv("weight_root")}/{sid}'
+        logger.info(f"Loading: {person}")
 
-        # loads pipeline with rmvpe model
-        self.pipeline = Pipeline(rmvpe_path, self.config)
-
-    def load_generator(self, model_path):
-        """
-        Loads self.net_g
-        """
-        self.cpt = torch.load(model_path, map_location="cpu")
+        self.cpt = torch.load(person, map_location="cpu")
         self.tgt_sr = self.cpt["config"][-1]
-        logger.info(f"target sample rate from the config is: {self.tgt_sr}")
-        self.pipeline.set_t_pad_tgt(self.tgt_sr)
+        self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
+        self.if_f0 = self.cpt.get("f0", 1)
+        self.version = self.cpt.get("version", "v1")
 
-        n_spk = self.cpt["weight"]["emb_g.weight"].shape[0]
+        synthesizer_class = {
+            ("v1", 1): SynthesizerTrnMs256NSFsid,
+            ("v1", 0): SynthesizerTrnMs256NSFsid_nono,
+            ("v2", 1): SynthesizerTrnMs768NSFsid,
+            ("v2", 0): SynthesizerTrnMs768NSFsid_nono,
+        }
 
-        gen_class = RVCModel
-        self.net_g = gen_class(*self.cpt["config"], is_half=self.config.is_half)
+        self.net_g = synthesizer_class.get(
+            (self.version, self.if_f0), SynthesizerTrnMs256NSFsid
+        )(*self.cpt["config"], is_half=self.config.is_half)
+
+        del self.net_g.enc_q
+
         self.net_g.load_state_dict(self.cpt["weight"], strict=False)
         self.net_g.eval().to(self.config.device)
-        self.net_g = self.net_g.half() if self.config.is_half else self.net_g.float()
+        if self.config.is_half:
+            self.net_g = self.net_g.half()
+        else:
+            self.net_g = self.net_g.float()
 
-    def vc_single(self,
-                  sid: int, input_audio_path: str, f0_up_key: int, f0_file: Optional[str],
-                  file_index_path: str, index_rate: float, resample_sr: int, rms_mix_rate: float,
-                  protect: float, index_topk: int = 8, average_pitch: int = 0):
-        if not input_audio_path:
+        self.pipeline = Pipeline(self.tgt_sr, self.config)
+        n_spk = self.cpt["config"][-3]
+        index = {"value": get_index_path_from_model(sid), "__type__": "update"}
+        logger.info("Select index: " + index["value"])
+
+        return (
+            (
+                {"visible": True, "maximum": n_spk, "__type__": "update"},
+                to_return_protect1
+            )
+            if to_return_protect
+            else {"visible": True, "maximum": n_spk, "__type__": "update"},
+            "", ""
+        )
+
+    def vc_single(
+            self,
+            model,
+            sid,
+            input_audio_path,
+            f0_up_key,
+            f0_file,
+            f0_method,
+            index_rate,
+            filter_radius,
+            resample_sr,
+            rms_mix_rate,
+            protect,
+    ):
+        if self.pipeline is None:
+            self.get_vc(model)
+        if input_audio_path is None:
             return "You need to upload an audio", None
+        f0_up_key = int(f0_up_key)
         try:
-            logger.info("Loading audio")
-            audio = self._load_and_process_audio(input_audio_path)
+            audio = load_audio(input_audio_path, 16000)
+            audio_max = np.abs(audio).max() / 0.95
+            if audio_max > 1:
+                audio /= audio_max
             times = [0, 0, 0]
-            file_index_path = Path(file_index_path) if file_index_path else None
-            audio_opt, f0_statistics = self.pipeline.pipeline(
+
+            if self.hubert_model is None:
+                self.hubert_model = load_hubert(self.config)
+
+            file_index = model.replace("_final.pth", ".index")
+            file_index = os.path.join(model_path, "trained", file_index)
+
+            audio_opt = self.pipeline.pipeline(
                 self.hubert_model,
                 self.net_g,
                 sid,
                 audio,
+                input_audio_path,
                 times,
                 f0_up_key,
-                str(file_index_path) if file_index_path else "",
+                f0_method,
+                file_index,
                 index_rate,
+                self.if_f0,
+                filter_radius,
                 self.tgt_sr,
                 resample_sr,
                 rms_mix_rate,
+                self.version,
                 protect,
                 f0_file,
-                index_topk=index_topk,
-                average_pitch=average_pitch
             )
-            if self.tgt_sr != resample_sr and resample_sr >= 16000:
+            if self.tgt_sr != resample_sr >= 16000:
                 tgt_sr = resample_sr
             else:
                 tgt_sr = self.tgt_sr
-            logger.info(f"target sample rate: {tgt_sr}")
-
-            index_info = f"Index:\n{file_index_path}." if file_index_path and file_index_path.exists() else "Index not used."
+            index_info = (
+                "Index:\n%s." % file_index
+                if os.path.exists(file_index)
+                else "Index not used."
+            )
             return (
-                {
-                    "info": f"{index_info}\nTime:\nnpy: {times[0]:.2f}s, f0: {times[1]:.2f}s, infer: {times[2]:.2f}s.",
-                    "low_f0": f0_statistics[0],
-                    "high_f0": f0_statistics[1],
-                    "mean_f0": f0_statistics[2]
-                },
+                "Success.\n%s\nTime:\nnpy: %.2fs, f0: %.2fs, infer: %.2fs."
+                % (index_info, *times),
                 (tgt_sr, audio_opt),
             )
-        except Exception as e:
-            logger.warning(str(e), exc_info=True)
-            return str(e), (None, None)
+        except:
+            info = traceback.format_exc()
+            logger.warning(info)
+            traceback.print_exc()
+            return info, (None, None)
 
-    def _load_and_process_audio(self, input_audio_path):
-        # resample audio and load in float32
-        audio = load_audio(input_audio_path, 16000)
-        audio_max = np.abs(audio).max() / 0.95
-        if audio_max > 1:
-            audio /= audio_max
-        return audio
+    def vc_multi(
+            self,
+            model,
+            sid,
+            paths,
+            f0_up_key,
+            f0_method,
+            index_rate,
+            filter_radius,
+            resample_sr,
+            rms_mix_rate,
+            protect,
+            format1,
+    ):
+        try:
+            opt_root = os.path.join(output_path, "cloned")
+            os.makedirs(opt_root, exist_ok=True)
+            paths = [path.name for path in paths]
+            infos = []
+            # Run self.get_vc to load the model if self.pipeline is None
+            if self.pipeline is None:
+                self.get_vc(model)
+            for path in paths:
+                info, opt = self.vc_single(
+                    model,
+                    sid,
+                    path,
+                    f0_up_key,
+                    None,
+                    f0_method,
+                    index_rate,
+                    filter_radius,
+                    resample_sr,
+                    rms_mix_rate,
+                    protect,
+                )
+                if "Success" in info:
+                    try:
+                        tgt_sr, audio_opt = opt
+                        if format1 in ["wav", "flac"]:
+                            sf.write(
+                                "%s/%s.%s"
+                                % (opt_root, os.path.basename(path), format1),
+                                audio_opt,
+                                tgt_sr,
+                            )
+                        else:
+                            path = "%s/%s.%s" % (
+                                opt_root,
+                                os.path.basename(path),
+                                format1,
+                            )
+                            with BytesIO() as wavf:
+                                sf.write(wavf, audio_opt, tgt_sr, format="wav")
+                                wavf.seek(0, 0)
+                                with open(path, "wb") as outf:
+                                    wav2(wavf, outf, format1)
+                    except:
+                        info += traceback.format_exc()
+                infos.append("%s->%s" % (os.path.basename(path), info))
+                yield "\n".join(infos)
+            yield "\n".join(infos)
+        except:
+            traceback.print_exc()
+            yield traceback.format_exc()
