@@ -23,4 +23,12 @@ while IFS= read -r package; do
     python3 -m pip install "$package"
 done < requirements.txt
 
+git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git
+cd Python-Wrapper-for-World-Vocoder
+git submodule update --init
+pip install -r requirements.txt
+pip install .
+cd ..
+
+
 echo "All dependencies installed successfully!"
