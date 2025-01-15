@@ -1,7 +1,7 @@
 import os
 import re
 from abc import abstractmethod
-from typing import List, Dict, Any, Union, Tuple
+from typing import List, Dict, Any, Union, Tuple, Callable
 
 import pydantic
 import gradio as gr
@@ -20,13 +20,20 @@ class TypedInput:
                  description: str = None,
                  ge: float = None,
                  le: float = None,
+                 step: float = None,
                  min_length: int = None,
                  max_length: int = None,
                  regex: str = None,
                  choices: List[Union[str, int]] = None,
                  type: type = None,
                  gradio_type: str = None,
-                 render: bool = True):
+                 render: bool = True,
+                 required: bool = False,
+                 on_click: Callable = None,
+                 on_input: Callable = None,
+                 on_change: Callable = None,
+                 on_clear: Callable = None
+                 ):
         field_kwargs = {
             "default": default,
             "description": description,
@@ -34,6 +41,7 @@ class TypedInput:
             "le": le,
             "min_length": min_length,
             "max_length": max_length,
+            "step": step,
         }
 
         if PYDANTIC_V2:
@@ -48,6 +56,11 @@ class TypedInput:
         self.type = type
         self.field = field
         self.render = render
+        self.required = required
+        self.on_click = on_click
+        self.on_input = on_input
+        self.on_change = on_change
+        self.on_clear = on_clear
         self.gradio_type = gradio_type if gradio_type else self.pick_gradio_type()
 
     def pick_gradio_type(self):
@@ -84,6 +97,19 @@ class BaseWrapper:
 
         return cls._instance
 
+    def validate_args(self, **kwargs: Dict[str, Any]) -> bool:
+        """
+        Validate the provided arguments.
+        """
+        filtered_kwargs = {}
+        for key, value in kwargs.items():
+            if key in self.allowed_kwargs:
+                filtered_kwargs[key] = value
+        for arg, value in self.allowed_kwargs.items():
+            if value.field.required and arg not in filtered_kwargs or not filtered_kwargs[arg]:
+                return False
+        return True
+
     @abstractmethod
     def process_audio(self, inputs: List[str], callback=None, **kwargs: Dict[str, Any]) -> List[str]:
         pass
@@ -114,6 +140,7 @@ class BaseWrapper:
         ge_value = None
         le_value = None
         choices = None
+        step = None
         for meta in value.field.metadata:
             if isinstance(meta, Ge):
                 ge_value = meta.ge
@@ -124,6 +151,8 @@ class BaseWrapper:
             for extra in value.field.json_schema_extra:
                 if extra == "enum":
                     choices = value.field.json_schema_extra[extra]
+                if extra == "step":
+                    step = value.field.json_schema_extra[extra]
 
         match value.gradio_type:
             case "Checkbox":
@@ -136,7 +165,7 @@ class BaseWrapper:
                     value=value.field.default,
                     minimum=ge_value if ge_value is not None else 0,
                     maximum=le_value if le_value is not None else 100,
-                    step=0.01
+                    step=step if step is not None else 1 if isinstance(value.field.default, int) else 0.1
                 )
             case "Number":
                 elem = gr.Number(label=key, value=value.field.default)
@@ -150,6 +179,14 @@ class BaseWrapper:
                 elem = gr.Textbox(label=key, value=value.field.default)
 
         self.arg_handler.register_element(class_name, arg_key, elem)
+        if isinstance(value.on_click, Callable):
+            getattr(elem, "on_click")(value.on_click)
+        if isinstance(value.on_input, Callable):
+            getattr(elem, "on_input")(value.on_input)
+        if isinstance(value.on_change, Callable):
+            getattr(elem, "on_change")(value.on_change)
+        if isinstance(value.on_clear, Callable):
+            getattr(elem, "on_clear")(value.on_clear)
         return elem
 
     @staticmethod

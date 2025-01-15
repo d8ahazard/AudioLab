@@ -7,8 +7,9 @@ from handlers.config import output_path
 from wrappers.base_wrapper import BaseWrapper
 
 
-class MergeTracks(BaseWrapper):
-    priority = 5000
+class Merge(BaseWrapper):
+    title = "Merge"
+    priority = 5
 
     def process_audio(self, inputs: List[str], callback: Callable = None, **kwargs: Dict[str, Any]) -> List[str]:
         output_folder = os.path.join(output_path, "merged")

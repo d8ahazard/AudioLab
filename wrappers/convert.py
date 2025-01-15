@@ -7,8 +7,9 @@ from handlers.config import output_path
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 
-class ConvertToMp3(BaseWrapper):
-    priority = 10000
+class Convert(BaseWrapper):
+    priority = 10
+    title = "Convert"
     allowed_kwargs = {
         "bitrate": TypedInput(
             description="Bitrate for the output MP3 file",

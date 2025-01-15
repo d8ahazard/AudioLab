@@ -9,7 +9,8 @@ from modules.audio_separator.audio_separator import separate_music
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 
-class AudioSeparator(BaseWrapper):
+class Separate(BaseWrapper):
+    title = "Separate"
     priority = 1
     separator = None
 

@@ -9,10 +9,10 @@ from handlers.config import output_path
 from wrappers.base_wrapper import BaseWrapper
 
 
-class AudioTranscribe(BaseWrapper):
-    title = "Audio Transcribe"
+class Transcribe(BaseWrapper):
+    title = "Transcribe"
     description = "Transcribe audio files"
-    priority = 3
+    priority = 100
     model = None
     model_a = None
     diarize_model = None

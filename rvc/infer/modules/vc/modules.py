@@ -215,6 +215,8 @@ class VC:
             protect,
             format1,
     ):
+        outputs = []
+
         try:
             opt_root = os.path.join(output_path, "cloned")
             os.makedirs(opt_root, exist_ok=True)
@@ -247,6 +249,7 @@ class VC:
                                 audio_opt,
                                 tgt_sr,
                             )
+                            outputs.append(os.path.join(os.path.basename(path), format1))
                         else:
                             path = "%s/%s.%s" % (
                                 opt_root,
@@ -258,11 +261,10 @@ class VC:
                                 wavf.seek(0, 0)
                                 with open(path, "wb") as outf:
                                     wav2(wavf, outf, format1)
+                            outputs.append(path)
                     except:
                         info += traceback.format_exc()
-                infos.append("%s->%s" % (os.path.basename(path), info))
-                yield "\n".join(infos)
-            yield "\n".join(infos)
         except:
             traceback.print_exc()
-            yield traceback.format_exc()
+            logger.warning(traceback.format_exc())
+        return outputs

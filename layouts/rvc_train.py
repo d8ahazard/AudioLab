@@ -8,6 +8,7 @@ import sys
 import traceback
 from random import shuffle
 from time import sleep
+from typing import List
 
 import faiss
 import gradio as gr
@@ -26,6 +27,7 @@ from rvc.infer.modules.train.preprocess import preprocess_trainset
 from rvc.infer.modules.train.train import train_main
 from rvc.infer.modules.vc.modules import VC
 from rvc.utils import HParams
+from wrappers.separate import Separate
 
 logger = logging.getLogger(__name__)
 now_dir = os.getcwd()
@@ -97,17 +99,6 @@ else:
     default_batch_size = 1
 gpus = "-".join([i[0] for i in gpu_infos])
 
-
-class ToolButton(gr.Button, gr.components.FormComponent):
-    """Small button with single emoji as text, fits inside gradio forms"""
-
-    def __init__(self, **kwargs):
-        super().__init__(variant="tool", **kwargs)
-
-    def get_block_name(self):
-        return "button"
-
-
 weight_root = os.path.join(model_path, "trained")
 weight_uvr5_root = os.path.join(model_path, "trained_onnx")
 index_root = os.path.join(model_path, "trained")
@@ -161,6 +152,30 @@ def get_pretrained_models(path_str, f0_str, sr2):
             else ""
         ),
     )
+
+
+def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
+    progress(0, f"Separating vocals from {len(audio_files)} audio files...")
+    separator = Separate()
+    args = {
+        "separate_stems": False,
+        "bg_vocals_removal": "Nothing",
+        "reverb_removal": "Nothing",
+        "echo_removal": "Nothing",
+        "delay_removal": "Nothing",
+        "crowd_removal": "Nothing",
+        "noise_removal": "Nothing",
+        "delay_removal_model": "UVR-De-Echo-Normal.pth",
+        "background_vocal_model": "UVR_MDXNET_KARA_2.onnx",
+        "noise_removal_model": "UVR-DeNoise.pth",
+        "crowd_removal_model": "UVR-MDX-NET_Crowd_HQ_1.onnx",
+    }
+    outputs = separator.process_audio(audio_files, progress, **args)
+    existing_outputs = [output for output in outputs if os.path.exists(output)]
+    vocal_outputs = [output for output in existing_outputs if
+                     '(Vocals)' in output and "(BG Vocals)" not in output and "(Instrumental)" not in output]
+    bg_vocal_outputs = [output for output in existing_outputs if '(BG Vocals)' in output]
+    return vocal_outputs, bg_vocal_outputs
 
 
 def change_sr2(sr2, if_f0_3, version19):
@@ -248,20 +263,6 @@ def extract_f0_feature(num_processors, extract_method, use_pitch_guidance, exp_d
     extract_feature_print(config.device, exp_dir, project_version, config.is_half)
 
 
-#                         voice_name,
-#                         sample_rate,
-#                         use_pitch_guidance,
-#                         spk_id5,
-#                         save_epoch_frequency,
-#                         total_epochs,
-#                         train_batch_size,
-#                         save_latest_only,
-#                         pretrained_generator,
-#                         pretrained_discriminator,
-#                         more_gpu_ids,
-#                         cache_dataset_to_gpu,
-#                         save_weights_each_ckpt,
-#                         model_version,
 def click_train(
         voice_name,
         sample_rate,
@@ -278,7 +279,6 @@ def click_train(
         save_weights_each_ckpt,
         model_version,
 ):
-    # 生成filelist
     config = Config()
     exp_dir = os.path.join(output_path, "voices", voice_name)
     os.makedirs(exp_dir, exist_ok=True)
@@ -298,6 +298,7 @@ def click_train(
             [name.split(".")[0] for name in os.listdir(feature_dir)]
         )
     opt = []
+
     for name in names:
         if use_pitch_guidance:
             opt.append(
@@ -397,11 +398,11 @@ def click_train(
     return "Training complete."
 
 
-# but4.click(train_index, [exp_dir1], info3)
 def train_index(exp_dir, model_version):
     os.makedirs(exp_dir, exist_ok=True)
 
-    feature_dir = os.path.join(exp_dir, "3_feature256") if model_version == "v1" else os.path.join(exp_dir, "3_feature768")
+    feature_dir = os.path.join(exp_dir, "3_feature256") if model_version == "v1" else os.path.join(exp_dir,
+                                                                                                   "3_feature768")
 
     if not os.path.exists(feature_dir):
         return "Please extract features first!"
@@ -493,7 +494,6 @@ def train_index(exp_dir, model_version):
     yield "\n".join(infos)
 
 
-
 # voice_name,
 # sample_rate,
 # use_pitch_guidance,
@@ -515,6 +515,7 @@ def train_index(exp_dir, model_version):
 
 def train1key(
         project_name,
+        separate_vocals,
         tgt_sample_rate,
         use_pitch_guidance,
         inputs,
@@ -547,6 +548,12 @@ def train1key(
     # Preprocess
     yield get_info_str("Step1: Preprocessing data")
     all_files = inputs
+
+    if separate_vocals:
+        vocal_files, bg_vocal_files = separate_vocal(all_files)
+        all_files = vocal_files + bg_vocal_files
+        yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
+
     for f in all_files:
         try:
             base_name, ext = os.path.splitext(os.path.basename(f))
@@ -612,6 +619,7 @@ def render():
     with gr.Row():
         with gr.Column():
             voice_name = gr.Textbox(label="Voice Name", value="")
+            separate_vocals = gr.Checkbox(label="Separate Vocals", value=False)
             sample_rate = gr.Radio(
                 label="Target Sampling Rate",
                 choices=["40k", "48k"],
@@ -747,6 +755,7 @@ def render():
                 train1key,
                 [
                     voice_name,
+                    separate_vocals,
                     sample_rate,
                     use_pitch_guidance,
                     input_files,

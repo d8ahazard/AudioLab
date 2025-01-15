@@ -6,7 +6,9 @@ from handlers.config import output_path
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 
-class AudioRemaster(BaseWrapper):
+class Remaster(BaseWrapper):
+    title = "Remaster"
+    priority = 4
     allowed_kwargs = {
         "reference": TypedInput(
             description="Reference track",
@@ -15,7 +17,6 @@ class AudioRemaster(BaseWrapper):
             gradio_type="File"
         )
     }
-    priority = 500
 
     def process_audio(self, inputs: List[str], callback: Callable = None, **kwargs: Dict[str, Any]) -> List[str]:
         output_folder = os.path.join(output_path, "remastered")

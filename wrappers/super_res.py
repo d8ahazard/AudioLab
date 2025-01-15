@@ -48,8 +48,8 @@ def lr_filter(audio, cutoff, filter_type, order=12, sr=48000):
     return filtered_audio.T
 
 
-class AudioSuperRes(BaseWrapper):
-    priority = 10
+class SuperResolution(BaseWrapper):
+    priority = 2
     allowed_kwargs = {
         "ddim_steps": TypedInput(
             description="Number of inference steps",
