@@ -10,6 +10,7 @@ from torchaudio._extension import _init_dll_path
 
 from handlers.config import model_path
 from layouts.rvc_train import render as rvc_render
+from layouts.rvc_infer import render as rvc_infer_render
 from wrappers.base_wrapper import BaseWrapper
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
@@ -126,8 +127,6 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress(), se
             gr.update(value=f"Processing complete with {len(processors)} processors."))
 
 
-
-
 if __name__ == '__main__':
     wrappers = list_wrappers()
     arg_handler = BaseWrapper().arg_handler
@@ -172,4 +171,7 @@ if __name__ == '__main__':
                 )
             with gr.Tab(label="Train"):
                 rvc_render()
+            with gr.Tab(label="Clone"):
+                rvc_infer_render()
+
     ui.launch()
