@@ -29,6 +29,7 @@ git submodule update --init
 pip install -r requirements.txt
 pip install .
 cd ..
-
+pip install faiss-gpu
+pip install fairseq
 
 echo "All dependencies installed successfully!"
