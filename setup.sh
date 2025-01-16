@@ -11,6 +11,7 @@ python3 -m pip install --upgrade pip==24.0
 # Install Torch and related libraries
 echo "Installing PyTorch and related packages..."
 python3 -m pip install torch>=2.4.1 torchvision>=0.19.1 torchaudio>=2.4.1 --extra-index-url "$CUDA_URL"
+# python3 -m pip install torch>=2.4.1 torchvision>=0.19.1 torchaudio>=2.4.1 --extra-index-url "https://download.pytorch.org/whl/cu121"
 
 # Install torchlibrosa and librosa
 echo "Installing torchlibrosa and librosa..."
