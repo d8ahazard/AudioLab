@@ -1,3 +1,4 @@
+import argparse
 import importlib
 import os
 import sys
@@ -128,6 +129,17 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress(), se
 
 
 if __name__ == '__main__':
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="AudioLab Web Server")
+    parser.add_argument('--listen', action='store_true', help="Enable server to listen on 0.0.0.0")
+    parser.add_argument('--port', type=int, default=7860, help="Specify the port number (default: 7860)")
+    args = parser.parse_args()
+
+    # Determine the launch configuration
+    server_name = "0.0.0.0" if args.listen else "127.0.0.1"
+    server_port = args.port
+
+    # Set up the UI
     wrappers = list_wrappers()
     arg_handler = BaseWrapper().arg_handler
 
@@ -174,4 +186,5 @@ if __name__ == '__main__':
             with gr.Tab(label="Clone"):
                 rvc_infer_render()
 
-    ui.launch()
+    # Launch the UI with specified host and port
+    ui.launch(server_name=server_name, server_port=server_port)
