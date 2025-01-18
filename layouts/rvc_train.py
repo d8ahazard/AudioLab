@@ -162,7 +162,7 @@ def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
     args = {
         "separate_stems": False,
         "remove_bg_vocals": True,
-        "reverb_removal": "Vocals",
+        "reverb_removal": "Main Vocals",
         "echo_removal": "Nothing",
         "delay_removal": "Nothing",
         "crowd_removal": "Nothing",
