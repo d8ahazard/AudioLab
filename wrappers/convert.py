@@ -33,14 +33,14 @@ class Convert(BaseWrapper):
             non_mp3_inputs = [i for i in input_files if not i.endswith(".mp3")]
             if not non_mp3_inputs:
                 continue
-            output_folder = os.path.join(project.project_dir, "converted")
+            output_folder = os.path.join(project.project_dir)
             os.makedirs(output_folder, exist_ok=True)
             for input_file in non_mp3_inputs:
                 file_name, ext = os.path.splitext(os.path.basename(input_file))
                 output_file = os.path.join(output_folder, f"{file_name}.mp3")
                 # Convert to MP3
-                os.system(f"ffmpeg -i '{input_file}' -b:a {bitrate} '{output_file}'")
+                os.system(f'ffmpeg -i "{input_file}" -b:a {bitrate} "{output_file}"')
                 outputs.append(output_file)
-                project.add_output("converted", output_file)
+            project.add_output("converted", outputs)
             pj_outputs.append(project)
         return pj_outputs

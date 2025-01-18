@@ -147,6 +147,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     first_audio = output_audio_files[0] if output_audio_files else None
     end_time = datetime.now()
     total_time_in_seconds = (end_time - start_time).total_seconds()
+    print(f"Processing complete with {len(processors)} processors in {total_time_in_seconds:.2f} seconds")
     return (gr.update(value=outputs, visible=bool(outputs)),
             gr.update(value=first_audio, visible=bool(first_audio), choices=output_images_and_audio, interactive=True),
             gr.update(value=first_audio, visible=bool(first_audio)),

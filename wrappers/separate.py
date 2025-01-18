@@ -29,6 +29,12 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
+        "delete_extra_stems": TypedInput(
+            default=True,
+            description="Delete extra stems after processing.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
         "separate_bg_vocals": TypedInput(
             default=True,
             description="Separate background vocals.",
@@ -249,6 +255,7 @@ class Separate(BaseWrapper):
         delay_removal = filtered_kwargs.get("delay_removal", "Nothing")
         crowd_removal = filtered_kwargs.get("crowd_removal", "All")
         noise_removal = filtered_kwargs.get("noise_removal", "All")
+        delete_extra_stems = filtered_kwargs.get("delete_extra_stems", True)
 
         delay_removal_model = filtered_kwargs.get("delay_removal_model", "UVR-De-Echo-Normal.pth")
         noise_removal_model = filtered_kwargs.get("noise_removal_model", "UVR-DeNoise.pth")
@@ -262,7 +269,7 @@ class Separate(BaseWrapper):
         for input_project in inputs:
             project_outputs = []
             input_file = input_project.src_file
-            output_dir = os.path.join(input_project.project_dir, "separated")
+            output_dir = os.path.join(input_project.project_dir, "stems")
             self.separator.output_dir = output_dir
             os.makedirs(output_dir, exist_ok=True)
             original_basename = os.path.splitext(os.path.basename(input_file))[0]
@@ -356,14 +363,14 @@ class Separate(BaseWrapper):
 
                 project_outputs.append(current_path)
 
-            input_project.add_output("separated", project_outputs)
+            input_project.add_output("stems", project_outputs)
             outputs.extend(project_outputs)
 
             pj_outputs.append(input_project)
-
-        for p in all_outputs:
-            if p not in outputs and os.path.exists(p):
-                self.del_stem(p)
+        if delete_extra_stems:
+            for p in all_outputs:
+                if p not in outputs and os.path.exists(p):
+                    self.del_stem(p)
 
         return pj_outputs
 

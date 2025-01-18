@@ -15,6 +15,8 @@ class Merge(BaseWrapper):
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pj_outputs = []
         for project in inputs:
+            src_stem = project.src_file
+            src_name, _ = os.path.splitext(os.path.basename(src_stem))
             output_folder = os.path.join(project.project_dir, "merged")
             os.makedirs(output_folder, exist_ok=True)
             inputs, _ = self.filter_inputs(project.last_outputs, "audio")
@@ -22,7 +24,7 @@ class Merge(BaseWrapper):
             # Set up output file details
             first_file = inputs[0]
             file_name, file_ext = os.path.splitext(os.path.basename(first_file))
-            output_file = os.path.join(output_folder, f"{file_name}_(Merged){file_ext}")
+            output_file = os.path.join(output_folder, f"{src_name}_(Merged){file_ext}")
 
             # Initialize progress tracking
             total_steps = len(inputs)
