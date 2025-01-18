@@ -540,6 +540,26 @@ def train1key(
 ):
     infos = []
 
+    if not project_name or project_name == "":
+        return "Please provide a project name."
+    if not inputs:
+        return "Please provide input files."
+    # Determine the total length in time of input files
+    total_length = 0
+    for f in inputs:
+        audio, _ = torchaudio.load(f)
+        total_length += audio.shape[1]
+
+    # If the total length is less than 10 minutes, yield a warning, but continue
+    if total_length < 600000:
+        infos.append("Warning: Total length of input files is less than 10 minutes.")
+        yield "\n".join(infos)
+
+    # If the total length is between 30 and 60 minutes, congratulate the user.
+    if 1800000 > total_length > 600000:
+        infos.append("Good job! Total length of input files is between 30 and 60 minutes.")
+        yield "\n".join(infos)
+
     def get_info_str(strr):
         infos.append(strr)
         return "\n".join(infos)
@@ -625,7 +645,7 @@ def render():
             sample_rate = gr.Radio(
                 label="Target Sampling Rate",
                 choices=["40k", "48k"],
-                value="48",
+                value="48k",
                 interactive=True,
             )
             use_pitch_guidance = gr.Radio(
