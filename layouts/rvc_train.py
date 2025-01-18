@@ -27,6 +27,7 @@ from rvc.infer.modules.train.preprocess import preprocess_trainset
 from rvc.infer.modules.train.train import train_main
 from rvc.infer.modules.vc.modules import VC
 from rvc.utils import HParams
+from util.data_classes import ProjectFiles
 from wrappers.separate import Separate
 
 logger = logging.getLogger(__name__)
@@ -159,22 +160,25 @@ def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
     separator = Separate()
     args = {
         "separate_stems": False,
-        "bg_vocals_removal": "Nothing",
-        "reverb_removal": "Nothing",
+        "remove_bg_vocals": True,
+        "reverb_removal": "Vocals",
         "echo_removal": "Nothing",
         "delay_removal": "Nothing",
         "crowd_removal": "Nothing",
         "noise_removal": "Nothing",
         "delay_removal_model": "UVR-De-Echo-Normal.pth",
-        "background_vocal_model": "UVR_MDXNET_KARA_2.onnx",
         "noise_removal_model": "UVR-DeNoise.pth",
         "crowd_removal_model": "UVR-MDX-NET_Crowd_HQ_1.onnx",
     }
-    outputs = separator.process_audio(audio_files, progress, **args)
-    existing_outputs = [output for output in outputs if os.path.exists(output)]
-    vocal_outputs = [output for output in existing_outputs if
-                     '(Vocals)' in output and "(BG Vocals)" not in output and "(Instrumental)" not in output]
-    bg_vocal_outputs = [output for output in existing_outputs if '(BG Vocals)' in output]
+    project_inputs = []
+    for audio_file in audio_files:
+        project_inputs.append(ProjectFiles(audio_file))
+    outputs = separator.process_audio(project_inputs, progress, **args)
+    output_files = []
+    for output_project in outputs:
+        output_files.extend(output_project.last_outputs)
+    vocal_outputs = [output for output in output_files if '(Vocals)' in output and "(BG_Vocals)"]
+    bg_vocal_outputs = [output for output in output_files if '(BG Vocals)' in output]
     return vocal_outputs, bg_vocal_outputs
 
 
@@ -547,14 +551,12 @@ def train1key(
         num_cpus = 1
     # Preprocess
     yield get_info_str("Step1: Preprocessing data")
-    all_files = inputs
-
+    vocal_files = inputs
     if separate_vocals:
-        vocal_files, bg_vocal_files = separate_vocal(all_files)
-        all_files = vocal_files + bg_vocal_files
+        vocal_files, bg_vocal_files = separate_vocal(inputs)
         yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
 
-    for f in all_files:
+    for f in vocal_files:
         try:
             base_name, ext = os.path.splitext(os.path.basename(f))
             output_file = os.path.join(data_dir, f"{base_name}.wav")
@@ -572,7 +574,7 @@ def train1key(
                 os.remove(temp_output)
             else:
                 # If already a WAV file, copy it to the data_dir
-                shutil.copy(f, output_file)
+                shutil.copyfile(f, output_file)
 
         except Exception as e:
             print(f"Error processing file {f}: {e}")
