@@ -140,6 +140,8 @@ class Clone(BaseWrapper):
         for project in inputs:
             last_outputs = project.last_outputs
             filtered_inputs = [input_path for input_path in last_outputs if "(Vocals)" in input_path]
+            if not len(filtered_inputs):
+                filtered_inputs = [project.src_file]
             if not clone_bg_vocals:
                 # Remove background vocals
                 filtered_inputs = [input_path for input_path in filtered_inputs if "(BG_Vocals)" not in input_path]
