@@ -15,6 +15,7 @@ import gradio as gr
 import numpy as np
 import torch
 import torchaudio
+from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 
 from handlers.config import model_path, output_path, app_path
@@ -545,20 +546,6 @@ def train1key(
     if not inputs:
         return "Please provide input files."
     # Determine the total length in time of input files
-    total_length = 0
-    for f in inputs:
-        audio, _ = torchaudio.load(f)
-        total_length += audio.shape[1]
-
-    # If the total length is less than 10 minutes, yield a warning, but continue
-    if total_length < 600000:
-        infos.append("Warning: Total length of input files is less than 10 minutes.")
-        yield "\n".join(infos)
-
-    # If the total length is between 30 and 60 minutes, congratulate the user.
-    if 1800000 > total_length > 600000:
-        infos.append("Good job! Total length of input files is between 30 and 60 minutes.")
-        yield "\n".join(infos)
 
     def get_info_str(strr):
         infos.append(strr)
@@ -772,7 +759,6 @@ def render():
         with gr.Column():
             input_files = gr.File(label="Input Files", type="filepath", file_types=["audio"], file_count="multiple")
         with gr.Column():
-            output = gr.Textbox(label="Output", value="", max_lines=10)
             info3 = gr.Textbox(label="Output Info", value="", max_lines=10)
             but5.click(
                 train1key,
@@ -800,3 +786,24 @@ def render():
                 info3,
                 api_name="train_start_all",
             )
+
+        def update_time_info(input_files):
+            total_length = 0
+            for f in input_files:
+                try:
+                    # Load the audio file using pydub
+                    audio = AudioSegment.from_file(f)
+                    total_length += len(audio) / 1000  # Convert milliseconds to seconds
+                except Exception as e:
+                    print(f"Error processing file {f}: {e}")
+            total_length /= 60  # Convert seconds to minutes
+            info_value = f"Total length of input files: {total_length:.2f} minutes."
+            info_value += "\nRecommended is 30-60 minutes."
+            return gr.update(value=info_value)
+
+
+        input_files.change(
+            fn=update_time_info,
+            inputs=[input_files],
+            outputs=[info3],
+        )
