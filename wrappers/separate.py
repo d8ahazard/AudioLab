@@ -45,35 +45,35 @@ class Separate(BaseWrapper):
             default="Vocals",
             description="Remove reverb: Nothing, Vocals Only, or All Stems.",
             type=str,
-            choices=["Nothing", "Vocals", "All"],
+            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "echo_removal": TypedInput(
             default="Nothing",
             description="Remove echo: Nothing, Vocals Only, or All Stems.",
             type=str,
-            choices=["Nothing", "Vocals", "All"],
+            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "delay_removal": TypedInput(
             default="Nothing",
             description="Remove delay: Nothing, Vocals Only, or All Stems.",
             type=str,
-            choices=["Nothing", "Vocals", "All"],
+            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "crowd_removal": TypedInput(
             default="Nothing",
             description="Remove crowd noise: Nothing, Vocals Only, or All Stems.",
             type=str,
-            choices=["Nothing", "Vocals", "All"],
+            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "noise_removal": TypedInput(
             default="Nothing",
             description="Remove general noise: Nothing, Vocals Only, or All Stems.",
             type=str,
-            choices=["Nothing", "Vocals", "All"],
+            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
 
@@ -463,8 +463,10 @@ class Separate(BaseWrapper):
             return False
         elif setting == "All":
             return True
-        elif setting == "Vocals":
+        elif setting == "All Vocals":
             return self._is_vocal_stem(stem_name)
+        elif setting == "Main Vocals":
+            return self._is_vocal_stem(stem_name) and "(BG_Vocals)" not in stem_name
         return False
 
     def _is_vocal_stem(self, name: str) -> bool:
@@ -472,4 +474,4 @@ class Separate(BaseWrapper):
         Simple check to see if it's a "vocal" stem.
         We look for '(Vocals)' or 'Vocal' in the name
         """
-        return ("(Vocals)" in name or "(BG_Vocals)") and not "(Instrumental)" in name
+        return "(Vocals)" in name or "(BG_Vocals)" in name
