@@ -42,7 +42,7 @@ class Separate(BaseWrapper):
             gradio_type="Checkbox"
         ),
         "reverb_removal": TypedInput(
-            default="Vocals",
+            default="Main Vocals",
             description="Remove reverb: Nothing, Vocals Only, or All Stems.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],

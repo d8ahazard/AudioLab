@@ -789,6 +789,8 @@ def render():
 
         def update_time_info(input_files):
             total_length = 0
+            if not input_files:
+                return gr.update(value="")
             for f in input_files:
                 try:
                     # Load the audio file using pydub
