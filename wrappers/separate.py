@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from typing import Any, List, Dict
 
 import librosa
@@ -18,6 +19,7 @@ class Separate(BaseWrapper):
     priority = 1
     separator = None
     default = True
+    file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
         "separate_stems": TypedInput(
@@ -26,15 +28,14 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
-        "bg_vocals_removal": TypedInput(
-            default="Vocals",
-            description="Remove background vocals: Nothing, Vocals Only, or All Stems.",
-            type=str,
-            choices=["Nothing", "Vocals", "All"],
-            gradio_type="Dropdown"
+        "separate_bg_vocals": TypedInput(
+            default=True,
+            description="Separate background vocals.",
+            type=bool,
+            gradio_type="Checkbox"
         ),
         "reverb_removal": TypedInput(
-            default="Nothing",
+            default="Vocals",
             description="Remove reverb: Nothing, Vocals Only, or All Stems.",
             type=str,
             choices=["Nothing", "Vocals", "All"],
@@ -133,7 +134,7 @@ class Separate(BaseWrapper):
         their outputs into a single final Vocals and Instrumental stem via
         simple ensemble averaging + lowpass/highpass filtering.
 
-        Returns: [final_instrumental_path, final_vocals_path]
+        Returns: [all outputs], [final_instrumental_path, final_vocals_path]
         """
 
         # Simple Linkwitz-Riley style filter. Adjust cutoff and order as desired.
@@ -168,25 +169,19 @@ class Separate(BaseWrapper):
         bg_list = []
         out_files = []
         sr = 44100
-        # Run each background-vocal model
         for background_vocal_model in bg_model:
             self.separator.load_model(background_vocal_model)
-            # This returns a list of output file paths (one for vocals, one for instrumental, presumably)
-            out_files = self.separator.separate(current_path)
-            # We rename them to final folder, but more importantly we want to load them here and store as arrays
-            out_files = self._fix_output_paths(output_dir, out_files)
-
-            # Figure out which is vocals vs instrumental, load them
-            # (If you know the exact naming, you can parse by substring)
+            files = self.separator.separate(current_path)
+            files = self._fix_output_paths(output_dir, files)
+            out_files.extend(files)
             v_path = None
             bg_path = None
-            for f in out_files:
+            for f in files:
                 if "(Vocals)_(Vocals)" in f:
                     v_path = f
                 elif "(Vocals)_(Instrumental)" in f:
                     bg_path = f
 
-            # Load them if found
             if v_path and os.path.exists(v_path):
                 v_data, sr = librosa.load(v_path, mono=False, sr=44100)
                 if len(v_data.shape) == 1:
@@ -198,34 +193,24 @@ class Separate(BaseWrapper):
                     bg_data = np.stack([bg_data, bg_data], axis=0)
                 bg_list.append(bg_data)
 
-        # If for some reason we don't have 3 sets, bail out
         if len(vocals_list) < 3 or len(bg_list) < 3:
-            # fallback: return the combined paths if you want
-            return out_files
+            return out_files, []
 
-        # 2) Combine/ensemble the 3 vocals, removing noise or artifacts:
-        # First, match shapes across each array to the shortest of the bunch (or do the longest).
-        # We'll pick the first as reference and force all to that shape.
         ref_len = vocals_list[0].shape[1]
         for arr in vocals_list[1:]:
             if arr.shape[1] < ref_len:
                 ref_len = arr.shape[1]
 
-        # Now, unify shape
         for i in range(len(vocals_list)):
             vocals_list[i] = vocals_list[i][:, :ref_len]
 
-        # Weighted average approach, plus a lowpass filter and a separate highpass from one model:
-        # (Here we just do equal weights. Tweak as you wish.)
-        stacked_v = np.stack(vocals_list, axis=0)  # shape: (3, channels, samples)
-        avg_vocals = np.mean(stacked_v, axis=0)  # shape: (channels, samples)
+        stacked_v = np.stack(vocals_list, axis=0)
+        avg_vocals = np.mean(stacked_v, axis=0)
 
-        # For example: lowpass the average, highpass from model #2
         vocals_low = lr_filter(avg_vocals, cutoff=10000, ftype='lowpass', order=6, sr=44100) * 1.01
         vocals_high = lr_filter(vocals_list[1], cutoff=10000, ftype='highpass', order=6, sr=44100)
         final_vocals = vocals_low + vocals_high
 
-        # 3) Combine instrumentals similarly
         ref_len_i = bg_list[0].shape[1]
         for arr in bg_list[1:]:
             if arr.shape[1] < ref_len_i:
@@ -239,58 +224,42 @@ class Separate(BaseWrapper):
         bg_high = lr_filter(bg_list[2], 8000, 'highpass', order=6, sr=44100)
         final_bg = bg_low + bg_high
 
-        # 4) Write the final tracks
         os.makedirs(output_dir, exist_ok=True)
         final_vocals_path = os.path.join(output_dir, f"{base_name}_(Vocals).wav")
         final_bg_path = os.path.join(output_dir, f"{base_name}_(BG_Vocals).wav")
 
-        # Make sure both final stems are the same length (pick min)
         min_len = min(final_vocals.shape[1], final_bg.shape[1])
         final_vocals = final_vocals[:, :min_len]
         final_bg = final_bg[:, :min_len]
 
-        # Transpose them back to (samples, channels) for soundfile
         sf.write(final_vocals_path, final_vocals.T, sr, subtype="FLOAT")
         sf.write(final_bg_path, final_bg.T, sr, subtype="FLOAT")
-        print(f"Saved: {final_vocals_path}, {final_bg_path}")
-        # Delete the original files
-        for f in out_files:
-            if os.path.exists(f):
-                try:
-                    print(f"Removing: {f}")
-                    os.remove(f)
-                except Exception as e:
-                    print(f"Error removing {f}: {e}")
-
-        # 5) Return only these two final paths
-        return [final_bg_path, final_vocals_path]
+        out_files.extend([final_vocals_path, final_bg_path])
+        return out_files, [final_bg_path, final_vocals_path]
 
     def process_audio(self, inputs: List[str], callback=None, **kwargs: Dict[str, Any]) -> List[str]:
-        """
-        Main pipeline for processing audio according to user-specified transformations.
-        """
         self.setup()
 
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
 
-        # Extract transform modes
-        bg_vocals_removal = filtered_kwargs.get("bg_vocals_removal", "Vocals")
+        bg_vocals_removal = filtered_kwargs.get("separate_bg_vocals", True)
         reverb_removal = filtered_kwargs.get("reverb_removal", "Vocals")
         echo_removal = filtered_kwargs.get("echo_removal", "Nothing")
         delay_removal = filtered_kwargs.get("delay_removal", "Nothing")
         crowd_removal = filtered_kwargs.get("crowd_removal", "All")
         noise_removal = filtered_kwargs.get("noise_removal", "All")
 
-        # Extract models
         delay_removal_model = filtered_kwargs.get("delay_removal_model", "UVR-De-Echo-Normal.pth")
         noise_removal_model = filtered_kwargs.get("noise_removal_model", "UVR-DeNoise.pth")
         crowd_removal_model = filtered_kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx")
 
-        # Separate stems or not
         separate_stems = filtered_kwargs.get("separate_stems", False)
 
         filtered_inputs, outputs = self.filter_inputs(inputs, "audio")
         output_dir = os.path.join(output_path, "audio_separator")
+
+        all_outputs = []  # Everything, including intermediate steps
+        final_outputs = []  # The ones we want
 
         for input_file in filtered_inputs:
             original_basename = os.path.splitext(os.path.basename(input_file))[0]
@@ -302,54 +271,22 @@ class Separate(BaseWrapper):
                 vocals_only=not separate_stems, use_VOCFT=True, output_format="FLOAT", callback=callback
             )
 
-            key_swap_dict = {
-                "_bass": "(Bass)",
-                "_drums": "(Drums)",
-                "_other": "(Other)",
-                "_vocals": "(Vocals)",
-                "_instrum2": "(Instrumental 2)",
-                "_instrum": "(Instrumental)",
-            }
+            print(f"Separated stems: {separated_stems}")
+            all_outputs.extend(separated_stems)
 
-            for key, value in key_swap_dict.items():
-                for idx, stem in enumerate(separated_stems):
-                    if key in stem:
-                        separated_stems[idx] = stem.replace(key, value)
-                        # Rename the file
-                        if os.path.exists(separated_stems[idx]):
-                            os.remove(separated_stems[idx])
-                        os.rename(stem, separated_stems[idx])
-
-            # if separate_stems is true, we keep all except the one that ends with _instrum2, otherwise, _vocals and _instrum
-            all_stems = [stem for stem in separated_stems]
-            if separate_stems:
-                separated_stems = [stem for stem in separated_stems if "(Instrumental 2)" not in stem]
-            else:
-                separated_stems = [stem for stem in separated_stems if
-                                   "(Vocals)" in stem or "(Instrumental)" in stem and "(Instrumental 2)" not in stem]
-
-            # Delete stems in All that are not in separated_stems
-            for stem in all_stems:
-                if stem not in separated_stems:
-                    if os.path.exists(stem):
-                        os.remove(stem)
-
-            final_stems = []
-            all_intermediate_outputs = separated_stems.copy()
-            stems_to_filter = [stem_path for stem_path in separated_stems if "(Vocals)" not in stem_path]
             vocal_stems = [stem_path for stem_path in separated_stems if "(Vocals)" in stem_path]
+            stems_to_filter = [stem_path for stem_path in separated_stems if "(Vocals)" not in stem_path]
+
             for stem_path in vocal_stems:
-                # We'll track the current path as we apply transformations
                 current_path = stem_path
-                stem_basename = os.path.basename(current_path)
-
-                # 2) Background Vocals Removal
-                if self._should_apply_transform(stem_basename, bg_vocals_removal):
-                    out_files = self.separate_bg_multi(current_path, output_dir)
-                    all_intermediate_outputs.extend(out_files)
+                if bg_vocals_removal:
+                    all_vox, out_files = self.separate_bg_multi(current_path, output_dir)
+                    all_outputs.extend(all_vox)
                     stems_to_filter.extend(out_files)
+                else:
+                    all_outputs.append(current_path)
+                    stems_to_filter.append(current_path)
 
-            print(f"Stems to filter: {stems_to_filter}")
             for stem_path in stems_to_filter:
                 current_path = stem_path
                 stem_basename = os.path.basename(current_path)
@@ -360,7 +297,7 @@ class Separate(BaseWrapper):
                     tgt_file = "No Reverb"
                     out_files = self.separator.separate(current_path)
                     out_files = self._fix_output_paths(output_dir, out_files)
-                    all_intermediate_outputs.extend(out_files)
+                    all_outputs.extend(out_files)
                     file_idx = 0 if tgt_file in out_files[0] else 1
                     current_path = self._rename_file(
                         original_basename, out_files[file_idx]
@@ -372,7 +309,7 @@ class Separate(BaseWrapper):
                     tgt_file = "No Echo"
                     out_files = self.separator.separate(current_path)
                     out_files = self._fix_output_paths(output_dir, out_files)
-                    all_intermediate_outputs.extend(out_files)
+                    all_outputs.extend(out_files)
                     file_idx = 0 if tgt_file in out_files[0] else 1
                     current_path = self._rename_file(
                         original_basename, out_files[file_idx]
@@ -384,7 +321,7 @@ class Separate(BaseWrapper):
                     tgt_file = "No Delay"
                     out_files = self.separator.separate(current_path)
                     out_files = self._fix_output_paths(output_dir, out_files)
-                    all_intermediate_outputs.extend(out_files)
+                    all_outputs.extend(out_files)
                     file_idx = 0 if tgt_file in out_files[0] else 1
                     current_path = self._rename_file(
                         original_basename, out_files[file_idx]
@@ -396,7 +333,7 @@ class Separate(BaseWrapper):
                     tgt_file = "No Crowd"
                     out_files = self.separator.separate(current_path)
                     out_files = self._fix_output_paths(output_dir, out_files)
-                    all_intermediate_outputs.extend(out_files)
+                    all_outputs.extend(out_files)
                     file_idx = 0 if tgt_file in out_files[0] else 1
                     current_path = self._rename_file(
                         original_basename, out_files[file_idx]
@@ -408,30 +345,35 @@ class Separate(BaseWrapper):
                     tgt_file = "No Noise"
                     out_files = self.separator.separate(current_path)
                     out_files = self._fix_output_paths(output_dir, out_files)
-                    all_intermediate_outputs.extend(out_files)
+                    all_outputs.extend(out_files)
                     file_idx = 0 if tgt_file in out_files[0] else 1
                     current_path = self._rename_file(
                         original_basename, out_files[file_idx]
                     )
 
-                final_stems.append(current_path)
+                final_outputs.append(current_path)
 
-            # The final stems for this input_file are appended to `outputs`
-            outputs.extend(final_stems)
+            outputs.extend(final_outputs)
 
-            for p in all_intermediate_outputs:
+            for p in all_outputs:
                 if p not in outputs and os.path.exists(p):
-                    print(f"Removing: {p}")
-                    try:
-                        os.remove(p)
-                    except Exception as e:
-                        print(f"Error removing {p}: {e}")
-        print(f"Final outputs: {outputs}")
+                    self.del_stem(p)
+
         return outputs
 
-    @staticmethod
-    def _fix_output_paths(output_dir: str, filenames: List[str]) -> List[str]:
-        """Ensure all filenames have the full output path."""
+    def del_stem(self, stem_path: str) -> bool:
+        try:
+            with self.file_operation_lock:
+                if os.path.exists(stem_path):
+                    os.remove(stem_path)
+                    print(f"Deleted: {stem_path}")
+                    return not os.path.exists(stem_path)
+                return False
+        except Exception as e:
+            print(f"Error deleting {stem_path}: {e}")
+            return False
+
+    def _fix_output_paths(self, output_dir: str, filenames: List[str]) -> List[str]:
         return [
             os.path.join(output_dir, os.path.basename(filename))
             for filename in filenames
@@ -518,12 +460,3 @@ class Separate(BaseWrapper):
         We look for '(Vocals)' or 'Vocal' in the name
         """
         return ("(Vocals)" in name or "(BG_Vocals)") and not "(Instrumental)" in name
-
-    def register_api_endpoint(self, api) -> Any:
-        pass
-
-    def del_stem(self, stem_path: str) -> bool:
-        if os.path.exists(stem_path):
-            os.remove(stem_path)
-            return not os.path.exists(stem_path)
-        return False

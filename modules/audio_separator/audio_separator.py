@@ -773,24 +773,25 @@ def predict_with_model():
 
         # Step 3: Write output files
         for instrum in model.instruments:
-            output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format(instrum)
+            inst_name = f"({instrum.title()})"
+            output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format(inst_name)
             out_path = os.path.join(output_folder, output_name)
             sf.write(out_path, result[instrum], sample_rates[instrum], subtype=output_format)
             output_files.append(out_path)
 
         # Write additional instrumental parts
         inst = result['instrum']
-        output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum')
+        output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('(Instrumental)')
         out_path = os.path.join(output_folder, output_name)
         sf.write(out_path, inst, sr, subtype=output_format)
         output_files.append(out_path)
 
-        if options['vocals_only'] is False:
-            inst2 = (result['bass'] + result['drums'] + result['other'])
-            output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum2')
-            out_path = os.path.join(output_folder, output_name)
-            sf.write(out_path, inst2, sr, subtype=output_format)
-            output_files.append(out_path)
+        # if options['vocals_only'] is False:
+        #     inst2 = (result['bass'] + result['drums'] + result['other'])
+        #     output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum2')
+        #     out_path = os.path.join(output_folder, output_name)
+        #     sf.write(out_path, inst2, sr, subtype=output_format)
+        #     output_files.append(out_path)
 
         current_step += 1
         callback(current_step, f"Completed processing {input_audio}", total_steps)
