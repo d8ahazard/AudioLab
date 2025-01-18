@@ -3,19 +3,16 @@ import importlib
 import os
 import sys
 import traceback
-import xxhash
 from datetime import datetime
 from pathlib import Path
-from shutil import copyfile
 from typing import List, Tuple
 
 import gradio as gr
 from torchaudio._extension import _init_dll_path
 
 from handlers.args import ArgHandler
-from handlers.config import model_path, output_path
+from handlers.config import model_path
 from layouts.rvc_train import render as rvc_render
-from layouts.rvc_infer import render as rvc_infer_render
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
@@ -42,7 +39,6 @@ def list_wrappers():
         sys.path.append(str(script_dir))
 
     all_wrappers = []
-    enabled_wrappers = []
     for file in script_dir.iterdir():
         if file.suffix == '.py' and file.name != 'base_wrapper.py':
             module_name = file.stem
@@ -58,9 +54,9 @@ def list_wrappers():
                 traceback.print_exc()
 
     all_wrappers = sorted(all_wrappers, key=lambda x: get_processor(x).priority)
-    enabled_wrappers = [wrapper for wrapper in all_wrappers if get_processor(wrapper).default]
+    selected_wrappers = [wrapper for wrapper in all_wrappers if get_processor(wrapper).default]
     print(f"Found {len(all_wrappers)} wrappers: {all_wrappers}")
-    return all_wrappers, enabled_wrappers
+    return all_wrappers, selected_wrappers
 
 
 def get_processor(processor_title: str) -> BaseWrapper:
@@ -80,7 +76,7 @@ def get_processor(processor_title: str) -> BaseWrapper:
 def toggle_visibility(processors: List[str], all_wrappers: List[str], all_accordions: List[gr.Accordion]):
     return [
         gr.update(visible=(wrapper in processors and bool(get_processor(wrapper).allowed_kwargs)))
-        for wrapper, accordion in zip(all_wrappers, all_accordions)
+        for wrapper, acc in zip(all_wrappers, all_accordions)
     ]
 
 
@@ -95,7 +91,7 @@ def get_audio_files(file_paths: List[str]) -> List[str]:
 def get_image_files(file_paths: List[str]) -> List[str]:
     image_files = []
     for file_path in file_paths:
-        if Path(file_path).suffix in ['.jpg', '.jpeg', '.png']:
+        if Path(file_path).suffix in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
             image_files.append(file_path)
     return image_files
 
@@ -104,11 +100,11 @@ def is_audio(file_path: str) -> bool:
     return Path(file_path).suffix in ['.wav', '.mp3', '.flac']
 
 
-def update_output_preview(output_select: str) -> Tuple[gr.update, gr.update]:
-    show_audio = is_audio(output_select)
+def update_output_preview(output: str) -> Tuple[gr.update, gr.update]:
+    show_audio = is_audio(output)
     show_image = not show_audio
-    return (gr.update(visible=show_audio, value=output_select if show_audio else None),
-            gr.update(visible=show_image, value=output_select if show_image else None))
+    return (gr.update(visible=show_audio, value=output if show_audio else None),
+            gr.update(visible=show_image, value=output if show_image else None))
 
 
 def process(processors: List[str], inputs: List[str], progress=gr.Progress()) -> List[str]:
@@ -221,8 +217,6 @@ if __name__ == '__main__':
                 )
             with gr.Tab(label="Train"):
                 rvc_render()
-            with gr.Tab(label="Clone"):
-                rvc_infer_render()
 
     # Launch the UI with specified host and port
     ui.launch(server_name=server_name, server_port=server_port)
