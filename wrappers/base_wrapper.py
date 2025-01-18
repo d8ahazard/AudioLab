@@ -32,7 +32,8 @@ class TypedInput:
                  on_click: Callable = None,
                  on_input: Callable = None,
                  on_change: Callable = None,
-                 on_clear: Callable = None
+                 on_clear: Callable = None,
+                 refresh: Callable = None,
                  ):
         field_kwargs = {
             "default": default,
@@ -61,6 +62,7 @@ class TypedInput:
         self.on_input = on_input
         self.on_change = on_change
         self.on_clear = on_clear
+        self.refresh = refresh
         self.gradio_type = gradio_type if gradio_type else self.pick_gradio_type()
 
     def pick_gradio_type(self):
@@ -86,6 +88,7 @@ class BaseWrapper:
     priority = 1000
     allowed_kwargs = {}
     description = "Base Wrapper"
+    default = False
 
     def __new__(cls):
         if cls._instance is None:
@@ -180,13 +183,19 @@ class BaseWrapper:
 
         self.arg_handler.register_element(class_name, arg_key, elem)
         if isinstance(value.on_click, Callable):
-            getattr(elem, "on_click")(value.on_click)
+            getattr(elem, "click")(value.on_click)
         if isinstance(value.on_input, Callable):
-            getattr(elem, "on_input")(value.on_input)
+            getattr(elem, "input")(value.on_input)
         if isinstance(value.on_change, Callable):
-            getattr(elem, "on_change")(value.on_change)
+            getattr(elem, "change")(value.on_change)
         if isinstance(value.on_clear, Callable):
-            getattr(elem, "on_clear")(value.on_clear)
+            getattr(elem, "clear")(value.on_clear)
+        if isinstance(value.refresh, Callable):
+            # Create a gradio button as well, to trigger the refresh
+            refresh_button = gr.Button(value=f"Refresh {key}")
+            getattr(refresh_button, "click")(fn=value.refresh, outputs=[elem])
+            print(f"Registering refresh button for {key}")
+            return elem, refresh_button
         return elem
 
     @staticmethod

@@ -10,6 +10,7 @@ from wrappers.base_wrapper import BaseWrapper
 class Merge(BaseWrapper):
     title = "Merge"
     priority = 5
+    default = True
 
     def process_audio(self, inputs: List[str], callback: Callable = None, **kwargs: Dict[str, Any]) -> List[str]:
         output_folder = os.path.join(output_path, "merged")
@@ -22,7 +23,7 @@ class Merge(BaseWrapper):
         # Set up output file details
         first_file = inputs[0]
         file_name, file_ext = os.path.splitext(os.path.basename(first_file))
-        output_file = os.path.join(output_folder, f"{file_name}_merged{file_ext}")
+        output_file = os.path.join(output_folder, f"{file_name}_(Merged){file_ext}")
 
         # Initialize progress tracking
         total_steps = len(inputs)

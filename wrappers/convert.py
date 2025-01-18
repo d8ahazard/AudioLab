@@ -10,6 +10,7 @@ from wrappers.base_wrapper import BaseWrapper, TypedInput
 class Convert(BaseWrapper):
     priority = 10
     title = "Convert"
+    default = True
     allowed_kwargs = {
         "bitrate": TypedInput(
             description="Bitrate for the output MP3 file",

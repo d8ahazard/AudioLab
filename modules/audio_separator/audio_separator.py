@@ -6,6 +6,8 @@ import uuid
 import warnings
 from typing import List, Optional
 from urllib.request import urlopen, Request
+
+import torchaudio
 from torch.hub import READ_DATA_CHUNK
 from tqdm import tqdm
 import numpy as np
@@ -751,7 +753,12 @@ def predict_with_model():
     current_step = 0
     for i, input_audio in enumerate(options['input_audio']):
         callback(current_step, f"Processing {input_audio}", total_steps)
-
+        # If the input file is a mp3, convert it to a wav with ffmpeg at 44100 Hz
+        if input_audio.endswith('.mp3'):
+            wav_replacement = os.path.splitext(input_audio)[0] + '.wav'
+            if not os.path.isfile(wav_replacement):
+                os.system(f'ffmpeg -i "{input_audio}" -acodec pcm_s16le -ac 2 -ar 44100 "{wav_replacement}"')
+            input_audio = wav_replacement
         # Step 1: Load audio
         audio, sr = librosa.load(input_audio, mono=False, sr=44100)
         if len(audio.shape) == 1:

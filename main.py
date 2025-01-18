@@ -3,12 +3,14 @@ import importlib
 import os
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import gradio as gr
 from torchaudio._extension import _init_dll_path
 
+from handlers.args import ArgHandler
 from handlers.config import model_path
 from layouts.rvc_train import render as rvc_render
 from layouts.rvc_infer import render as rvc_infer_render
@@ -24,6 +26,7 @@ os.makedirs(hf_dir, exist_ok=True)
 os.makedirs(transformers_dir, exist_ok=True)
 # Set HF_HUB_CACHE_DIR to the model_path
 os.environ["HF_HOME"] = hf_dir
+arg_handler = ArgHandler()
 
 project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
@@ -36,6 +39,7 @@ def list_wrappers():
         sys.path.append(str(script_dir))
 
     all_wrappers = []
+    enabled_wrappers = []
     for file in script_dir.iterdir():
         if file.suffix == '.py' and file.name != 'base_wrapper.py':
             module_name = file.stem
@@ -51,8 +55,9 @@ def list_wrappers():
                 traceback.print_exc()
 
     all_wrappers = sorted(all_wrappers, key=lambda x: get_processor(x).priority)
+    enabled_wrappers = [wrapper for wrapper in all_wrappers if get_processor(wrapper).default]
     print(f"Found {len(all_wrappers)} wrappers: {all_wrappers}")
-    return all_wrappers
+    return all_wrappers, enabled_wrappers
 
 
 def get_processor(processor_title: str) -> BaseWrapper:
@@ -92,8 +97,20 @@ def get_image_files(file_paths: List[str]) -> List[str]:
     return image_files
 
 
-def process(processors: List[str], inputs: List[str], progress=gr.Progress(), settings=None) -> List[str]:
-    outputs = []
+def is_audio(file_path: str) -> bool:
+    return Path(file_path).suffix in ['.wav', '.mp3', '.flac']
+
+
+def update_output_preview(output_select: str) -> Tuple[gr.update, gr.update]:
+    show_audio = is_audio(output_select)
+    show_image = not show_audio
+    return (gr.update(visible=show_audio, value=output_select if show_audio else None),
+            gr.update(visible=show_image, value=output_select if show_image else None))
+
+
+def process(processors: List[str], inputs: List[str], progress=gr.Progress()) -> List[str]:
+    start_time = datetime.now()
+    settings = arg_handler.get_args()
 
     def progress_callback(step, desc=None, total=None):
         progress(step, desc, total)
@@ -104,13 +121,14 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress(), se
         tgt_processor = get_processor(processor_title)
         processor_key = tgt_processor.title.replace(' ', '')
         processor_settings = settings.get(processor_key, {}) if settings else {}
-
-        print(f"Processor settings for {processor_title}:")
-        print("---------------------------------------------------------------------")
-        for key in processor_settings:
-            print(f"{key}: {processor_settings[key]}")
-        print("---------------------------------------------------------------------")
-
+        if len(processor_settings):
+            print(f"Processor settings for {processor_title}:")
+            print("---------------------------------------------------------------------")
+            for key in processor_settings:
+                print(f"{key}: {processor_settings[key]}")
+            print("---------------------------------------------------------------------")
+        else:
+            print(f"No settings found for {processor_title}.")
         outputs = tgt_processor.process_audio(inputs, progress_callback, **processor_settings)
         all_outputs.extend(outputs)
         inputs = outputs
@@ -121,11 +139,14 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress(), se
     output_images_and_audio = output_audio_files + output_image_files
     first_image = output_image_files[0] if output_image_files else None
     first_audio = output_audio_files[0] if output_audio_files else None
+    end_time = datetime.now()
+    total_time_in_seconds = (end_time - start_time).total_seconds()
     return (gr.update(value=outputs, visible=bool(outputs)),
-            gr.update(value=first_audio, visible=bool(first_audio), choices=output_images_and_audio),
+            gr.update(value=first_audio, visible=bool(first_audio), choices=output_images_and_audio, interactive=True),
             gr.update(value=first_audio, visible=bool(first_audio)),
             gr.update(value=first_image, visible=bool(first_image)),
-            gr.update(value=f"Processing complete with {len(processors)} processors."))
+            gr.update(
+                value=f"Processing complete with {len(processors)} processors in {total_time_in_seconds:.2f} seconds"))
 
 
 if __name__ == '__main__':
@@ -140,13 +161,13 @@ if __name__ == '__main__':
     server_port = args.port
 
     # Set up the UI
-    wrappers = list_wrappers()
+    wrappers, enabled_wrappers = list_wrappers()
     arg_handler = BaseWrapper().arg_handler
 
     with gr.Blocks(title='AudioLab') as ui:
         with gr.Tabs():
             with gr.Tab(label='Process'):
-                processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=wrappers)
+                processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers)
                 progress_display = gr.HTML(label='Progress', value='')
 
                 accordions = []
@@ -157,7 +178,7 @@ if __name__ == '__main__':
                     with gr.Column() as settings_ui:
                         for wrapper_name in wrappers:
                             processor = get_processor(wrapper_name)
-                            show_accordion = len(processor.allowed_kwargs) > 0
+                            show_accordion = len(processor.allowed_kwargs) > 0 and processor.default
                             accordion = gr.Accordion(label=processor.title, visible=show_accordion, open=False)
                             with accordion:
                                 processor.render_options(gr.Column())
@@ -169,6 +190,10 @@ if __name__ == '__main__':
                         output_files = gr.File(label='Output Files', file_count='multiple',
                                                file_types=['audio', 'video'],
                                                interactive=False)
+                        output_select = gr.Dropdown(label='Select Output Preview', choices=[], value=None,
+                                                    visible=False, interactive=True)
+                        output_audio = gr.Audio(label='Output Audio', value=None, visible=False)
+                        output_image = gr.Image(label='Output Image', value=None, visible=False)
 
                 processor_list.change(
                     fn=lambda processors: toggle_visibility(processors, wrappers, accordions),
@@ -176,10 +201,16 @@ if __name__ == '__main__':
                     outputs=[accordion for accordion in accordions]
                 )
 
+                output_select.change(
+                    fn=update_output_preview,
+                    inputs=[output_select],
+                    outputs=[output_audio, output_image]
+                )
+
                 start_processing.click(
                     fn=process,
-                    inputs=[processor_list, input_files, gr.State(arg_handler.get_args())],
-                    outputs=[output_files, progress_display]
+                    inputs=[processor_list, input_files],
+                    outputs=[output_files, output_select, output_audio, output_image, progress_display]
                 )
             with gr.Tab(label="Train"):
                 rvc_render()

@@ -1,6 +1,7 @@
+import os.path
 import traceback
 import logging
-
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
@@ -220,7 +221,9 @@ class VC:
         try:
             opt_root = os.path.join(output_path, "cloned")
             os.makedirs(opt_root, exist_ok=True)
-            paths = [path.name for path in paths]
+            first_path = paths[0]
+            if not isinstance(first_path, str):
+                paths = [p.name for p in paths]
             infos = []
             # Run self.get_vc to load the model if self.pipeline is None
             if self.pipeline is None:
@@ -242,28 +245,17 @@ class VC:
                 if "Success" in info:
                     try:
                         tgt_sr, audio_opt = opt
-                        if format1 in ["wav", "flac"]:
-                            sf.write(
-                                "%s/%s.%s"
-                                % (opt_root, os.path.basename(path), format1),
-                                audio_opt,
-                                tgt_sr,
-                            )
-                            outputs.append(os.path.join(os.path.basename(path), format1))
-                        else:
-                            path = "%s/%s.%s" % (
-                                opt_root,
-                                os.path.basename(path),
-                                format1,
-                            )
-                            with BytesIO() as wavf:
-                                sf.write(wavf, audio_opt, tgt_sr, format="wav")
-                                wavf.seek(0, 0)
-                                with open(path, "wb") as outf:
-                                    wav2(wavf, outf, format1)
-                            outputs.append(path)
-                    except:
-                        info += traceback.format_exc()
+                        # Extract base name and append "(Cloned)"
+                        base_name, ext = os.path.splitext(os.path.basename(path))
+                        cloned_name = f"{base_name}(Cloned).wav"
+
+                        output_file = os.path.join(opt_root, f"{cloned_name}")
+                        sf.write(output_file, audio_opt, tgt_sr, format="wav")
+                        outputs.append(str(output_file))
+
+                    except Exception as e:
+                        traceback.print_exc()
+
         except:
             traceback.print_exc()
             logger.warning(traceback.format_exc())

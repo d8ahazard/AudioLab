@@ -1,33 +1,50 @@
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Callable
 
+from handlers.config import model_path
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 from rvc.configs.config import Config
 from rvc.infer.modules.vc.modules import VC
 
 
+def list_speakers():
+    speaker_dir = os.path.join(model_path, "trained")
+    # List all .pth files in the speaker directory
+    return [os.path.join(speaker_dir, f) for f in os.listdir(speaker_dir) if f.endswith(".pth")]
+
+
+def list_speakers_ui():
+    return {"choices": list_speakers(), "__type__": "update"}
+
+
 class Clone(BaseWrapper):
     title = "Clone"
     priority = 3
+    default = True
+    vc = None
+    all_speakers = list_speakers()
+    first_speaker = all_speakers[0] if all_speakers else None
     allowed_kwargs = {
         "selected_voice": TypedInput(
-            default="",
+            default=first_speaker,
             description="The voice model to use.",
+            choices=list_speakers(),
             type=str,
             gradio_type="Dropdown",
+            refresh=list_speakers_ui,
             required=True
+        ),
+        "clone_bg_vocals": TypedInput(
+            default=False,
+            description="Clone background vocals (Not recommended with layred harmonies)",
+            type=bool,
+            gradio_type="Checkbox",
         ),
         "speaker_id": TypedInput(
             default=0,
             description="Speaker ID to use.",
             type=int,
             gradio_type="Number",
-        ),
-        "separate_vocals": TypedInput(
-            default=True,
-            description="Separate vocals from the input audio.",
-            type=bool,
-            gradio_type="Checkbox",
         ),
         "pitch_shift": TypedInput(
             default=0,
@@ -100,13 +117,13 @@ class Clone(BaseWrapper):
         config = Config()
         self.vc = VC(config)
 
-    def process_audio(self, inputs: List[str], **kwargs: Dict[str, Any]) -> List[str]:
+    def process_audio(self, inputs: List[str], callback: Callable = None, **kwargs: Dict[str, Any]) -> List[str]:
         """
         Process audio inputs based on provided configurations.
         """
         self.setup()
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
-        separate_vocals = filtered_kwargs.get("separate_vocals", True)
+        clone_bg_vocals = filtered_kwargs.get("clone_bg_vocals", False)
         selected_voice = filtered_kwargs.get("selected_voice", "")
         spk_id = filtered_kwargs.get("speaker_id", 0)
         pitch_shift = filtered_kwargs.get("pitch_shift", 0)
@@ -117,12 +134,15 @@ class Clone(BaseWrapper):
         format_ = filtered_kwargs.get("export_format", "wav")
         index_rate = filtered_kwargs.get("index_rate", 1)
         filter_radius = filtered_kwargs.get("filter_radius", 3)
-
-        outputs = []
+        # Only inputs with (Vocals) in the name will be processed
+        filtered_inputs = [input_path for input_path in inputs if "(Vocals)" in input_path]
+        if not clone_bg_vocals:
+            # Remove background vocals
+            filtered_inputs = [input_path for input_path in filtered_inputs if "(BG_Vocals)" not in input_path]
         clone_outputs = self.vc.vc_multi(
             model=selected_voice,
             sid=spk_id,
-            paths=inputs,
+            paths=filtered_inputs,
             f0_up_key=pitch_shift,
             format1=format_,
             f0_method=f0method,
@@ -132,20 +152,8 @@ class Clone(BaseWrapper):
             rms_mix_rate=rms_mix_rate,
             protect=protect
         )
-        # for input_path in inputs:
-        #     output = self.vc.vc_single(
-        #         sid=selected_voice,
-        #         input_audio_path=input_path,
-        #         f0_method=f0method,
-        #         index_rate=index_rate,
-        #         filter_radius=filter_radius,
-        #         resample_sr=resample_rate,
-        #         rms_mix_rate=rms_mix_rate,
-        #         protect=protect
-        #     )
-        #     outputs.append(output)
 
-        return clone_outputs
+        return clone_outputs + [input_path for input_path in inputs if input_path not in filtered_inputs]
 
     def change_choices(self) -> Dict[str, Any]:
         """
