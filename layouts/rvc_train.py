@@ -621,11 +621,11 @@ def render():
     with gr.Row():
         with gr.Column():
             voice_name = gr.Textbox(label="Voice Name", value="")
-            separate_vocals = gr.Checkbox(label="Separate Vocals", value=False)
+            separate_vocals = gr.Checkbox(label="Separate Vocals", value=True)
             sample_rate = gr.Radio(
                 label="Target Sampling Rate",
                 choices=["40k", "48k"],
-                value="40k",
+                value="48",
                 interactive=True,
             )
             use_pitch_guidance = gr.Radio(
@@ -647,6 +647,7 @@ def render():
                 step=1,
                 label="Number of CPU processes for pitch extraction and data processing",
                 value=int(np.ceil(config.n_cpu / 1.5)),
+                visible=config.n_cpu >= 1,
                 interactive=True,
             )
             speaker_id = gr.Slider(
@@ -707,7 +708,7 @@ def render():
             cache_dataset_to_gpu = gr.Radio(
                 label="Cache Dataset to GPU",
                 choices=["Yes", "No"],
-                value="No",
+                value="Yes",
                 interactive=True,
             )
             save_weights_each_ckpt = gr.Radio(
