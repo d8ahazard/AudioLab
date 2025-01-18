@@ -34,4 +34,5 @@ tqdm
 transformers>=4.48.0
 unidecode>=1.3.8
 whisperx
+xxhash
 ./wheels/audiosr-0.0.8-py2.py3-none-any.whl

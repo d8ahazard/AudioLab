@@ -8,6 +8,7 @@ import gradio as gr
 from annotated_types import Ge, Le
 
 from handlers.args import ArgHandler
+from util.data_classes import ProjectFiles
 
 if pydantic.__version__.startswith("1."):
     PYDANTIC_V2 = False
@@ -114,7 +115,7 @@ class BaseWrapper:
         return True
 
     @abstractmethod
-    def process_audio(self, inputs: List[str], callback=None, **kwargs: Dict[str, Any]) -> List[str]:
+    def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pass
 
     @abstractmethod
@@ -199,7 +200,7 @@ class BaseWrapper:
         return elem
 
     @staticmethod
-    def filter_inputs(inputs: List[str], input_type: str = "audio") -> Tuple[List[str], List[str]]:
+    def filter_inputs(inputs: List[ProjectFiles], input_type: str = "audio") -> Tuple[List[str], List[str]]:
         """
         Filter the inputs to only include files that exist.
         """

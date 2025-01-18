@@ -8,6 +8,7 @@ from pydub import AudioSegment
 from scipy.signal import resample, stft
 
 from handlers.config import output_path
+from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
 
@@ -38,7 +39,7 @@ class Compare(BaseWrapper):
     title = "Compare"
     priority = 1000000
 
-    def process_audio(self, inputs: List[str], callback: Callable = None, **kwargs: Dict[str, Any]) -> List[str]:
+    def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         """
         Compare two unique audio files and produce:
          - Time-domain waveforms
@@ -46,118 +47,124 @@ class Compare(BaseWrapper):
          - Spectrogram-based difference visualization
         """
         # Filter and ensure exactly two unique files
-        inputs, _ = self.filter_inputs(inputs, "audio")
-        unique_files = list(set(inputs))
-        if len(unique_files) != 2:
-            msg = f"Expected exactly 2 unique audio files, got {len(unique_files)}."
+        pj_outputs = []
+        for project in inputs:
+            outputs = []
+            input_files = project.last_outputs
+            inputs, _ = self.filter_inputs(input_files, "audio")
+
+            if len(inputs) >= 2:
+                msg = f"Expected exactly 2 unique audio files, got {len(inputs)}."
+                if callback:
+                    callback(0, msg, 1)
+                return []
+
+            unique_files = [project.src_file, inputs[0]]
+
+            # Prepare output
+            output_folder = os.path.join(project.project_dir, "comparisons")
+            os.makedirs(output_folder, exist_ok=True)
+            output_file = generate_output_filename(unique_files[0], unique_files[1], output_folder)
+
+            total_steps = 5
+            current_step = 0
             if callback:
-                callback(0, msg, 1)
-            return []
+                callback(0, "Starting audio comparison with spectrogram difference", total_steps)
 
-        unique_files.sort()
+            sample_rate = 44100
+            waveforms = []
 
-        # Prepare output
-        output_folder = os.path.join(output_path, "comparisons")
-        os.makedirs(output_folder, exist_ok=True)
-        output_file = generate_output_filename(unique_files[0], unique_files[1], output_folder)
+            # 1) Load + resample both
+            for file in unique_files:
+                audio = AudioSegment.from_file(file)
+                # Normalization factor for e.g. 16-bit PCM:
+                divisor = float(2 ** (8 * audio.sample_width - 1))
+                samples = np.array(audio.get_array_of_samples()) / divisor
 
-        total_steps = 5
-        current_step = 0
-        if callback:
-            callback(0, "Starting audio comparison with spectrogram difference", total_steps)
+                # Resample to common sample_rate
+                resampled = resample(samples, int(len(samples) * sample_rate / audio.frame_rate))
+                waveforms.append(resampled)
 
-        sample_rate = 44100
-        waveforms = []
+                current_step += 1
+                if callback:
+                    callback(current_step, f"Loaded/resampled {os.path.basename(file)}", total_steps)
 
-        # 1) Load + resample both
-        for file in unique_files:
-            audio = AudioSegment.from_file(file)
-            # Normalization factor for e.g. 16-bit PCM:
-            divisor = float(2 ** (8 * audio.sample_width - 1))
-            samples = np.array(audio.get_array_of_samples()) / divisor
+            # 2) Align to min length
+            min_len = min(len(w) for w in waveforms)
+            waveforms = [w[:min_len] for w in waveforms]
 
-            # Resample to common sample_rate
-            resampled = resample(samples, int(len(samples) * sample_rate / audio.frame_rate))
-            waveforms.append(resampled)
+            # 3) RMS-normalize each track for fair loudness comparison
+            for i in range(len(waveforms)):
+                rms = np.sqrt(np.mean(waveforms[i]**2))
+                if rms > 1e-9:
+                    waveforms[i] /= rms
+
+            # 4) Compute absolute difference in time domain
+            differences = np.abs(waveforms[0] - waveforms[1])
 
             current_step += 1
             if callback:
-                callback(current_step, f"Loaded/resampled {os.path.basename(file)}", total_steps)
+                callback(current_step, "Calculated differences", total_steps)
 
-        # 2) Align to min length
-        min_len = min(len(w) for w in waveforms)
-        waveforms = [w[:min_len] for w in waveforms]
+            # --- SPECTROGRAM DIFFERENCE ---
+            # Compute the magnitude STFT of each waveform
+            f1, t1, Zxx1 = stft(waveforms[0], fs=sample_rate, nperseg=2048, noverlap=1024)
+            f2, t2, Zxx2 = stft(waveforms[1], fs=sample_rate, nperseg=2048, noverlap=1024)
 
-        # 3) RMS-normalize each track for fair loudness comparison
-        for i in range(len(waveforms)):
-            rms = np.sqrt(np.mean(waveforms[i]**2))
-            if rms > 1e-9:
-                waveforms[i] /= rms
+            # Convert to magnitude
+            spec1 = np.abs(Zxx1)
+            spec2 = np.abs(Zxx2)
 
-        # 4) Compute absolute difference in time domain
-        differences = np.abs(waveforms[0] - waveforms[1])
+            # For plotting, we might align their time axes
+            min_t_len = min(spec1.shape[1], spec2.shape[1])
+            spec1 = spec1[:, :min_t_len]
+            spec2 = spec2[:, :min_t_len]
+            t_combined = t1[:min_t_len]
 
-        current_step += 1
-        if callback:
-            callback(current_step, "Calculated differences", total_steps)
+            # Take difference or ratio in the frequency domain
+            spec_diff = np.abs(spec1 - spec2)
 
-        # --- SPECTROGRAM DIFFERENCE ---
-        # Compute the magnitude STFT of each waveform
-        f1, t1, Zxx1 = stft(waveforms[0], fs=sample_rate, nperseg=2048, noverlap=1024)
-        f2, t2, Zxx2 = stft(waveforms[1], fs=sample_rate, nperseg=2048, noverlap=1024)
+            # 5) Plot results
+            plt.figure(figsize=(15, 10))
 
-        # Convert to magnitude
-        spec1 = np.abs(Zxx1)
-        spec2 = np.abs(Zxx2)
+            # Top row: waveforms
+            plt.subplot(4, 1, 1)
+            plt.plot(waveforms[0], label="Track 1 (RMS=1)", alpha=0.6)
+            plt.plot(waveforms[1], label="Track 2 (RMS=1)", alpha=0.6, linestyle='dashed')
+            plt.title("Waveforms (RMS-Normalized)")
+            plt.legend()
 
-        # For plotting, we might align their time axes
-        min_t_len = min(spec1.shape[1], spec2.shape[1])
-        spec1 = spec1[:, :min_t_len]
-        spec2 = spec2[:, :min_t_len]
-        t_combined = t1[:min_t_len]
+            # 2nd row: absolute difference
+            plt.subplot(4, 1, 2)
+            plt.plot(differences, color='red', label="|Track1 - Track2|")
+            plt.title("Time-Domain Differences")
+            plt.legend()
 
-        # Take difference or ratio in the frequency domain
-        spec_diff = np.abs(spec1 - spec2)
+            # 3rd row: spectrogram difference for Track 1
+            plt.subplot(4, 1, 3)
+            plt.title("Spectrogram Track 1 (Magnitude)")
+            plt.pcolormesh(t_combined, f1, 20*np.log10(spec1 + 1e-9), cmap='viridis', shading='auto')
+            plt.ylabel("Frequency [Hz]")
+            plt.xlabel("Time [sec]")
 
-        # 5) Plot results
-        plt.figure(figsize=(15, 10))
+            # 4th row: difference spectrogram
+            plt.subplot(4, 1, 4)
+            plt.title("Spectrogram Difference (|Spec1 - Spec2|)")
+            plt.pcolormesh(t_combined, f1, 20*np.log10(spec_diff + 1e-9), cmap='magma', shading='auto')
+            plt.ylabel("Frequency [Hz]")
+            plt.xlabel("Time [sec]")
 
-        # Top row: waveforms
-        plt.subplot(4, 1, 1)
-        plt.plot(waveforms[0], label="Track 1 (RMS=1)", alpha=0.6)
-        plt.plot(waveforms[1], label="Track 2 (RMS=1)", alpha=0.6, linestyle='dashed')
-        plt.title("Waveforms (RMS-Normalized)")
-        plt.legend()
+            plt.tight_layout()
+            plt.savefig(output_file)
+            plt.close()
 
-        # 2nd row: absolute difference
-        plt.subplot(4, 1, 2)
-        plt.plot(differences, color='red', label="|Track1 - Track2|")
-        plt.title("Time-Domain Differences")
-        plt.legend()
+            current_step += 1
+            if callback:
+                callback(current_step, f"Saved visualization to {output_file}", total_steps)
+            project.add_output("comparison", output_file)
+            pj_outputs.append(project)
 
-        # 3rd row: spectrogram difference for Track 1
-        plt.subplot(4, 1, 3)
-        plt.title("Spectrogram Track 1 (Magnitude)")
-        plt.pcolormesh(t_combined, f1, 20*np.log10(spec1 + 1e-9), cmap='viridis', shading='auto')
-        plt.ylabel("Frequency [Hz]")
-        plt.xlabel("Time [sec]")
-
-        # 4th row: difference spectrogram
-        plt.subplot(4, 1, 4)
-        plt.title("Spectrogram Difference (|Spec1 - Spec2|)")
-        plt.pcolormesh(t_combined, f1, 20*np.log10(spec_diff + 1e-9), cmap='magma', shading='auto')
-        plt.ylabel("Frequency [Hz]")
-        plt.xlabel("Time [sec]")
-
-        plt.tight_layout()
-        plt.savefig(output_file)
-        plt.close()
-
-        current_step += 1
-        if callback:
-            callback(current_step, f"Saved visualization to {output_file}", total_steps)
-
-        return [output_file] + unique_files
+        return pj_outputs
 
     def register_api_endpoint(self, api) -> Any:
         pass

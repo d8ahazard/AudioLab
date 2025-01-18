@@ -215,11 +215,12 @@ class VC:
             rms_mix_rate,
             protect,
             format1,
+            project_dir,
     ):
         outputs = []
 
         try:
-            opt_root = os.path.join(output_path, "cloned")
+            opt_root = os.path.join(project_dir, "cloned")
             os.makedirs(opt_root, exist_ok=True)
             first_path = paths[0]
             if not isinstance(first_path, str):

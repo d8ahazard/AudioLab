@@ -11,6 +11,7 @@ from scipy import signal
 
 from handlers.config import model_path, output_path
 from modules.audio_separator.audio_separator import separate_music
+from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 
@@ -237,7 +238,7 @@ class Separate(BaseWrapper):
         out_files.extend([final_vocals_path, final_bg_path])
         return out_files, [final_bg_path, final_vocals_path]
 
-    def process_audio(self, inputs: List[str], callback=None, **kwargs: Dict[str, Any]) -> List[str]:
+    def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         self.setup()
 
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
@@ -255,13 +256,15 @@ class Separate(BaseWrapper):
 
         separate_stems = filtered_kwargs.get("separate_stems", False)
 
-        filtered_inputs, outputs = self.filter_inputs(inputs, "audio")
-        output_dir = os.path.join(output_path, "audio_separator")
-
         all_outputs = []  # Everything, including intermediate steps
-        final_outputs = []  # The ones we want
-
-        for input_file in filtered_inputs:
+        outputs = []  # The ones we want
+        pj_outputs = []
+        for input_project in inputs:
+            project_outputs = []
+            input_file = input_project.src_file
+            output_dir = os.path.join(input_project.project_dir, "separated")
+            self.separator.output_dir = output_dir
+            os.makedirs(output_dir, exist_ok=True)
             original_basename = os.path.splitext(os.path.basename(input_file))[0]
 
             separated_stems = separate_music(
@@ -351,15 +354,18 @@ class Separate(BaseWrapper):
                         original_basename, out_files[file_idx]
                     )
 
-                final_outputs.append(current_path)
+                project_outputs.append(current_path)
 
-            outputs.extend(final_outputs)
+            input_project.add_output("separated", project_outputs)
+            outputs.extend(project_outputs)
 
-            for p in all_outputs:
-                if p not in outputs and os.path.exists(p):
-                    self.del_stem(p)
+            pj_outputs.append(input_project)
 
-        return outputs
+        for p in all_outputs:
+            if p not in outputs and os.path.exists(p):
+                self.del_stem(p)
+
+        return pj_outputs
 
     def del_stem(self, stem_path: str) -> bool:
         try:

@@ -3,17 +3,20 @@ import importlib
 import os
 import sys
 import traceback
+import xxhash
 from datetime import datetime
 from pathlib import Path
+from shutil import copyfile
 from typing import List, Tuple
 
 import gradio as gr
 from torchaudio._extension import _init_dll_path
 
 from handlers.args import ArgHandler
-from handlers.config import model_path
+from handlers.config import model_path, output_path
 from layouts.rvc_train import render as rvc_render
 from layouts.rvc_infer import render as rvc_infer_render
+from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
@@ -116,7 +119,8 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
         progress(step, desc, total)
 
     progress(0, f"Processing with {len(processors)} processors...")
-    all_outputs = []
+    outputs = []
+    inputs = [ProjectFiles(file_path) for file_path in inputs]
     for processor_title in processors:
         tgt_processor = get_processor(processor_title)
         processor_key = tgt_processor.title.replace(' ', '')
@@ -130,10 +134,12 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
         else:
             print(f"No settings found for {processor_title}.")
         outputs = tgt_processor.process_audio(inputs, progress_callback, **processor_settings)
-        all_outputs.extend(outputs)
         inputs = outputs
 
-    outputs = [output for output in all_outputs if os.path.exists(output)]
+    last_output_files = []
+    for output in outputs:
+        last_output_files.extend(output.last_outputs)
+    outputs = last_output_files
     output_audio_files = get_audio_files(outputs)
     output_image_files = get_image_files(outputs)
     output_images_and_audio = output_audio_files + output_image_files
