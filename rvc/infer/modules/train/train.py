@@ -122,8 +122,8 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
     # noinspection PyArgumentList
     dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
     torch.manual_seed(hps.train.seed)
-    if torch.cuda.is_available():
-        torch.cuda.set_device(rank)
+    # if torch.cuda.is_available():
+        # torch.cuda.set_device(rank)
 
     if hps.if_f0 == 1:
         train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)

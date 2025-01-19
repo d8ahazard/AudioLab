@@ -695,7 +695,7 @@ def render():
                 maximum=1000,
                 step=1,
                 label="Total Training Epochs",
-                value=40,
+                value=125,
                 interactive=True,
             )
             train_batch_size = gr.Slider(
