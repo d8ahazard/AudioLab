@@ -1,34 +1,34 @@
 # coding: utf-8
 import errno
+import gc
+import hashlib
+import os
 import shutil
 import tempfile
 import uuid
 import warnings
+from time import time
 from typing import List, Optional
 from urllib.request import urlopen, Request
 
-import torchaudio
-from torch.hub import READ_DATA_CHUNK
-from tqdm import tqdm
+import librosa
 import numpy as np
+import onnxruntime as ort
+import soundfile as sf
 import torch
 import torch.nn as nn
-import os
-import soundfile as sf
+import yaml
 from demucs import pretrained
 from demucs.apply import apply_model
-import onnxruntime as ort
-from time import time
-import librosa
-import hashlib
-from scipy import signal
-import gc
-import yaml
 from ml_collections import ConfigDict
-from modules.audio_separator.tfc_tdf_v3 import TFC_TDF_net
+from scipy import signal
 from scipy.signal import resample_poly
-from modules.audio_separator.segm_models import Segm_Models_Net
+from torch.hub import READ_DATA_CHUNK
+from tqdm import tqdm
+
 from handlers.config import app_path
+from modules.audio_separator.segm_models import Segm_Models_Net
+from modules.audio_separator.tfc_tdf_v3 import TFC_TDF_net
 
 warnings.filterwarnings("ignore")
 
