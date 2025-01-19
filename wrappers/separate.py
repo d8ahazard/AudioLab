@@ -297,72 +297,28 @@ class Separate(BaseWrapper):
                     all_outputs.append(current_path)
                     stems_to_filter.append(current_path)
 
+            transformations = [
+                ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", reverb_removal),
+                (delay_removal_model, "No Echo", echo_removal),
+                (delay_removal_model, "No Delay", delay_removal),
+                (crowd_removal_model, "No Crowd", crowd_removal),
+                (noise_removal_model, "No Noise", noise_removal),
+            ]
+
             for stem_path in stems_to_filter:
                 current_path = stem_path
                 stem_basename = os.path.basename(current_path)
 
-                # 3) Reverb Removal
-                if self._should_apply_transform(stem_basename, reverb_removal):
-                    self.separator.load_model("Reverb_HQ_By_FoxJoy.onnx")
-                    tgt_file = "No Reverb"
-                    out_files = self.separator.separate(current_path)
-                    out_files = self._fix_output_paths(output_dir, out_files)
-                    all_outputs.extend(out_files)
-                    file_idx = 0 if tgt_file in out_files[0] else 1
-                    current_path = self._rename_file(
-                        original_basename, out_files[file_idx]
-                    )
-
-                # 4) Echo Removal
-                if self._should_apply_transform(stem_basename, echo_removal):
-                    self.separator.load_model(delay_removal_model)
-                    tgt_file = "No Echo"
-                    out_files = self.separator.separate(current_path)
-                    out_files = self._fix_output_paths(output_dir, out_files)
-                    all_outputs.extend(out_files)
-                    file_idx = 0 if tgt_file in out_files[0] else 1
-                    current_path = self._rename_file(
-                        original_basename, out_files[file_idx]
-                    )
-
-                # 5) Delay Removal
-                if self._should_apply_transform(stem_basename, delay_removal):
-                    self.separator.load_model(delay_removal_model)
-                    tgt_file = "No Delay"
-                    out_files = self.separator.separate(current_path)
-                    out_files = self._fix_output_paths(output_dir, out_files)
-                    all_outputs.extend(out_files)
-                    file_idx = 0 if tgt_file in out_files[0] else 1
-                    current_path = self._rename_file(
-                        original_basename, out_files[file_idx]
-                    )
-
-                # 6) Crowd Removal
-                if self._should_apply_transform(stem_basename, crowd_removal):
-                    self.separator.load_model(crowd_removal_model)
-                    tgt_file = "No Crowd"
-                    out_files = self.separator.separate(current_path)
-                    out_files = self._fix_output_paths(output_dir, out_files)
-                    all_outputs.extend(out_files)
-                    file_idx = 0 if tgt_file in out_files[0] else 1
-                    current_path = self._rename_file(
-                        original_basename, out_files[file_idx]
-                    )
-
-                # 7) Noise Removal
-                if self._should_apply_transform(stem_basename, noise_removal):
-                    self.separator.load_model(noise_removal_model)
-                    tgt_file = "No Noise"
-                    out_files = self.separator.separate(current_path)
-                    out_files = self._fix_output_paths(output_dir, out_files)
-                    all_outputs.extend(out_files)
-                    file_idx = 0 if tgt_file in out_files[0] else 1
-                    current_path = self._rename_file(
-                        original_basename, out_files[file_idx]
-                    )
+                for model, tgt_file, transform_flag in transformations:
+                    if self._should_apply_transform(stem_basename, transform_flag):
+                        self.separator.load_model(model)
+                        out_files = self.separator.separate(current_path)
+                        out_files = self._fix_output_paths(output_dir, out_files)
+                        all_outputs.extend(out_files)
+                        file_idx = 0 if tgt_file in out_files[0] else 1
+                        current_path = self._rename_file(original_basename, out_files[file_idx])
 
                 project_outputs.append(current_path)
-
             project.add_output("stems", project_outputs)
             outputs.extend(project_outputs)
 
