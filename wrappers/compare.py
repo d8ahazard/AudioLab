@@ -50,8 +50,7 @@ class Compare(BaseWrapper):
         pj_outputs = []
         for project in inputs:
             outputs = []
-            input_files = project.last_outputs
-            inputs, _ = self.filter_inputs(input_files, "audio")
+            inputs, _ = self.filter_inputs(project, "audio")
 
             if len(inputs) >= 2:
                 msg = f"Expected exactly 2 unique audio files, got {len(inputs)}."

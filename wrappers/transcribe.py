@@ -29,7 +29,7 @@ class Transcribe(BaseWrapper):
             last_outputs = project.last_outputs.copy()
             output_folder = os.path.join(project.project_dir, "transcriptions")
             os.makedirs(output_folder, exist_ok=True)
-            filtered_inputs, _ = self.filter_inputs(project.last_outputs, "audio")
+            filtered_inputs, _ = self.filter_inputs(project, "audio")
             json_outputs = []  # Separate list for JSON files
             instrum_keys = ["(Instrumental)", "(Bass)", "(Drum)", "(Other)"]
             # Filter out any files with instrum_keys in the name

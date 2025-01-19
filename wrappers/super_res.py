@@ -157,8 +157,7 @@ class SuperResolution(BaseWrapper):
 
             for temp_file in os.listdir(temp_dir):
                 os.remove(os.path.join(temp_dir, temp_file))
-            pj_inputs = project.last_outputs
-            pj_inputs, _ = self.filter_inputs(pj_inputs, "audio")
+            pj_inputs, _ = self.filter_inputs(project, "audio")
             outputs = []
             for tgt_file in pj_inputs:
                 print(f"Processing {tgt_file}")

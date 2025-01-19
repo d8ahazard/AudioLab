@@ -19,7 +19,7 @@ class Merge(BaseWrapper):
             src_name, _ = os.path.splitext(os.path.basename(src_stem))
             output_folder = os.path.join(project.project_dir, "merged")
             os.makedirs(output_folder, exist_ok=True)
-            inputs, _ = self.filter_inputs(project.last_outputs, "audio")
+            inputs, _ = self.filter_inputs(project, "audio")
 
             # Set up output file details
             first_file = inputs[0]

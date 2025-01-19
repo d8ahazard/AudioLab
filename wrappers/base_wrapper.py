@@ -200,12 +200,15 @@ class BaseWrapper:
         return elem
 
     @staticmethod
-    def filter_inputs(inputs: List[ProjectFiles], input_type: str = "audio") -> Tuple[List[str], List[str]]:
+    def filter_inputs(project: ProjectFiles, input_type: str = "audio") -> Tuple[List[str], List[str]]:
         """
         Filter the inputs to only include files that exist.
         """
         filtered_inputs, outputs = [], []
         extensions = []
+        inputs = project.last_outputs
+        if not inputs:
+            inputs = [project.src_file]
         match input_type:
             case "audio":
                 extensions = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]

@@ -29,7 +29,7 @@ class Convert(BaseWrapper):
         pj_outputs = []
         for project in inputs:
             outputs = []
-            input_files, _ = self.filter_inputs(project.last_outputs, "audio")
+            input_files, _ = self.filter_inputs(project, "audio")
             non_mp3_inputs = [i for i in input_files if not i.endswith(".mp3")]
             if not non_mp3_inputs:
                 continue

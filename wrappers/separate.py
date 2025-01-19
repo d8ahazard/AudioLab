@@ -266,10 +266,10 @@ class Separate(BaseWrapper):
         all_outputs = []  # Everything, including intermediate steps
         outputs = []  # The ones we want
         pj_outputs = []
-        for input_project in inputs:
+        for project in inputs:
             project_outputs = []
-            input_file = input_project.src_file
-            output_dir = os.path.join(input_project.project_dir, "stems")
+            input_file = project.src_file
+            output_dir = os.path.join(project.project_dir, "stems")
             self.separator.output_dir = output_dir
             os.makedirs(output_dir, exist_ok=True)
             original_basename = os.path.splitext(os.path.basename(input_file))[0]
@@ -363,10 +363,10 @@ class Separate(BaseWrapper):
 
                 project_outputs.append(current_path)
 
-            input_project.add_output("stems", project_outputs)
+            project.add_output("stems", project_outputs)
             outputs.extend(project_outputs)
 
-            pj_outputs.append(input_project)
+            pj_outputs.append(project)
         if delete_extra_stems:
             for p in all_outputs:
                 if p not in outputs and os.path.exists(p):

@@ -30,7 +30,7 @@ class Remaster(BaseWrapper):
             outputs = []
             output_folder = os.path.join(project.project_dir, "remastered")
             os.makedirs(output_folder, exist_ok=True)
-            input_files, _ = self.filter_inputs(project.last_outputs, "audio")
+            input_files, _ = self.filter_inputs(project, "audio")
             for input_file in input_files:
                 callback(callback_step, f"Remastering {input_file}", len(inputs))
                 inputs_name, inputs_ext = os.path.splitext(os.path.basename(input_file))
