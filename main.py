@@ -1,3 +1,6 @@
+import multiprocessing as mp
+mp.set_start_method("spawn")
+
 import argparse
 import importlib
 import os
@@ -6,7 +9,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
-import multiprocessing as mp
+
 
 import gradio as gr
 from torchaudio._extension import _init_dll_path
@@ -19,7 +22,6 @@ from wrappers.base_wrapper import BaseWrapper
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
     _init_dll_path()
-mp.set_start_method("spawn")
 
 # Stop caching models in limbo!!
 hf_dir = os.path.join(model_path, "hf")
