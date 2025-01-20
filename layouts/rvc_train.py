@@ -550,14 +550,20 @@ def train1key(
         return "Please provide a project name."
     if project_name and existing_project_name:
         return "Please provide only one project name."
-    if not inputs:
-        return "Please provide input files."
 
     if (not project_name or project_name == "") and existing_project_name:
         print("Using existing project name")
         project_name = existing_project_name
         resuming_training = True
-        # Todo, add a bit that finds all the existing weights, picks one to resume from, etc.
+        input_dir = os.path.join(output_path, "voices", project_name, "raw")
+        if not os.path.exists(input_dir):
+            return f"Project {project_name} does not exist. Please provide a valid project name."
+        input_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir)]
+        inputs = input_files
+
+    if not inputs:
+        return "Please provide input files."
+
 
     def get_info_str(strr):
         infos.append(strr)
@@ -620,6 +626,9 @@ def train1key(
             project_version,
             gpus_rmvpe
         )
+    else:
+        yield get_info_str("Step1: Data already preprocessed")
+        yield get_info_str("Step2: Pitch features already extracted")
 
     # step3a:训练模型
     yield get_info_str("Step3a: Training model")
