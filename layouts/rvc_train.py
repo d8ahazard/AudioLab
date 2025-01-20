@@ -17,6 +17,7 @@ import torch
 import torchaudio
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
+import multiprocessing as mp
 
 from handlers.config import model_path, output_path, app_path
 from rvc.configs.config import Config
@@ -403,6 +404,7 @@ def click_train(
     logger.info(f"Training with hparams: {hparams}")
 
     # Directly call the main() function from train script.
+    mp.set_start_method("spawn")
     train_main(hparams)
     return "Training complete."
 
