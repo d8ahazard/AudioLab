@@ -790,13 +790,13 @@ def render():
                 )
                 pretrained_generator = gr.Textbox(
                     label="Pretrained Generator Path",
-                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G40k.pth"),
+                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G48k.pth"),
                     interactive=True,
                     visible=False
                 )
                 pretrained_discriminator = gr.Textbox(
                     label="Pretrained Discriminator Path",
-                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0D40k.pth"),
+                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0D48k.pth"),
                     interactive=True,
                     visible=False
                 )
