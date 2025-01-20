@@ -3,6 +3,7 @@ from typing import Any, List, Dict
 
 from pydub import AudioSegment
 
+from handlers.reverb import apply_reverb
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
@@ -20,7 +21,21 @@ class Merge(BaseWrapper):
             output_folder = os.path.join(project.project_dir, "merged")
             os.makedirs(output_folder, exist_ok=True)
             inputs, _ = self.filter_inputs(project, "audio")
-
+            ir_file = os.path.join(project.project_dir, "impulse_response.ir")
+            if os.path.exists(ir_file):
+                new_inputs = []
+                for stem in inputs:
+                    if "(Vocals)" in stem and "(BG_Vocals)" not in stem:
+                        print(f"Applying impulse response (Reverb) to vocal file {stem}...")
+                        try:
+                            reverb_stem = apply_reverb(stem, ir_file, os.path.dirname(stem))
+                            new_inputs.append(reverb_stem)
+                        except Exception as e:
+                            print(f"Error applying reverb to {stem}: {e}")
+                            new_inputs.append(stem)
+                    else:
+                        new_inputs.append(stem)
+                inputs = new_inputs
             # Set up output file details
             first_file = inputs[0]
             file_name, file_ext = os.path.splitext(os.path.basename(first_file))
