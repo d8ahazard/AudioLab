@@ -270,6 +270,7 @@ def extract_f0_feature(num_processors, extract_method, use_pitch_guidance, exp_d
 
 def click_train(
         voice_name,
+        resume_training,
         sample_rate,
         use_pitch_guidance,
         speaker_index,
@@ -352,6 +353,9 @@ def click_train(
     # 生成config#无需生成config
     # cmd = python_cmd + " train_nsf_sim_cache_sid_load_pretrain.py -e mi-test -sr 40k -f0 1 -bs 4 -g 0 -te 10 -se 5 -pg pretrained/f0G40k.pth -pd pretrained/f0D40k.pth -l 1 -c 0"
     logger.info("Use gpus: %s", str(more_gpu_ids))
+    # If resume_training is True, last_epoch should be the last epoch number.
+    if resume_training:
+        existing_pretrained_dir = os.path.join(exp_dir, "checkpoints")
     if pretrained_generator == "":
         logger.info("No pretrained Generator")
     if pretrained_discriminator == "":
@@ -520,6 +524,7 @@ def train_index(exp_dir, model_version):
 
 def train1key(
         project_name,
+        existing_project_name,
         separate_vocals,
         tgt_sample_rate,
         use_pitch_guidance,
@@ -540,12 +545,19 @@ def train1key(
         gpus_rmvpe,
 ):
     infos = []
-
-    if not project_name or project_name == "":
+    resuming_training = False
+    if (not project_name or project_name == "") and (not existing_project_name or existing_project_name == ""):
         return "Please provide a project name."
+    if project_name and existing_project_name:
+        return "Please provide only one project name."
     if not inputs:
         return "Please provide input files."
-    # Determine the total length in time of input files
+
+    if (not project_name or project_name == "") and existing_project_name:
+        print("Using existing project name")
+        project_name = existing_project_name
+        resuming_training = True
+        # Todo, add a bit that finds all the existing weights, picks one to resume from, etc.
 
     def get_info_str(strr):
         infos.append(strr)
@@ -556,52 +568,64 @@ def train1key(
     os.makedirs(data_dir, exist_ok=True)
     if num_cpus == 0:
         num_cpus = 1
+
+    gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
+    feature_dir = os.path.join(exp_dir, "3_feature256" if project_version == "v1" else "3_feature768")
+    f0_dir = os.path.join(exp_dir, "2a_f0")
+    f0nsf_dir = os.path.join(exp_dir, "2b-f0nsf")
+    raw_dir = os.path.join(exp_dir, "raw")
+    missing_dirs = []
+    for d in [gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, raw_dir]:
+        if not os.path.exists(d):
+            missing_dirs.append(d)
     # Preprocess
-    yield get_info_str("Step1: Preprocessing data")
-    vocal_files = inputs
-    if separate_vocals:
-        vocal_files, bg_vocal_files = separate_vocal(inputs)
-        yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
+    if not resuming_training or len(missing_dirs) > 0:
+        yield get_info_str("Step1: Preprocessing data")
+        vocal_files = inputs
+        if separate_vocals and not os.path.exists(raw_dir):
+            vocal_files, bg_vocal_files = separate_vocal(inputs)
+            yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
 
-    for f in vocal_files:
-        try:
-            base_name, ext = os.path.splitext(os.path.basename(f))
-            output_file = os.path.join(data_dir, f"{base_name}.wav")
+        for f in vocal_files:
+            try:
+                base_name, ext = os.path.splitext(os.path.basename(f))
+                output_file = os.path.join(data_dir, f"{base_name}.wav")
 
-            if ext.lower() != ".wav":
-                # Use FFmpeg for conversion
-                temp_output = f"{base_name}_temp.wav"
-                subprocess.run([
-                    "ffmpeg", "-i", f, temp_output, "-y", "-loglevel", "error"
-                ], check=True)
+                if ext.lower() != ".wav":
+                    # Use FFmpeg for conversion
+                    temp_output = f"{base_name}_temp.wav"
+                    subprocess.run([
+                        "ffmpeg", "-i", f, temp_output, "-y", "-loglevel", "error"
+                    ], check=True)
 
-                # Ensure the file is readable and has valid data
-                audio, samplerate = torchaudio.load(temp_output)
-                torchaudio.save(output_file, audio, sample_rate=samplerate)
-                os.remove(temp_output)
-            else:
-                # If already a WAV file, copy it to the data_dir
-                shutil.copyfile(f, output_file)
+                    # Ensure the file is readable and has valid data
+                    audio, samplerate = torchaudio.load(temp_output)
+                    torchaudio.save(output_file, audio, sample_rate=samplerate)
+                    os.remove(temp_output)
+                else:
+                    # If already a WAV file, copy it to the data_dir
+                    shutil.copyfile(f, output_file)
 
-        except Exception as e:
-            print(f"Error processing file {f}: {e}")
-    preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus)
+            except Exception as e:
+                print(f"Error processing file {f}: {e}")
+        preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus)
 
-    # Extract pitch features
-    yield get_info_str("Step2: Extracting pitch features")
-    extract_f0_feature(
-        num_cpus,
-        extraction_method,
-        use_pitch_guidance,
-        exp_dir,
-        project_version,
-        gpus_rmvpe
-    )
+        # Extract pitch features
+        yield get_info_str("Step2: Extracting pitch features")
+        extract_f0_feature(
+            num_cpus,
+            extraction_method,
+            use_pitch_guidance,
+            exp_dir,
+            project_version,
+            gpus_rmvpe
+        )
 
     # step3a:训练模型
     yield get_info_str("Step3a: Training model")
     click_train(
         project_name,
+        resuming_training,
         tgt_sample_rate,
         use_pitch_guidance,
         spk_id,
@@ -616,10 +640,35 @@ def train1key(
         save_weights_every,
         project_version,
     )
-    yield get_info_str("Training complete, now building index.")
-    # step3b:训练索引
-    [get_info_str(_) for _ in train_index(project_name, project_version)]
-    yield get_info_str("PRocessing complete.!")
+
+    index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
+    if not resuming_training or not os.path.exists(index_file):
+        yield get_info_str("Training complete, now building index.")
+        [get_info_str(_) for _ in train_index(project_name, project_version)]
+        yield get_info_str("PRocessing complete.!")
+
+
+def list_voice_projects():
+    output = [""]
+    if not os.path.exists(output_path) or not os.path.exists(os.path.join(output_path, "voices")):
+        return output
+    all_voices = [name for name in os.listdir(os.path.join(output_path, "voices")) if
+                  os.path.isdir(os.path.join(output_path, "voices", name))]
+    output.extend(all_voices)
+    return output
+
+
+def list_voice_projects_ui():
+    return gr.update(choices=list_voice_projects())
+
+
+def list_project_weights(project_dir):
+    if not project_dir or not os.path.exists(project_dir):
+        return []
+    ckpt_dir = os.path.join(project_dir, "checkpoints")
+    if not os.path.exists(ckpt_dir):
+        return []
+    return [name for name in os.listdir(ckpt_dir) if os.path.isdir(os.path.join(ckpt_dir, name))]
 
 
 def render():
@@ -628,68 +677,10 @@ def render():
     with gr.Row():
         with gr.Column():
             voice_name = gr.Textbox(label="Voice Name", value="")
-            separate_vocals = gr.Checkbox(label="Separate Vocals", value=True)
-            sample_rate = gr.Radio(
-                label="Target Sampling Rate",
-                choices=["40k", "48k"],
-                value="48k",
-                interactive=True,
-            )
-            use_pitch_guidance = gr.Radio(
-                label="Use Pitch Guidance",
-                choices=[True, False],
-                value=True,
-                interactive=True,
-            )
-            model_version = gr.Radio(
-                label="Model Version",
-                choices=["v1", "v2"],
-                value="v2",
-                interactive=True,
-                visible=True,
-            )
-            num_cpu_processes = gr.Slider(
-                minimum=0,
-                maximum=config.n_cpu,
-                step=1,
-                label="Number of CPU processes for pitch extraction and data processing",
-                value=int(np.ceil(config.n_cpu / 1.5)),
-                visible=config.n_cpu >= 1,
-                interactive=True,
-            )
-            speaker_id = gr.Slider(
-                minimum=0,
-                maximum=4,
-                step=1,
-                label="Speaker ID",
-                value=0,
-                interactive=True,
-            )
-            pitch_extraction_method = gr.Radio(
-                label="Pitch Extraction Method",
-                choices=["pm", "harvest", "dio", "rmvpe", "rmvpe_gpu"],
-                value="rmvpe_gpu",
-                interactive=True,
-            )
-            gpus_rmvpe = gr.Textbox(
-                label="Number of GPUs for RMVPE",
-                value=f"{gpus}-{gpus}",
-                interactive=True,
-                visible=F0GPUVisible,
-            )
-            pitch_extraction_method.change(
-                fn=change_f0_method,
-                inputs=[pitch_extraction_method],
-                outputs=[gpus_rmvpe],
-            )
-            save_epoch_frequency = gr.Slider(
-                minimum=1,
-                maximum=50,
-                step=1,
-                label="Save Checkpoint Frequency (in epochs)",
-                value=5,
-                interactive=True,
-            )
+            with gr.Row():
+                existing_project = gr.Dropdown(label="Existing Project", choices=list_voice_projects(), value="")
+                refresh_button = gr.Button("Refresh", variant="secondary")
+                refresh_button.click(fn=list_voice_projects_ui, outputs=[existing_project])
             total_epochs = gr.Slider(
                 minimum=2,
                 maximum=1000,
@@ -706,36 +697,105 @@ def render():
                 value=default_batch_size,
                 interactive=True,
             )
-            save_latest_only = gr.Radio(
-                label="Save Only the Latest Checkpoint to Save Disk Space",
-                choices=["Yes", "No"],
-                value="No",
-                interactive=True,
-            )
-            cache_dataset_to_gpu = gr.Radio(
-                label="Cache Dataset to GPU",
-                choices=["Yes", "No"],
-                value="Yes",
-                interactive=True,
-            )
-            save_weights_each_ckpt = gr.Radio(
-                label="Save Weights at Each Checkpoint",
-                choices=["Yes", "No"],
-                value="No",
-                interactive=True,
-            )
-            pretrained_generator = gr.Textbox(
-                label="Pretrained Generator Path",
-                value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G40k.pth"),
-                interactive=True,
-                visible=False
-            )
-            pretrained_discriminator = gr.Textbox(
-                label="Pretrained Discriminator Path",
-                value=os.path.join(model_path, "rvc", "pretrained_v2", "f0D40k.pth"),
-                interactive=True,
-                visible=False
-            )
+            separate_vocals = gr.Checkbox(label="Separate Vocals", value=True)
+            with gr.Accordion(label="Advanced", open=False):
+
+                sample_rate = gr.Radio(
+                    label="Target Sampling Rate",
+                    choices=["40k", "48k"],
+                    value="48k",
+                    interactive=True,
+                )
+                use_pitch_guidance = gr.Radio(
+                    label="Use Pitch Guidance",
+                    choices=[True, False],
+                    value=True,
+                    interactive=True,
+                )
+                model_version = gr.Radio(
+                    label="Model Version",
+                    choices=["v1", "v2"],
+                    value="v2",
+                    interactive=True,
+                    visible=True,
+                )
+                num_cpu_processes = gr.Slider(
+                    minimum=0,
+                    maximum=config.n_cpu,
+                    step=1,
+                    label="Number of CPU processes for pitch extraction and data processing",
+                    value=int(np.ceil(config.n_cpu / 1.5)),
+                    visible=config.n_cpu >= 1,
+                    interactive=True,
+                )
+                speaker_id = gr.Slider(
+                    minimum=0,
+                    maximum=4,
+                    step=1,
+                    label="Speaker ID",
+                    value=0,
+                    interactive=True,
+                )
+                pitch_extraction_method = gr.Radio(
+                    label="Pitch Extraction Method",
+                    choices=["pm", "harvest", "dio", "rmvpe", "rmvpe_gpu"],
+                    value="rmvpe_gpu",
+                    interactive=True,
+                )
+                gpus_rmvpe = gr.Textbox(
+                    label="Number of GPUs for RMVPE",
+                    value=f"{gpus}-{gpus}",
+                    interactive=True,
+                    visible=F0GPUVisible,
+                )
+                pitch_extraction_method.change(
+                    fn=change_f0_method,
+                    inputs=[pitch_extraction_method],
+                    outputs=[gpus_rmvpe],
+                )
+                save_epoch_frequency = gr.Slider(
+                    minimum=1,
+                    maximum=50,
+                    step=1,
+                    label="Save Checkpoint Frequency (in epochs)",
+                    value=5,
+                    interactive=True,
+                )
+                save_latest_only = gr.Radio(
+                    label="Save Only the Latest Checkpoint to Save Disk Space",
+                    choices=["Yes", "No"],
+                    value="No",
+                    interactive=True,
+                )
+                cache_dataset_to_gpu = gr.Radio(
+                    label="Cache Dataset to GPU",
+                    choices=["Yes", "No"],
+                    value="Yes",
+                    interactive=True,
+                )
+                save_weights_each_ckpt = gr.Radio(
+                    label="Save Weights at Each Checkpoint",
+                    choices=["Yes", "No"],
+                    value="Yes",
+                    interactive=True,
+                )
+                pretrained_generator = gr.Textbox(
+                    label="Pretrained Generator Path",
+                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G40k.pth"),
+                    interactive=True,
+                    visible=False
+                )
+                pretrained_discriminator = gr.Textbox(
+                    label="Pretrained Discriminator Path",
+                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0D40k.pth"),
+                    interactive=True,
+                    visible=False
+                )
+                more_gpu_ids = gr.Textbox(
+                    label="Enter GPU IDs separated by `-` (e.g., `0-1-2` for GPUs 0, 1, and 2)",
+                    value=gpus,
+                    interactive=True,
+                )
             sample_rate.change(
                 change_sr2,
                 [sample_rate, use_pitch_guidance, model_version],
@@ -751,11 +811,7 @@ def render():
                 [use_pitch_guidance, sample_rate, model_version],
                 [pitch_extraction_method, gpus_rmvpe, pretrained_generator, pretrained_discriminator],
             )
-            more_gpu_ids = gr.Textbox(
-                label="Enter GPU IDs separated by `-` (e.g., `0-1-2` for GPUs 0, 1, and 2)",
-                value=gpus,
-                interactive=True,
-            )
+
         with gr.Column():
             input_files = gr.File(label="Input Files", type="filepath", file_types=["audio"], file_count="multiple")
         with gr.Column():
@@ -764,6 +820,7 @@ def render():
                 train1key,
                 [
                     voice_name,
+                    existing_project,
                     separate_vocals,
                     sample_rate,
                     use_pitch_guidance,
@@ -802,7 +859,6 @@ def render():
             info_value = f"Total length of input files: {total_length:.2f} minutes."
             info_value += "\nRecommended is 30-60 minutes."
             return gr.update(value=info_value)
-
 
         input_files.change(
             fn=update_time_info,
