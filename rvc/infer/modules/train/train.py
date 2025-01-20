@@ -69,7 +69,7 @@ class EpochRecorder:
 
 def train_main(hps):
     os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
-    #n_gpus = len(hps.gpus.split("-"))
+    # n_gpus = len(hps.gpus.split("-"))
     global global_step
     global_step = 0
 
@@ -123,7 +123,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
     dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
     torch.manual_seed(hps.train.seed)
     # if torch.cuda.is_available():
-        # torch.cuda.set_device(rank)
+    # torch.cuda.set_device(rank)
 
     if hps.if_f0 == 1:
         train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
@@ -195,22 +195,15 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
         net_g = DDP(net_g)
         net_d = DDP(net_d)
 
-    try:  # 如果能加载自动resume
-        _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d
-        )  # D多半加载没事
-        if rank == 0:
-            logger.info("loaded D")
-        _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g
-        )
-        global_step = (epoch_str - 1) * len(train_loader)
-    except:
+    d_path = utils.latest_checkpoint_path(os.path.join(hps.model_dir, "saves"), "D_*.pth")
+    g_path = utils.latest_checkpoint_path(os.path.join(hps.model_dir, "saves"), "G_*.pth")
+    if d_path is None or g_path is None:
+        logger.info("No checkpoint found, using default initialization.")
         epoch_str = 1
         global_step = 0
         if hps.pretrainG != "":
             if rank == 0:
-                logger.info("loaded pretrained %s" % hps.pretrainG)
+                logger.info(f"Loading (initial) pretrainedG {hps.pretrainG}.")
             if hasattr(net_g, "module"):
                 logger.info(
                     net_g.module.load_state_dict(
@@ -225,7 +218,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
                 )
         if hps.pretrainD != "":
             if rank == 0:
-                logger.info("loaded pretrained %s" % hps.pretrainD)
+                logger.info(f"Loading (initial) pretrainedD {hps.pretrainD}.")
             if hasattr(net_d, "module"):
                 logger.info(
                     net_d.module.load_state_dict(
@@ -238,6 +231,13 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
                         torch.load(hps.pretrainD, map_location="cpu")["model"]
                     )
                 )
+    else:
+        logger.info(f"Loading checkpoint weights from {d_path} and {g_path}.")
+        _, _, _, epoch_str = utils.load_checkpoint(d_path, net_d, optim_d)
+        if rank == 0:
+            logger.info("loaded D")
+        _, _, _, epoch_str = utils.load_checkpoint(g_path, net_g, optim_g)
+        global_step = (epoch_str - 1) * len(train_loader)
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
         optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2
@@ -562,7 +562,7 @@ def train_and_evaluate(
                 optim_g,
                 hps.train.learning_rate,
                 epoch,
-                os.path.join(hps.model_dir, "G_{}.pth".format(global_step)),
+                os.path.join(hps.model_dir, "saves", "G_{}.pth".format(global_step)),
             )
             utils.save_checkpoint(
                 net_d,

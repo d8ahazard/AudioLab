@@ -187,7 +187,7 @@ def summarize(
 def latest_checkpoint_path(dir_path, regex="G_*.pth"):
     f_list = glob.glob(os.path.join(dir_path, regex))
     f_list.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
-    x = f_list[-1]
+    x = f_list[-1] if len(f_list) > 0 else None
     logger.debug(x)
     return x
 
