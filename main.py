@@ -1,6 +1,4 @@
-import multiprocessing as mp
-mp.set_start_method("spawn")
-
+import handlers.processing # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 import argparse
 import importlib
 import os
