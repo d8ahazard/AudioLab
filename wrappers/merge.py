@@ -28,8 +28,10 @@ class Merge(BaseWrapper):
                     if "(Vocals)" in stem and "(BG_Vocals)" not in stem:
                         print(f"Applying impulse response (Reverb) to vocal file {stem}...")
                         try:
-                            reverb_stem = apply_reverb(stem, ir_file, os.path.dirname(stem))
-                            new_inputs.append(reverb_stem)
+                            stem_name, ext = os.path.splitext(os.path.basename(stem))
+                            reverb_stem_path = os.path.join(output_folder, f"{stem_name}_(Reverb){ext}")
+                            reverb_stem = apply_reverb(stem, ir_file, reverb_stem_path)
+                            new_inputs.append(reverb_stem_path)
                         except Exception as e:
                             print(f"Error applying reverb to {stem}: {e}")
                             new_inputs.append(stem)

@@ -10,7 +10,7 @@ from audio_separator.separator import Separator
 from scipy import signal
 
 from handlers.config import model_path, output_path
-from handlers.reverb import extract_ir
+from handlers.reverb import extract_reverb
 from modules.audio_separator.audio_separator import separate_music
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
@@ -318,13 +318,13 @@ class Separate(BaseWrapper):
                         all_outputs.extend(out_files)
                         file_idx = 0 if tgt_file in out_files[0] else 1
                         current_path = self._rename_file(original_basename, out_files[file_idx])
-                        if tgt_file == "No Echo" and "(Vocals)" in stem_basename:
+                        if tgt_file == "No Reverb" and "(Vocals)" in stem_basename:
                             print(f"Extracting IR for {current_path}")
                             reverb_path_idx = 1 if file_idx == 0 else 0
                             reverb_file = out_files[reverb_path_idx]
                             ir_output_path = os.path.join(project.project_dir, "impulse_response.ir")
                             try:
-                                impulse_response = extract_ir(current_path, reverb_file, ir_output_path)
+                                impulse_response = extract_reverb(current_path, reverb_file, ir_output_path)
                             except Exception as e:
                                 print(f"Error extracting IR: {e}")
                                 impulse_response = None
