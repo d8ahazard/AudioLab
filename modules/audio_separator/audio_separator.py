@@ -752,7 +752,7 @@ def predict_with_model():
     # Process each input file
     current_step = 0
     for i, input_audio in enumerate(options['input_audio']):
-        callback(current_step, f"Processing {input_audio}", total_steps)
+        callback(current_step / total_steps, f"Processing {input_audio}", total_steps)
         # If the input file is a mp3, convert it to a wav with ffmpeg at 44100 Hz
         if input_audio.endswith('.mp3'):
             wav_replacement = os.path.splitext(input_audio)[0] + '.wav'
@@ -764,12 +764,12 @@ def predict_with_model():
         if len(audio.shape) == 1:
             audio = np.stack([audio, audio], axis=0)
         current_step += 1
-        callback(current_step, f"Loaded {input_audio}", total_steps)
+        callback(current_step / total_steps, f"Loaded {os.path.basename(input_audio)}", total_steps)
 
         # Step 2: Separate audio
         result, sample_rates = model.separate_music_file(audio.T, sr, i, len(options['input_audio']))
         current_step += 1
-        callback(current_step, f"Separated {input_audio}", total_steps)
+        callback(current_step / total_steps, f"Separated {os.path.basename(input_audio)}", total_steps)
 
         # Step 3: Write output files
         for instrum in model.instruments:
@@ -794,7 +794,7 @@ def predict_with_model():
         #     output_files.append(out_path)
 
         current_step += 1
-        callback(current_step, f"Completed processing {input_audio}", total_steps)
+        callback(current_step / total_steps, f"Completed processing {os.path.basename(input_audio)}", total_steps)
 
     callback(total_steps, "All files processed", total_steps)
     return output_files

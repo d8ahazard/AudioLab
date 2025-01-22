@@ -30,8 +30,11 @@ class Merge(BaseWrapper):
                         try:
                             stem_name, ext = os.path.splitext(os.path.basename(stem))
                             reverb_stem_path = os.path.join(output_folder, f"{stem_name}_(Reverb){ext}")
-                            reverb_stem = apply_reverb(stem, ir_file, reverb_stem_path)
-                            new_inputs.append(reverb_stem_path)
+                            if os.path.exists(ir_file):
+                                reverb_stem = apply_reverb(stem, ir_file, reverb_stem_path)
+                                new_inputs.append(reverb_stem_path)
+                            else:
+                                new_inputs.append(stem)
                         except Exception as e:
                             print(f"Error applying reverb to {stem}: {e}")
                             new_inputs.append(stem)

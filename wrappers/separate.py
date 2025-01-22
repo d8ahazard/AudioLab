@@ -49,6 +49,12 @@ class Separate(BaseWrapper):
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
+        "store_reverb_ir": TypedInput(
+            default=False,
+            description="Store impulse response for reverb removal. If enabled, will be automatically re-applied on merge.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
         "echo_removal": TypedInput(
             default="Nothing",
             description="Remove echo: Nothing, Vocals Only, or All Stems.",
@@ -257,6 +263,7 @@ class Separate(BaseWrapper):
         crowd_removal = filtered_kwargs.get("crowd_removal", "All")
         noise_removal = filtered_kwargs.get("noise_removal", "All")
         delete_extra_stems = filtered_kwargs.get("delete_extra_stems", True)
+        store_reverb_ir = filtered_kwargs.get("store_reverb_ir", False)
 
         delay_removal_model = filtered_kwargs.get("delay_removal_model", "UVR-De-Echo-Normal.pth")
         noise_removal_model = filtered_kwargs.get("noise_removal_model", "UVR-DeNoise.pth")
@@ -318,13 +325,14 @@ class Separate(BaseWrapper):
                         all_outputs.extend(out_files)
                         file_idx = 0 if tgt_file in out_files[0] else 1
                         current_path = self._rename_file(original_basename, out_files[file_idx])
-                        if tgt_file == "No Reverb" and "(Vocals)" in stem_basename:
+                        if tgt_file == "No Reverb" and "(Vocals)" in stem_basename and store_reverb_ir:
                             print(f"Extracting IR for {current_path}")
                             reverb_path_idx = 1 if file_idx == 0 else 0
                             reverb_file = out_files[reverb_path_idx]
                             ir_output_path = os.path.join(project.project_dir, "impulse_response.ir")
                             try:
                                 impulse_response = extract_reverb(current_path, reverb_file, ir_output_path)
+                                print(f"Extracted IR: {impulse_response}")
                             except Exception as e:
                                 print(f"Error extracting IR: {e}")
                                 impulse_response = None
