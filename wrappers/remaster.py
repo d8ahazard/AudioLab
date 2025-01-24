@@ -9,10 +9,11 @@ from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 class Remaster(BaseWrapper):
     title = "Remaster"
+    description = "Remaster audio files using a reference track. Uses Matchering."
     priority = 4
     allowed_kwargs = {
-        "reference": TypedInput(
-            description="Reference track",
+        "reference_track": TypedInput(
+            description="The reference track to use for the remastering process.",
             default=None,
             type=str,
             gradio_type="File"
@@ -20,7 +21,7 @@ class Remaster(BaseWrapper):
     }
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
-        reference_file = kwargs.get("reference")
+        reference_file = kwargs.get("reference_track")
         if not reference_file:
             raise ValueError("Reference track not provided")
         callback(0, f"Remastering {len(inputs)} audio files", len(inputs))

@@ -11,7 +11,7 @@ from wrappers.base_wrapper import BaseWrapper
 
 class Transcribe(BaseWrapper):
     title = "Transcribe"
-    description = "Transcribe audio files"
+    description = "Transcribe audio files using WhisperX."
     priority = 100
     model = None
     model_a = None

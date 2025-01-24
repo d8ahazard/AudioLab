@@ -9,10 +9,11 @@ class Convert(BaseWrapper):
     priority = 10
     title = "Convert"
     default = True
+    description = "Convert audio files to MP3 format."
     allowed_kwargs = {
         "bitrate": TypedInput(
             description="Bitrate for the output MP3 file",
-            default="192k",  # Default bitrate used by FFMPEG when unspecified
+            default="320k",  # Default bitrate used by FFMPEG when unspecified
             type=str,
             gradio_type="Dropdown",
             choices=["64k", "96k", "128k", "160k", "192k", "224k", "256k", "320k"],
@@ -38,6 +39,8 @@ class Convert(BaseWrapper):
             for input_file in non_mp3_inputs:
                 file_name, ext = os.path.splitext(os.path.basename(input_file))
                 output_file = os.path.join(output_folder, f"{file_name}.mp3")
+                if os.path.exists(output_file):
+                    os.remove(output_file)
                 # Convert to MP3
                 os.system(f'ffmpeg -i "{input_file}" -b:a {bitrate} "{output_file}"')
                 outputs.append(output_file)

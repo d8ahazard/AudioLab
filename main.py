@@ -168,11 +168,25 @@ if __name__ == '__main__':
     # Set up the UI
     wrappers, enabled_wrappers = list_wrappers()
     arg_handler = BaseWrapper().arg_handler
+    for wrapper_name in wrappers:
+        processor = get_processor(wrapper_name)
+        processor.register_descriptions(arg_handler)
 
-    with gr.Blocks(title='AudioLab') as ui:
+    with open(project_root / 'css' / 'ui.css', 'r') as css_file:
+        css = css_file.read()
+        css = f'<style type="text/css">{css}</style>'
+    # Load the contents of ./js/ui.js
+    with open(project_root / 'js' / 'ui.js', 'r') as js_file:
+        js = js_file.read()
+        js += f"\n{arg_handler.get_descriptions_js()}"
+        js = f'<script type="text/javascript">{js}</script>'
+        js += f"\n{css}"
+
+    print(f"Descriptions JS: {js}")
+    with gr.Blocks(title='AudioLab', head=js) as ui:
         with gr.Tabs():
             with gr.Tab(label='Process'):
-                processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers)
+                processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers, elem_id='processor_list')
                 progress_display = gr.HTML(label='Progress', value='')
 
                 accordions = []

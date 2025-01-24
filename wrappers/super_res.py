@@ -50,10 +50,12 @@ def lr_filter(audio, cutoff, filter_type, order=12, sr=48000):
 
 
 class SuperResolution(BaseWrapper):
+    title = "Super Resolution"
+    description = "Upscale audio files to a higher sample rate using a pre-trained Super Resolution model."
     priority = 2
     allowed_kwargs = {
         "ddim_steps": TypedInput(
-            description="Number of inference steps",
+            description="The number of diffusion steps used during inference. A higher number provides better quality results but increases processing time.",
             default=50,
             ge=10,
             le=500,
@@ -61,7 +63,7 @@ class SuperResolution(BaseWrapper):
             gradio_type="Slider"
         ),
         "guidance_scale": TypedInput(
-            description="Scale for classifier free guidance",
+            description="The strength of classifier-free guidance applied during processing. Higher values produce sharper results but may reduce diversity in the output.",
             default=3.5,
             ge=1.0,
             le=20.0,
@@ -69,7 +71,7 @@ class SuperResolution(BaseWrapper):
             gradio_type="Slider"
         ),
         "overlap": TypedInput(
-            description="Overlap size",
+            description="The proportion of overlap between audio chunks during processing. Higher overlap helps smooth transitions but increases computation.",
             default=0.04,
             ge=0.0,
             le=0.5,
@@ -77,7 +79,7 @@ class SuperResolution(BaseWrapper):
             gradio_type="Slider"
         ),
         "chunk_size": TypedInput(
-            description="Chunk size",
+            description="The length of each audio chunk (in seconds) used for processing. Smaller chunks reduce memory usage but may increase transition artifacts.",
             default=10.24,
             le=20.0,
             ge=5.0,
@@ -85,7 +87,7 @@ class SuperResolution(BaseWrapper):
             gradio_type="Slider"
         ),
         "seed": TypedInput(
-            description="Random seed. Leave blank to randomize the seed",
+            description="The random seed for reproducibility. Set to -1 for a randomized seed, which can produce varied outputs on each run.",
             default=-1,
             type=int,
             ge=-1,
@@ -93,18 +95,18 @@ class SuperResolution(BaseWrapper):
             gradio_type="Slider"
         ),
         "output_folder": TypedInput(
-            description="Output folder",
+            description="The directory where the processed audio files will be saved. If not provided, files are saved in a default location.",
             default=None,
             type=str,
             render=False
         ),
         "tgt_ensemble": TypedInput(
-            description="Enable target audio ensemble",
+            description="When enabled, combines the output with a low-pass filtered version of the original audio for enhanced quality and naturalness.",
             default=False,
             type=bool
         ),
         "tgt_cutoff": TypedInput(
-            description="Cutoff frequency for target audio ensemble",
+            description="Specifies the cutoff frequency (in Hz) for the target audio ensemble's low-pass filter. Adjust this to fine-tune the balance of high and low frequencies.",
             default=12000,
             ge=500,
             le=24000,

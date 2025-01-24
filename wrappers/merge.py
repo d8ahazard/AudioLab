@@ -10,6 +10,7 @@ from wrappers.base_wrapper import BaseWrapper
 
 class Merge(BaseWrapper):
     title = "Merge"
+    description = "Merge multiple audio files into a single track."
     priority = 5
     default = True
 
@@ -45,6 +46,9 @@ class Merge(BaseWrapper):
             first_file = inputs[0]
             file_name, file_ext = os.path.splitext(os.path.basename(first_file))
             output_file = os.path.join(output_folder, f"{src_name}_(Merged){file_ext}")
+            if os.path.exists(output_file):
+                # Delete it
+                os.remove(output_file)
 
             # Initialize progress tracking
             total_steps = len(inputs)

@@ -23,12 +23,13 @@ class Clone(BaseWrapper):
     priority = 3
     default = True
     vc = None
+    description = "Clone vocals from one audio file to another using a pre-trained RVC voice model."
     all_speakers = list_speakers()
     first_speaker = all_speakers[0] if all_speakers else None
     allowed_kwargs = {
         "selected_voice": TypedInput(
             default=first_speaker,
-            description="The voice model to use.",
+            description="The voice model to use for cloning vocals.",
             choices=list_speakers(),
             type=str,
             gradio_type="Dropdown",
@@ -37,39 +38,39 @@ class Clone(BaseWrapper):
         ),
         "clone_bg_vocals": TypedInput(
             default=False,
-            description="Clone background vocals (Not recommended with layred harmonies)",
+            description="Clone background vocals in addition to the main vocals. (Not recommended with layred harmonies, will cause artifacts.)",
             type=bool,
             gradio_type="Checkbox",
         ),
         "speaker_id": TypedInput(
             default=0,
-            description="Speaker ID to use.",
+            description="The ID of the speaker to use if the model was trained on multiple speakers.",
             type=int,
             gradio_type="Number",
         ),
         "pitch_shift": TypedInput(
             default=0,
-            description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down).",
+            description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down). Note, background vocals or instrumentals will not currently be pitch-shifted.",
             type=int,
             gradio_type="Number",
         ),
         "pitch_extraction_method": TypedInput(
             default="rmvpe",
-            description="Pitch extraction algorithm.",
+            description="Pitch extraction algorithm. 'rmvpe' is recommended for most cases.",
             type=str,
             choices=["pm", "harvest", "crepe", "rmvpe"],
             gradio_type="Dropdown",
         ),
         "export_format": TypedInput(
             default="wav",
-            description="Output file format.",
+            description="Output file format. (WAV is recommended for most cases.)",
             type=str,
             choices=["wav", "flac", "mp3", "m4a"],
             gradio_type="Dropdown",
         ),
         "resample_rate": TypedInput(
             default=0,
-            description="Resample rate (0 for no resampling).",
+            description="Resample rate (0 for no resampling, i.e. - keep the original sample rate.).",
             type=int,
             gradio_type="Slider",
             ge=0,
@@ -78,7 +79,7 @@ class Clone(BaseWrapper):
         ),
         "volume_mix_rate": TypedInput(
             default=1,
-            description="Mix ratio for volume envelope.",
+            description="Mix ratio for volume envelope. 1=original input audio volume.",
             type=float,
             gradio_type="Slider",
             ge=0,
@@ -86,17 +87,17 @@ class Clone(BaseWrapper):
             step=0.01,
         ),
         "accent_strength": TypedInput(
-            default=0.2,
-            description="Protect clear consonants and breaths.",
+            default=0.5,
+            description="A stronger accent strength will make the voice sound more like the target speaker, but may also introduce artifacts.",
             type=float,
             gradio_type="Slider",
             ge=0,
-            le=0.5,
+            le=1.0,
             step=0.01,
         ),
         "filter_radius": TypedInput(
-            default=3,
-            description="Median filter radius for 'harvest' pitch recognition.",
+            default=5,
+            description="Median filter radius for 'harvest' pitch recognition. (Higher values may help reduce auto-tune like artifacts.)",
             type=int,
             gradio_type="Slider",
             ge=0,

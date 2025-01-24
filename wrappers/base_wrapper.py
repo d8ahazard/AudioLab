@@ -64,6 +64,7 @@ class TypedInput:
         self.on_change = on_change
         self.on_clear = on_clear
         self.refresh = refresh
+        self.description = description
         self.gradio_type = gradio_type if gradio_type else self.pick_gradio_type()
 
     def pick_gradio_type(self):
@@ -133,6 +134,14 @@ class BaseWrapper:
                 with container:
                     self.create_gradio_element(self.__class__.__name__, key, value)
 
+    def register_descriptions(self, arg_handler: ArgHandler):
+        """
+        Register the descriptions for the elements.
+        """
+        arg_handler.register_description(self.title, "description", self.description)
+        for key, value in self.allowed_kwargs.items():
+            arg_handler.register_description(self.__class__.__name__, key, value.description)
+
     def create_gradio_element(self, class_name: str, key: str, value: TypedInput):
         """
         Create and register a Gradio element for the specified input field.
@@ -182,7 +191,10 @@ class BaseWrapper:
             case _:
                 elem = gr.Textbox(label=key, value=value.field.default)
 
-        self.arg_handler.register_element(class_name, arg_key, elem)
+        elem.__setattr__("elem_id", f"{class_name}_{arg_key}")
+        elem.__setattr__("elem_classes", ["hintitem"])
+
+        self.arg_handler.register_element(class_name, arg_key, elem, value.description)
         if isinstance(value.on_click, Callable):
             getattr(elem, "click")(value.on_click)
         if isinstance(value.on_input, Callable):

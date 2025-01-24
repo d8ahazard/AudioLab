@@ -17,87 +17,89 @@ from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 
 class Separate(BaseWrapper):
+    def register_api_endpoint(self, api) -> Any:
+        pass
+
     title = "Separate"
     priority = 1
     separator = None
     default = True
+    description = "Separate audio into distinct stems, such as vocals, instruments, and percussion, as well as remove reverb, echo, delay, crowd noise, and general background noise."
     file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
         "separate_stems": TypedInput(
             default=False,
-            description="Whether to separate the audio into instrument stems.",
+            description="Enable to separate the audio into distinct stems, such as vocals, instruments, and percussion. Useful for remixing or isolating specific elements.",
             type=bool,
             gradio_type="Checkbox"
         ),
         "delete_extra_stems": TypedInput(
             default=True,
-            description="Delete extra stems after processing.",
+            description="Automatically delete intermediate stem files after processing to save disk space. Disable this if you want to retain all intermediate outputs.",
             type=bool,
             gradio_type="Checkbox"
         ),
         "separate_bg_vocals": TypedInput(
             default=True,
-            description="Separate background vocals.",
+            description="Separates background vocals from the main vocals, creating an additional stem for detailed manipulation.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+        "store_reverb_ir": TypedInput(
+            default=False,
+            description="Store the impulse response for reverb removal. This allows for reapplying the reverb later during stem merging. Note: This is an experimental feature and may not always produce accurate results.",
             type=bool,
             gradio_type="Checkbox"
         ),
         "reverb_removal": TypedInput(
             default="Main Vocals",
-            description="Remove reverb: Nothing, Vocals Only, or All Stems.",
+            description="Choose the scope of reverb removal. Options include leaving it unchanged, applying it to main vocals only, all vocals, or all stems.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
-        "store_reverb_ir": TypedInput(
-            default=False,
-            description="Store impulse response for reverb removal. If enabled, will be automatically re-applied on merge.",
-            type=bool,
-            gradio_type="Checkbox"
-        ),
         "echo_removal": TypedInput(
             default="Nothing",
-            description="Remove echo: Nothing, Vocals Only, or All Stems.",
+            description="Select the level of echo removal. You can remove echo from nothing, main vocals, all vocals, or all stems.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "delay_removal": TypedInput(
             default="Nothing",
-            description="Remove delay: Nothing, Vocals Only, or All Stems.",
+            description="Specify the target for delay removal: nothing, main vocals, all vocals, or all stems. This reduces delay artifacts in the audio.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "crowd_removal": TypedInput(
             default="Nothing",
-            description="Remove crowd noise: Nothing, Vocals Only, or All Stems.",
+            description="Remove crowd noise from selected stems. Options include removing it from nothing, main vocals, all vocals, or all stems.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
         "noise_removal": TypedInput(
             default="Nothing",
-            description="Remove general noise: Nothing, Vocals Only, or All Stems.",
+            description="Remove general background noise from the selected stems. Choose from nothing, main vocals, all vocals, or all stems.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
-
-        # Model choices
         "delay_removal_model": TypedInput(
             default="UVR-De-Echo-Normal.pth",
-            description="The model used to remove echo/delay.",
+            description="Select the model used for echo and delay removal. Different models offer varying levels of performance and accuracy.",
             type=str,
             choices=[
                 "UVR-De-Echo-Normal.pth",
-                "UVR-DeEcho-DeReverb.pth",
+                "UVR-DeEcho-DeReverb.pth"
             ],
             gradio_type="Dropdown"
         ),
         "noise_removal_model": TypedInput(
             default="UVR-DeNoise.pth",
-            description="The model used to remove noise.",
+            description="Choose the model used for noise removal. The 'Lite' version may perform faster but with slightly reduced quality.",
             type=str,
             choices=[
                 "UVR-DeNoise.pth",
@@ -107,7 +109,7 @@ class Separate(BaseWrapper):
         ),
         "crowd_removal_model": TypedInput(
             default="UVR-MDX-NET_Crowd_HQ_1.onnx",
-            description="The model used to remove crowd noise.",
+            description="Select the model for removing crowd noise. Different models may excel in specific environments or audio scenarios.",
             type=str,
             choices=[
                 "UVR-MDX-NET_Crowd_HQ_1.onnx",

@@ -37,6 +37,7 @@ def generate_output_filename(file1: str, file2: str, output_folder: str) -> str:
 
 class Compare(BaseWrapper):
     title = "Compare"
+    description = "Compare two audio files using time-domain waveforms and spectrogram differences."
     priority = 1000000
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
