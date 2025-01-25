@@ -15,12 +15,15 @@ from torchaudio._extension import _init_dll_path
 from handlers.args import ArgHandler
 from handlers.config import model_path
 from layouts.rvc_train import render as rvc_render
+from layouts.tts import render_tts
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
     _init_dll_path()
 
+os.environ["COQUI_TOS_AGREED"] = "1"
+os.environ["TTS_HOME"] = model_path
 # Stop caching models in limbo!!
 hf_dir = os.path.join(model_path, "hf")
 transformers_dir = os.path.join(model_path, "transformers")
@@ -185,6 +188,8 @@ if __name__ == '__main__':
     print(f"Descriptions JS: {js}")
     with gr.Blocks(title='AudioLab', head=js) as ui:
         with gr.Tabs():
+            with gr.Tab(label='TTS'):
+                render_tts()
             with gr.Tab(label='Process'):
                 processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers, elem_id='processor_list')
                 progress_display = gr.HTML(label='Progress', value='')

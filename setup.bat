@@ -62,7 +62,7 @@ git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git &&
 )
 
 REM Ensure these are re-installed/correctly
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121 --force-reinstall
+pip install TTS torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url https://download.pytorch.org/whl/cu121 --force-reinstall
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
