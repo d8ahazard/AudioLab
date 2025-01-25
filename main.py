@@ -240,4 +240,5 @@ if __name__ == '__main__':
                 rvc_render()
 
     # Launch the UI with specified host and port
-    ui.launch(server_name=server_name, server_port=server_port)
+    favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
+    ui.launch(server_name=server_name, server_port=server_port, favicon_path=favicon_path)

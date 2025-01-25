@@ -34,6 +34,12 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
+        "separate_drums": TypedInput(
+            default=False,
+            description="Separate the drum track from the rest of the audio. This is useful for remixing or adjusting the drum track independently. Requires 'Separate Stems' to be enabled.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
         "delete_extra_stems": TypedInput(
             default=True,
             description="Automatically delete intermediate stem files after processing to save disk space. Disable this if you want to retain all intermediate outputs.",
@@ -272,6 +278,10 @@ class Separate(BaseWrapper):
         crowd_removal_model = filtered_kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx")
 
         separate_stems = filtered_kwargs.get("separate_stems", False)
+        separate_drums = filtered_kwargs.get("separate_drums", False)
+        drum_model = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
+        if not separate_stems:
+            print("Stem separation is disabled. Can't separate drums without stems.")
 
         all_outputs = []  # Everything, including intermediate steps
         outputs = []  # The ones we want
