@@ -6,7 +6,6 @@ from typing import Any, List, Dict
 import librosa
 import numpy as np
 import soundfile as sf
-from audio_separator.separator import Separator
 from scipy import signal
 
 from handlers.config import model_path, output_path
@@ -17,6 +16,16 @@ from wrappers.base_wrapper import BaseWrapper, TypedInput
 
 
 class Separate(BaseWrapper):
+    """
+    An advanced wrapper that:
+      1) Separates the audio into multiple stems or just vocals,
+      2) Optionally removes reverb/echo/noise/crowd,
+      3) Can do background-vocal splitting,
+      4) Can do advanced drum separation if requested.
+
+    Uses the new ensemble approach from `ensemble_separator.py` (via separate_music).
+    """
+
     def register_api_endpoint(self, api) -> Any:
         pass
 
@@ -24,7 +33,10 @@ class Separate(BaseWrapper):
     priority = 1
     separator = None
     default = True
-    description = "Separate audio into distinct stems, such as vocals, instruments, and percussion, as well as remove reverb, echo, delay, crowd noise, and general background noise."
+    description = (
+        "Separate audio into distinct stems (vocals, instruments, bass, drums, etc.), "
+        "optionally remove reverb, echo/delay, crowd noise, and general background noise."
+    )
     file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
@@ -37,6 +49,18 @@ class Separate(BaseWrapper):
         "separate_drums": TypedInput(
             default=False,
             description="Separate the drum track from the rest of the audio. This is useful for remixing or adjusting the drum track independently. Requires 'Separate Stems' to be enabled.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+        "separate_woodwinds": TypedInput(
+            default=False,
+            description="Separate the woodwind instruments from the rest of the audio. This is useful for remixing or adjusting the woodwind track independently. Requires 'Separate Stems' to be enabled.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+        "alt_bass_model": TypedInput(
+            default=False,
+            description="Use an alternative bass model for better bass separation. This may improve the quality of the bass stem if the bass part was played on an electric/plucked bass.",
             type=bool,
             gradio_type="Checkbox"
         ),
@@ -58,6 +82,7 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
+        # Large-scale removal toggles
         "reverb_removal": TypedInput(
             default="Main Vocals",
             description="Choose the scope of reverb removal. Options include leaving it unchanged, applying it to main vocals only, all vocals, or all stems.",
@@ -67,7 +92,7 @@ class Separate(BaseWrapper):
         ),
         "echo_removal": TypedInput(
             default="Nothing",
-            description="Select the level of echo removal. You can remove echo from nothing, main vocals, all vocals, or all stems.",
+            description="Specify the level of echo removal. You can remove echo from nothing, main vocals, all vocals, or all stems.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
@@ -93,62 +118,55 @@ class Separate(BaseWrapper):
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
+        # Model picks (optional if you want to override defaults)
         "delay_removal_model": TypedInput(
-            default="UVR-De-Echo-Normal.pth",
-            description="Select the model used for echo and delay removal. Different models offer varying levels of performance and accuracy.",
+            default="UVR-DeEcho-DeReverb.pth",
+            description="Which echo/delay removal model to use",
             type=str,
-            choices=[
-                "UVR-De-Echo-Normal.pth",
-                "UVR-DeEcho-DeReverb.pth"
-            ],
+            choices=["UVR-DeEcho-DeReverb.pth", "UVR-De-Echo-Normal.pth"],
             gradio_type="Dropdown"
         ),
         "noise_removal_model": TypedInput(
             default="UVR-DeNoise.pth",
             description="Choose the model used for noise removal. The 'Lite' version may perform faster but with slightly reduced quality.",
             type=str,
-            choices=[
-                "UVR-DeNoise.pth",
-                "UVR-DeNoise-Lite.pth"
-            ],
+            choices=["UVR-DeNoise.pth", "UVR-DeNoise-Lite.pth"],
             gradio_type="Dropdown"
         ),
         "crowd_removal_model": TypedInput(
             default="UVR-MDX-NET_Crowd_HQ_1.onnx",
             description="Select the model for removing crowd noise. Different models may excel in specific environments or audio scenarios.",
             type=str,
-            choices=[
-                "UVR-MDX-NET_Crowd_HQ_1.onnx",
-                "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
-            ],
+            choices=["UVR-MDX-NET_Crowd_HQ_1.onnx", "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"],
             gradio_type="Dropdown"
         ),
     }
 
     def setup(self):
+        """
+        Ensure the main models are downloaded using the same library (audio_separator.separator).
+        We might also pre-download reverb/noise/echo removal models here if we want to chain them.
+        """
+        from audio_separator.separator import Separator
+
         model_dir = os.path.join(model_path, "audio_separator")
         os.makedirs(model_dir, exist_ok=True)
-        output_dir = os.path.join(output_path, "audio_separator")
-        os.makedirs(output_dir, exist_ok=True)
+        out_dir = os.path.join(output_path, "audio_separator")
+        os.makedirs(out_dir, exist_ok=True)
 
-        self.separator = Separator(model_file_dir=model_dir, output_dir=output_dir)
+        self.separator = Separator(model_file_dir=model_dir, output_dir=out_dir)
 
-        required_models = [
-            "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
-            "Reverb_HQ_By_FoxJoy.onnx",
-            "UVR-De-Echo-Normal.pth",
+        needed = [
+            "deverb_bs_roformer_8_384dim_10depth.ckpt",
             "UVR-DeEcho-DeReverb.pth",
-            "UVR_MDXNET_KARA.onnx",
-            "UVR_MDXNET_KARA_2.onnx",
-            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
-            "UVR-MDX-NET_Crowd_HQ_1.onnx",
-            "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt",
-            "htdemucs_6s.yaml",
+            "UVR-De-Echo-Normal.pth",
             "UVR-DeNoise.pth",
-            "UVR-DeNoise-Lite.pth"
+            "UVR-DeNoise-Lite.pth",
+            "UVR-MDX-NET_Crowd_HQ_1.onnx",
+            "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
         ]
-        for model in required_models:
-            self.separator.download_model_files(model)
+        for m in needed:
+            self.separator.download_model_files(m)
 
     def separate_bg_multi(self, current_path, output_dir):
         """
@@ -176,6 +194,7 @@ class Separate(BaseWrapper):
             return filtered
 
         # Grab a base name for final output
+
         base_name = os.path.splitext(os.path.basename(current_path))[0]
 
         # 1) Use each model to separate Vocals & Instrumental.
@@ -194,7 +213,7 @@ class Separate(BaseWrapper):
         for background_vocal_model in bg_model:
             self.separator.load_model(background_vocal_model)
             files = self.separator.separate(current_path)
-            files = self._fix_output_paths(output_dir, files)
+            files = [os.path.join(output_dir, f) for f in files]
             out_files.extend(files)
             v_path = None
             bg_path = None
@@ -260,205 +279,222 @@ class Separate(BaseWrapper):
         return out_files, [final_bg_path, final_vocals_path]
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
+        """
+        The big method:
+          1) Calls `separate_music` to get stems,
+          2) Optionally splits background vocals from main,
+          3) Then runs reverb/echo/delay/crowd/noise removal in the user-specified way,
+          4) Returns final stems.
+        """
         self.setup()
-
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
 
-        bg_vocals_removal = filtered_kwargs.get("separate_bg_vocals", True)
-        reverb_removal = filtered_kwargs.get("reverb_removal", "Vocals")
-        echo_removal = filtered_kwargs.get("echo_removal", "Nothing")
-        delay_removal = filtered_kwargs.get("delay_removal", "Nothing")
-        crowd_removal = filtered_kwargs.get("crowd_removal", "All")
-        noise_removal = filtered_kwargs.get("noise_removal", "All")
+        # Basic toggles
+        separate_stems = filtered_kwargs.get("separate_stems", False)
+        separate_drums = filtered_kwargs.get("separate_drums", False)
+        separate_woodwinds = filtered_kwargs.get("separate_woodwinds", False)
+        alt_bass_model = filtered_kwargs.get("alt_bass_model", False)
+        separate_bg_vocals = filtered_kwargs.get("separate_bg_vocals", True)
         delete_extra_stems = filtered_kwargs.get("delete_extra_stems", True)
         store_reverb_ir = filtered_kwargs.get("store_reverb_ir", False)
 
-        delay_removal_model = filtered_kwargs.get("delay_removal_model", "UVR-De-Echo-Normal.pth")
+        # Removal toggles
+        reverb_removal = filtered_kwargs.get("reverb_removal", "Nothing")
+        echo_removal = filtered_kwargs.get("echo_removal", "Nothing")
+        delay_removal = filtered_kwargs.get("delay_removal", "Nothing")
+        crowd_removal = filtered_kwargs.get("crowd_removal", "Nothing")
+        noise_removal = filtered_kwargs.get("noise_removal", "Nothing")
+
+        # Model picks
+        delay_removal_model = filtered_kwargs.get("delay_removal_model", "UVR-DeEcho-DeReverb.pth")
         noise_removal_model = filtered_kwargs.get("noise_removal_model", "UVR-DeNoise.pth")
         crowd_removal_model = filtered_kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx")
 
-        separate_stems = filtered_kwargs.get("separate_stems", False)
-        separate_drums = filtered_kwargs.get("separate_drums", False)
-        drum_model = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
-        if not separate_stems:
-            print("Stem separation is disabled. Can't separate drums without stems.")
+        all_generated = []
+        outputs = []
+        projects_out = []
 
-        all_outputs = []  # Everything, including intermediate steps
-        outputs = []  # The ones we want
-        pj_outputs = []
         for project in inputs:
-            project_outputs = []
+            proj_stems = []
             input_file = project.src_file
-            output_dir = os.path.join(project.project_dir, "stems")
-            self.separator.output_dir = output_dir
-            os.makedirs(output_dir, exist_ok=True)
-            original_basename = os.path.splitext(os.path.basename(input_file))[0]
+            out_dir = os.path.join(project.project_dir, "stems")
+            self.separator.output_dir = out_dir
+            os.makedirs(out_dir, exist_ok=True)
 
+            # 1) Actual separation
             separated_stems = separate_music(
-                [input_file], output_dir, cpu=False, overlap_demucs=0.1, overlap_VOCFT=0.1,
-                overlap_VitLarge=1, overlap_InstVoc=1, weight_InstVoc=8, weight_VOCFT=1,
-                weight_VitLarge=5, single_onnx=False, large_gpu=True, BigShifts=7,
-                vocals_only=not separate_stems, use_VOCFT=True, output_format="FLOAT", callback=callback
+                input_audio=[input_file],
+                output_folder=out_dir,
+                cpu=False,
+                overlap_demucs=0.1,
+                overlap_VOCFT=0.1,
+                overlap_VitLarge=1,
+                overlap_InstVoc=1,
+                weight_InstVoc=8,
+                weight_VOCFT=1,
+                weight_VitLarge=5,
+                single_onnx=False,
+                large_gpu=True,
+                BigShifts=7,
+                vocals_only=not separate_stems,
+                use_VOCFT=True,
+                output_format="FLOAT",
+                callback=callback,
+                separate_drums=separate_drums,
+                separate_woodwinds=separate_woodwinds,
+                alt_bass_model=alt_bass_model
             )
+            all_generated.extend(separated_stems)
 
-            print(f"Separated stems: {separated_stems}")
-            all_outputs.extend(separated_stems)
-
-            vocal_stems = [stem_path for stem_path in separated_stems if "(Vocals)" in stem_path]
-            stems_to_filter = [stem_path for stem_path in separated_stems if "(Vocals)" not in stem_path]
-
-            for stem_path in vocal_stems:
-                current_path = stem_path
-                if bg_vocals_removal:
-                    all_vox, out_files = self.separate_bg_multi(current_path, output_dir)
-                    all_outputs.extend(all_vox)
-                    stems_to_filter.extend(out_files)
+            # 2) Optionally do BG Vocal splitting (like your old logic).
+            #    We'll look for e.g. "...(Vocals).wav", run a karaoke model, rename the "instrumental" => BG_Vocals
+            updated_stems = []
+            for full_path in separated_stems:
+                base_name = os.path.basename(full_path)
+                if "(Vocals)" in base_name and separate_bg_vocals:
+                    # run a Karaoke model on the vocal track
+                    out_files, final_stems = self.separate_bg_multi(full_path, out_dir)
+                    all_generated.extend(out_files)
+                    updated_stems.extend(final_stems)   # [BG_Vocals, Vocals]
                 else:
-                    all_outputs.append(current_path)
-                    stems_to_filter.append(current_path)
+                    updated_stems.append(full_path)
 
+            # 3) Transform chain: reverb -> echo -> delay -> crowd -> noise
             transformations = [
-                ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", reverb_removal),
+                ("deverb_bs_roformer_8_384dim_10depth.ckpt", "No Reverb", reverb_removal),
                 (delay_removal_model, "No Echo", echo_removal),
                 (delay_removal_model, "No Delay", delay_removal),
                 (crowd_removal_model, "No Crowd", crowd_removal),
                 (noise_removal_model, "No Noise", noise_removal),
             ]
 
-            for stem_path in stems_to_filter:
+            final_stem_paths = []
+            for stem_path in updated_stems:
                 current_path = stem_path
-                stem_basename = os.path.basename(current_path)
+                # each transform can produce e.g. "(No Reverb)" and its complementary track
+                # we pick the "(No Reverb)" track as the new current_path
+                for model_file, out_label, transform_flag in transformations:
+                    if self._should_apply_transform(os.path.basename(current_path), transform_flag):
+                        self.separator.load_model(model_file)
+                        partial = self.separator.separate(current_path)
+                        # join
+                        partial_full = [os.path.join(project.project_dir, "stems", p) for p in partial]
+                        all_generated.extend(partial_full)
 
-                for model, tgt_file, transform_flag in transformations:
-                    if self._should_apply_transform(stem_basename, transform_flag):
-                        self.separator.load_model(model)
-                        out_files = self.separator.separate(current_path)
-                        out_files = self._fix_output_paths(output_dir, out_files)
-                        all_outputs.extend(out_files)
-                        file_idx = 0 if tgt_file in out_files[0] else 1
-                        current_path = self._rename_file(original_basename, out_files[file_idx])
-                        if tgt_file == "No Reverb" and "(Vocals)" in stem_basename and store_reverb_ir:
-                            print(f"Extracting IR for {current_path}")
-                            reverb_path_idx = 1 if file_idx == 0 else 0
-                            reverb_file = out_files[reverb_path_idx]
-                            ir_output_path = os.path.join(project.project_dir, "impulse_response.ir")
-                            try:
-                                impulse_response = extract_reverb(current_path, reverb_file, ir_output_path)
-                                print(f"Extracted IR: {impulse_response}")
-                            except Exception as e:
-                                print(f"Error extracting IR: {e}")
-                                impulse_response = None
+                        # we typically want the "NoReverb", "NoEcho", etc. track
+                        pick = None
+                        alt = None
+                        if len(partial_full) == 2:
+                            if out_label.replace(" ", "") in partial_full[0]:
+                                pick = partial_full[0]
+                                alt = partial_full[1]
+                            else:
+                                pick = partial_full[1]
+                                alt = partial_full[0]
 
-                project_outputs.append(current_path)
-            project.add_output("stems", project_outputs)
-            outputs.extend(project_outputs)
+                            current_path = self._rename_file(os.path.basename(input_file), pick)
+                            # if reverb removal from main vocals, maybe store IR
+                            if out_label == "No Reverb" and "(Vocals)" in stem_path and store_reverb_ir and alt:
+                                try:
+                                    out_ir = os.path.join(project.project_dir, "impulse_response.ir")
+                                    extract_reverb(current_path, alt, out_ir)
+                                except Exception as e:
+                                    print("Error extracting IR:", e)
+                        else:
+                            # if we have more or fewer than 2 stems
+                            # pick whichever has out_label
+                            for pf in partial_full:
+                                if out_label.replace(" ", "") in pf:
+                                    current_path = self._rename_file(os.path.basename(input_file), pf)
+                                    break
 
-            pj_outputs.append(project)
+                final_stem_paths.append(current_path)
+
+            proj_stems.extend(final_stem_paths)
+            project.add_output("stems", proj_stems)
+            outputs.extend(final_stem_paths)
+            projects_out.append(project)
+
+        # 4) Clean up intermediate if requested
         if delete_extra_stems:
-            for p in all_outputs:
+            for p in all_generated:
                 if p not in outputs and os.path.exists(p):
                     self.del_stem(p)
 
-        return pj_outputs
+        return projects_out
 
-    def del_stem(self, stem_path: str) -> bool:
+    def del_stem(self, path: str) -> bool:
         try:
             with self.file_operation_lock:
-                if os.path.exists(stem_path):
-                    os.remove(stem_path)
-                    print(f"Deleted: {stem_path}")
-                    return not os.path.exists(stem_path)
-                return False
+                if os.path.exists(path):
+                    os.remove(path)
+                    return True
         except Exception as e:
-            print(f"Error deleting {stem_path}: {e}")
+            print(f"Error deleting {path}: {e}")
+        return False
+
+    @staticmethod
+    def _should_apply_transform(stem_name: str, setting: str) -> bool:
+        """
+        Returns True if we should apply a transform to this stem, based on user setting
+        (Nothing, All, All Vocals, Main Vocals).
+        """
+        if setting == "Nothing":
             return False
+        if setting == "All":
+            return True
+        if setting == "All Vocals":
+            return "(Vocals)" in stem_name or "(BG_Vocals)" in stem_name
+        if setting == "Main Vocals":
+            return "(Vocals)" in stem_name and "(BG_Vocals)" not in stem_name
+        return False
 
-    def _fix_output_paths(self, output_dir: str, filenames: List[str]) -> List[str]:
-        return [
-            os.path.join(output_dir, os.path.basename(filename))
-            for filename in filenames
-        ]
-
-    def _rename_file(
-            self,
-            original_base: str,
-            filepath: str
-    ) -> str:
+    @staticmethod
+    def _rename_bgvocal(filepath: str) -> str:
         """
-        Rebuild the filename as:
-            <original_base> <any existing parentheses> <new step in parentheses>.ext
-
-        1) Extract existing parentheses from `filepath` (like '(Vocals)', '(No Reverb)', etc.).
-        2) Remove anything that's a known model reference or random underscores.
-        3) Append `step` as a new parentheses group.
-        4) Construct final:  "<original_base> (Vocals)(No Reverb)(Step).ext"
+        For the Karaoke sub-separation of main vocals, the 'instrumental' track is actually BG vocals.
+        We'll rename the file so it has '(BG_Vocals)' instead of '(Instrumental)'.
+        Example: 'SongName_(Instrumental).wav' => 'SongName_(BG_Vocals).wav'
         """
+        dirname = os.path.dirname(filepath)
+        oldbase = os.path.basename(filepath)
+        newbase = oldbase.replace("(Instrumental)", "(BG_Vocals)")
+        newpath = os.path.join(dirname, newbase)
+        if os.path.exists(filepath):
+            if os.path.exists(newpath):
+                os.remove(newpath)
+            os.rename(filepath, newpath)
+        return newpath
 
+    @staticmethod
+    def _rename_file(base_in: str, filepath: str) -> str:
+        """
+        Rebuild the filename to remove model references, keep only user-friendly tags.
+        Example: <original_song>_(Vocals)(No Reverb).wav
+        """
         dirname = os.path.dirname(filepath)
         ext = os.path.splitext(filepath)[1]
+        base_only = os.path.splitext(os.path.basename(base_in))[0]
+        all_parens = re.findall(r"\([^)]*\)", os.path.basename(filepath))
 
-        # 1) Find all parentheses in the current filename
-        #    E.g. "SongName (Vocals)(No Reverb)_UVRblah => collect '(Vocals)', '(No Reverb)'
-        all_parens = re.findall(r'\([^)]*\)', os.path.basename(filepath))
-        # This captures each "( ... )" group from the entire basename
-
-        # 2) Filter out model references or anything obviously undesired
-        #    E.g. if you have '(model_bs_roformer...)', remove it entirely
-        #    We'll keep only parentheses we guess are "valid" steps or stems
+        # references to remove
         to_strip = [
-            "model_bs_roformer", "UVR-DeEcho-DeReverb", "UVR-De-Echo-Normal",
-            "UVR_MDXNET_KARA_2", "UVR_MDXNET_KARA", "Reverb_HQ_By_FoxJoy",
-            "UVR-MDX-NET_Crowd_HQ_1", "mel_band_roformer_crowd",
-            "UVR-DeNoise", "UVR-DeNoise-Lite", "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956"
+            "deverb_bs_roformer", "UVR-DeEcho-DeReverb", "UVR-De-Echo-Normal",
+            "UVR-DeNoise", "UVR-DeNoise-Lite", "mel_band_roformer", "MDX23C", "UVR-MDX-NET",
+            "drumsep", "roformer", "viperx", "crowd", "karaoke", "instrumental", "_InstVoc", "_VOCFT",
+            "NoReverb", "NoEcho", "NoDelay", "NoCrowd", "NoNoise"
         ]
+        filtered = []
+        for g in all_parens:
+            # keep only user-friendly parentheses
+            if not any(p.lower() in g.lower() for p in to_strip):
+                filtered.append(g)
 
-        filtered_parens = []
-        for group in all_parens:
-            # If it contains a known pattern => skip
-            if any(pat in group for pat in to_strip):
-                continue
-            filtered_parens.append(group)
-
-        # Remove duplicates if they occur
-        # e.g. if somehow "(No Reverb)" was already in the list
-        unique_parens = []
-        for p in filtered_parens:
-            if p not in unique_parens:
-                unique_parens.append(p)
-
-        # 4) Build final name:
-        #    "original_base + each parenthesis + extension"
-        final_name = original_base.strip() + "_" + "".join(unique_parens) + ext
+        final_name = base_only + "_" + "".join(filtered) + ext
+        final_name = final_name.replace(") (", ")(").replace("__", "_")
         final_path = os.path.join(dirname, final_name)
-        # Replace )_( with )(
-        final_path = final_path.replace(") (", ")(")
-
-        # 5) Rename on disk
         if os.path.exists(filepath):
             if os.path.exists(final_path):
                 os.remove(final_path)
             os.rename(filepath, final_path)
-
         return final_path
-
-    def _should_apply_transform(self, stem_name: str, setting: str) -> bool:
-        """
-        Returns True if we should apply a transform to this stem,
-        based on whether `setting` == "All" or "Vocals".
-        """
-        if setting == "Nothing":
-            return False
-        elif setting == "All":
-            return True
-        elif setting == "All Vocals":
-            return self._is_vocal_stem(stem_name)
-        elif setting == "Main Vocals":
-            return self._is_vocal_stem(stem_name) and "(BG_Vocals)" not in stem_name
-        return False
-
-    def _is_vocal_stem(self, name: str) -> bool:
-        """
-        Simple check to see if it's a "vocal" stem.
-        We look for '(Vocals)' or 'Vocal' in the name
-        """
-        return "(Vocals)" in name or "(BG_Vocals)" in name

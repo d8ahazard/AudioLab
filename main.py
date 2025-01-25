@@ -185,7 +185,6 @@ if __name__ == '__main__':
         js = f'<script type="text/javascript">{js}</script>'
         js += f"\n{css}"
 
-    print(f"Descriptions JS: {js}")
     with gr.Blocks(title='AudioLab', head=js) as ui:
         with gr.Tabs():
             with gr.Tab(label='TTS'):

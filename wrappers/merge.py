@@ -11,18 +11,29 @@ from wrappers.base_wrapper import BaseWrapper
 class Merge(BaseWrapper):
     title = "Merge"
     description = "Merge multiple audio files into a single track."
-    priority = 5
+    priority = 6
     default = True
 
-    def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
+    def process_audio(self, pj_inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pj_outputs = []
-        for project in inputs:
+        for project in pj_inputs:
             src_stem = project.src_file
             src_name, _ = os.path.splitext(os.path.basename(src_stem))
             output_folder = os.path.join(project.project_dir, "merged")
             os.makedirs(output_folder, exist_ok=True)
             inputs, _ = self.filter_inputs(project, "audio")
+            drum_inputs = [stem for stem in inputs if "(Drums" in stem]
+            if len(drum_inputs) > 1:
+                # Remove the base (Drums) stem
+                inputs = [stem for stem in inputs if "(Drums)" not in stem]
+            instrumental_keys = ["(Piano)", "(Guitar)", "(Bass)", "(Woodwinds)"]
+            # If any of the instrumental_keys are found in the inputs, then we filter out the regular (Instrumental) track
+            instrumental_inputs = [stem for stem in inputs if any(key in stem for key in instrumental_keys)]
+            if len(instrumental_inputs) > 1:
+                # Remove the base (Instrumental) stem
+                inputs = [stem for stem in inputs if "(Instrumental)" not in stem]
             ir_file = os.path.join(project.project_dir, "impulse_response.ir")
+
             if os.path.exists(ir_file):
                 new_inputs = []
                 for stem in inputs:
@@ -33,7 +44,7 @@ class Merge(BaseWrapper):
                             reverb_stem_path = os.path.join(output_folder, f"{stem_name}_(Reverb){ext}")
                             if os.path.exists(ir_file):
                                 reverb_stem = apply_reverb(stem, ir_file, reverb_stem_path)
-                                new_inputs.append(reverb_stem_path)
+                                new_inputs.append(reverb_stem)
                             else:
                                 new_inputs.append(stem)
                         except Exception as e:
@@ -42,6 +53,7 @@ class Merge(BaseWrapper):
                     else:
                         new_inputs.append(stem)
                 inputs = new_inputs
+
             # Set up output file details
             first_file = inputs[0]
             file_name, file_ext = os.path.splitext(os.path.basename(first_file))
