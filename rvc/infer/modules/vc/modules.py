@@ -1,15 +1,12 @@
+import logging
 import os.path
 import traceback
-import logging
-from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 import torch
-from io import BytesIO
 
-from handlers.config import output_path
-from rvc.infer.lib.audio import load_audio, wav2
+from rvc.infer.lib.audio import load_audio
 from rvc.infer.lib.infer_pack.models import (
     SynthesizerTrnMs256NSFsid,
     SynthesizerTrnMs256NSFsid_nono,
@@ -150,9 +147,10 @@ class VC:
             return "You need to upload an audio", None
         f0_up_key = int(f0_up_key)
         try:
-            # Pass mono=False to preserve stereo
-            audio = load_audio(input_audio_path, 16000, mono=False)
-            logger.info(f"Loaded audio shape: {audio.shape}")  # Log shape for debugging
+            # Read original sr from audio file
+            audio, og_sr = load_audio(input_audio_path, 16000, mono=False, return_sr=True)
+            resample_sr = og_sr
+            logger.info(f"Loaded audio shape: {audio.shape}, resample_sr: {resample_sr}")  # Log shape for debugging
 
             audio_max = np.abs(audio).max() / 0.95
             if audio_max > 1:
@@ -256,8 +254,14 @@ class VC:
                         cloned_name = f"{base_name}(Cloned).wav"
 
                         output_file = os.path.join(opt_root, f"{cloned_name}")
-                        sf.write(output_file, audio_opt, tgt_sr, format="wav")
-                        outputs.append(str(output_file))
+
+                        try:
+                            # Save the processed audio
+                            sf.write(output_file, audio_opt, tgt_sr, format="wav", subtype="PCM_16")
+                            outputs.append(output_file)
+                        except Exception as e:
+                            print(f"Error saving audio file: {e}")
+                            traceback.print_exc()
 
                     except Exception as e:
                         traceback.print_exc()

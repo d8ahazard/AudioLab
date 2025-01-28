@@ -58,6 +58,12 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
+        "store_reverb_ir": TypedInput(
+            default=True,
+            description="Store the impulse response for reverb removal. This allows for reapplying the reverb later during stem merging. Note: This is an experimental feature and may not always produce accurate results.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
         "separate_drums": TypedInput(
             default=False,
             description="Separate the drum track from the rest of the audio. This is useful for remixing or adjusting the drum track independently. Requires 'Separate Stems' to be enabled.",
@@ -73,12 +79,6 @@ class Separate(BaseWrapper):
         "alt_bass_model": TypedInput(
             default=False,
             description="Use an alternative bass model for better bass separation. This may improve the quality of the bass stem if the bass part was played on an electric/plucked bass.",
-            type=bool,
-            gradio_type="Checkbox"
-        ),
-        "store_reverb_ir": TypedInput(
-            default=False,
-            description="Store the impulse response for reverb removal. This allows for reapplying the reverb later during stem merging. Note: This is an experimental feature and may not always produce accurate results.",
             type=bool,
             gradio_type="Checkbox"
         ),

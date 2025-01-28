@@ -1,6 +1,8 @@
 import os
 from typing import Any, Dict, List
 
+import librosa
+
 from handlers.config import model_path
 from rvc.configs.config import Config
 from rvc.infer.modules.vc.modules import VC
@@ -88,6 +90,7 @@ class Clone(BaseWrapper):
             type=str,
             choices=["wav", "flac", "mp3", "m4a"],
             gradio_type="Dropdown",
+            render=False
         ),
         "resample_rate": TypedInput(
             default=0,
@@ -97,6 +100,7 @@ class Clone(BaseWrapper):
             ge=0,
             le=48000,
             step=1,
+            render=False
         ),
         "volume_mix_rate": TypedInput(
             default=1,
@@ -219,7 +223,8 @@ class Clone(BaseWrapper):
 
         return outputs
 
-    def change_choices(self) -> Dict[str, Any]:
+    @staticmethod
+    def change_choices() -> Dict[str, Any]:
         """
         Refresh the available voice models by scanning the 'cloned' folder.
         """
@@ -227,7 +232,8 @@ class Clone(BaseWrapper):
         voices = [name for name in os.listdir(weight_root) if name.endswith(".pth")]
         return {"choices": sorted(voices), "__type__": "update"}
 
-    def clean(self):
+    @staticmethod
+    def clean():
         """
         Clean and reset states for the UI.
         """

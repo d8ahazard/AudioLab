@@ -39,7 +39,7 @@ def wav2(input_file, output_file, container_fmt, sr=44100):
     inp.close()
 
 
-def load_audio(file, sr=16000, mono=False):
+def load_audio(file, sr=16000, mono=False, return_sr=False):
     """
     Loads an audio file with optional resampling to 'sr' and optional downmixing to mono.
     Returns a NumPy array of shape:
@@ -59,4 +59,4 @@ def load_audio(file, sr=16000, mono=False):
     if mono and audio.ndim > 1:
         audio = audio.mean(axis=1)
 
-    return audio
+    return audio if not return_sr else (audio, sr_in)

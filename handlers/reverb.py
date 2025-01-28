@@ -1,8 +1,8 @@
+import json
+
 import numpy as np
 import soundfile as sf
 from pydub import AudioSegment
-import json
-import os
 
 ################################################################################
 # GLOBAL OPTIONS
@@ -215,23 +215,18 @@ def apply_reverb(dry_path, param_path, output_path):
     pd_samples = int(pd_sec * sr)
     feedback = np.exp(-3.0 * np.log(10) / (decay_time * sr))
 
-    # We'll create a longer output to hold the reverb tail.
     num_in_frames, num_channels = dry_signal.shape
     tail_length = int(sr * decay_time * 2)
     output_length = num_in_frames + pd_samples + tail_length
 
-    # Prepare arrays for multi-channel. Shape (output_length, num_channels).
     out_signal = np.zeros((output_length, num_channels), dtype=np.float32)
     delay_line = np.zeros((output_length, num_channels), dtype=np.float32)
 
-    # Process each sample & channel
     for n in range(num_in_frames):
         for c in range(num_channels):
             x = dry_signal[n, c]
             read_idx = n - pd_samples
             if read_idx >= 0:
-                # Sum up same-channel + crossfeed from others
-                # (you can tweak CROSS_FEED to 0.0 if you want fully independent channels)
                 sum_delayed = delay_line[read_idx, c]
                 for c2 in range(num_channels):
                     if c2 != c:
@@ -251,7 +246,6 @@ def apply_reverb(dry_path, param_path, output_path):
     # Clip to -1..1
     final_signal = np.clip(final_signal, -1.0, 1.0)
 
-    # Write out. SoundFile will handle the multi-channel interleaving for us.
     sf.write(output_path, final_signal, sr)
     print(f"Saved reverb-applied file to: {output_path}")
     return output_path
