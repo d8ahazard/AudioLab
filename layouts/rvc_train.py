@@ -178,7 +178,7 @@ def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
     output_files = []
     for output_project in outputs:
         output_files.extend(output_project.last_outputs)
-    vocal_outputs = [output for output in output_files if '(Vocals)' in output and "(BG_Vocals)"]
+    vocal_outputs = [output for output in output_files if '(Vocals)' in output and "(BG_Vocals)" not in output]
     bg_vocal_outputs = [output for output in output_files if '(BG Vocals)' in output]
     return vocal_outputs, bg_vocal_outputs
 
