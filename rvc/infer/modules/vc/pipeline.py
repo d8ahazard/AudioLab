@@ -5,7 +5,6 @@ import traceback
 
 from handlers.config import model_path
 
-
 from functools import lru_cache
 from time import time as ttime
 
@@ -46,49 +45,45 @@ def change_rms(data1, sr1, data2, sr2, rate):
     )  # 每半秒一个点
     rms2 = librosa.feature.rms(y=data2, frame_length=sr2 // 2 * 2, hop_length=sr2 // 2)
     rms1 = torch.from_numpy(rms1)
-    rms1 = F.interpolate(
-        rms1.unsqueeze(0), size=data2.shape[0], mode="linear"
-    ).squeeze()
+    rms1 = F.interpolate(rms1.unsqueeze(0), size=data2.shape[0], mode="linear").squeeze()
     rms2 = torch.from_numpy(rms2)
-    rms2 = F.interpolate(
-        rms2.unsqueeze(0), size=data2.shape[0], mode="linear"
-    ).squeeze()
+    rms2 = F.interpolate(rms2.unsqueeze(0), size=data2.shape[0], mode="linear").squeeze()
     rms2 = torch.max(rms2, torch.zeros_like(rms2) + 1e-6)
     data2 *= (
-            torch.pow(rms1, torch.tensor(1 - rate))
-            * torch.pow(rms2, torch.tensor(rate - 1))
+        torch.pow(rms1, torch.tensor(1 - rate))
+        * torch.pow(rms2, torch.tensor(rate - 1))
     ).numpy()
     return data2
 
 
 class Pipeline(object):
     def __init__(self, tgt_sr, config):
-        self.x_pad, self.x_query, self.x_center, self.x_max, self.is_half = (
-            config.x_pad,
-            config.x_query,
-            config.x_center,
-            config.x_max,
-            config.is_half,
-        )
+        # Minimal chunking tweaks: add +0.2s to x_pad, +2s to x_query
+        self.x_pad = config.x_pad + 0.2
+        self.x_query = config.x_query + 2
+        self.x_center = config.x_center
+        self.x_max = config.x_max
+        self.is_half = config.is_half
+
         self.sr = 16000
         self.window = 160
-        self.t_pad = self.sr * self.x_pad
-        self.t_pad_tgt = tgt_sr * self.x_pad
+        self.t_pad = int(self.sr * self.x_pad)
+        self.t_pad_tgt = int(tgt_sr * self.x_pad)
         self.t_pad2 = self.t_pad * 2
-        self.t_query = self.sr * self.x_query
-        self.t_center = self.sr * self.x_center
-        self.t_max = self.sr * self.x_max
+        self.t_query = int(self.sr * self.x_query)
+        self.t_center = int(self.sr * self.x_center)
+        self.t_max = int(self.sr * self.x_max)
         self.device = config.device
 
     def get_f0(
-            self,
-            input_audio_path,
-            x,
-            p_len,
-            f0_up_key,
-            f0_method,
-            filter_radius,
-            inp_f0=None,
+        self,
+        input_audio_path,
+        x,
+        p_len,
+        f0_up_key,
+        f0_method,
+        filter_radius,
+        inp_f0=None,
     ):
         global input_audio_path2wav
         time_step = self.window / self.sr * 1000
@@ -96,6 +91,7 @@ class Pipeline(object):
         f0_max = 1100
         f0_mel_min = 1127 * np.log(1 + f0_min / 700)
         f0_mel_max = 1127 * np.log(1 + f0_max / 700)
+
         if f0_method == "pm":
             f0 = (
                 parselmouth.Sound(x, self.sr)
@@ -119,12 +115,10 @@ class Pipeline(object):
                 f0 = signal.medfilt(f0, 3)
         elif f0_method == "crepe":
             model = "full"
-            # Pick a batch size that doesn't cause memory errors on your gpu
             batch_size = 512
-            # Compute pitch using first gpu
-            audio = torch.tensor(np.copy(x))[None].float()
+            audio_t = torch.tensor(np.copy(x))[None].float()
             f0, pd = torchcrepe.predict(
-                audio,
+                audio_t,
                 self.sr,
                 self.window,
                 f0_min,
@@ -150,56 +144,56 @@ class Pipeline(object):
                 )
             f0 = self.model_rmvpe.infer_from_audio(x, thred=0.03)
 
-            if "privateuseone" in str(self.device):  # clean ortruntime memory
+            if "privateuseone" in str(self.device):
                 del self.model_rmvpe.model
                 del self.model_rmvpe
                 logger.info("Cleaning ortruntime memory")
 
+        # pitch shift
         f0 *= pow(2, f0_up_key / 12)
-        tf0 = self.sr // self.window  # 每秒f0点数
+        tf0 = self.sr // self.window
+
         if inp_f0 is not None:
             delta_t = np.round(
                 (inp_f0[:, 0].max() - inp_f0[:, 0].min()) * tf0 + 1
             ).astype("int16")
-            replace_f0 = np.interp(
-                list(range(delta_t)), inp_f0[:, 0] * 100, inp_f0[:, 1]
-            )
-            shape = f0[self.x_pad * tf0: self.x_pad * tf0 + len(replace_f0)].shape[0]
-            f0[self.x_pad * tf0: self.x_pad * tf0 + len(replace_f0)] = replace_f0[
-                                                                       :shape
-                                                                       ]
+            replace_f0 = np.interp(list(range(delta_t)), inp_f0[:, 0] * 100, inp_f0[:, 1])
+            shape = f0[self.x_pad * tf0 : self.x_pad * tf0 + len(replace_f0)].shape[0]
+            f0[self.x_pad * tf0 : self.x_pad * tf0 + len(replace_f0)] = replace_f0[:shape]
+
         f0bak = f0.copy()
         f0_mel = 1127 * np.log(1 + f0 / 700)
-        f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - f0_mel_min) * 254 / (
-                f0_mel_max - f0_mel_min
-        ) + 1
+        f0_mel[f0_mel > 0] = (
+            (f0_mel[f0_mel > 0] - f0_mel_min) * 254 / (f0_mel_max - f0_mel_min) + 1
+        )
         f0_mel[f0_mel <= 1] = 1
         f0_mel[f0_mel > 255] = 255
         f0_coarse = np.rint(f0_mel).astype(np.int32)
-        return f0_coarse, f0bak  # 1-0
+        return f0_coarse, f0bak
 
     def vc(
-            self,
-            model,
-            net_g,
-            sid,
-            audio0,
-            pitch,
-            pitchf,
-            times,
-            index,
-            big_npy,
-            index_rate,
-            version,
-            protect,
-    ):  # ,file_index,file_big_npy
+        self,
+        model,
+        net_g,
+        sid,
+        audio0,
+        pitch,
+        pitchf,
+        times,
+        index,
+        big_npy,
+        index_rate,
+        version,
+        protect,
+    ):
         feats = torch.from_numpy(audio0)
         if self.is_half:
             feats = feats.half()
         else:
             feats = feats.float()
-        if feats.dim() == 2:  # double channels
+        if feats.dim() == 2:  # forced mono in original
             feats = feats.mean(-1)
+
         assert feats.dim() == 1, feats.dim()
         feats = feats.view(1, -1)
         padding_mask = torch.BoolTensor(feats.shape).to(self.device).fill_(False)
@@ -213,19 +207,18 @@ class Pipeline(object):
         with torch.no_grad():
             logits = model.extract_features(**inputs)
             feats = model.final_proj(logits[0]) if version == "v1" else logits[0]
+
         if protect < 0.5 and pitch is not None and pitchf is not None:
             feats0 = feats.clone()
+
         if (
-                not isinstance(index, type(None))
-                and not isinstance(big_npy, type(None))
-                and index_rate != 0
+            index is not None
+            and big_npy is not None
+            and index_rate != 0
         ):
             npy = feats[0].cpu().numpy()
             if self.is_half:
                 npy = npy.astype("float32")
-
-            # _, I = index.search(npy, 1)
-            # npy = big_npy[I.squeeze()]
 
             score, ix = index.search(npy, k=8)
             weight = np.square(1 / score)
@@ -235,15 +228,16 @@ class Pipeline(object):
             if self.is_half:
                 npy = npy.astype("float16")
             feats = (
-                    torch.from_numpy(npy).unsqueeze(0).to(self.device) * index_rate
-                    + (1 - index_rate) * feats
+                torch.from_numpy(npy).unsqueeze(0).to(self.device) * index_rate
+                + (1 - index_rate) * feats
             )
 
         feats = F.interpolate(feats.permute(0, 2, 1), scale_factor=2).permute(0, 2, 1)
         if protect < 0.5 and pitch is not None and pitchf is not None:
-            feats0 = F.interpolate(feats0.permute(0, 2, 1), scale_factor=2).permute(
-                0, 2, 1
-            )
+            feats0 = F.interpolate(
+                feats0.permute(0, 2, 1), scale_factor=2
+            ).permute(0, 2, 1)
+
         t1 = ttime()
         p_len = audio0.shape[0] // self.window
         if feats.shape[1] < p_len:
@@ -259,13 +253,13 @@ class Pipeline(object):
             pitchff = pitchff.unsqueeze(-1)
             feats = feats * pitchff + feats0 * (1 - pitchff)
             feats = feats.to(feats0.dtype)
+
         p_len = torch.tensor([p_len], device=self.device).long()
         with torch.no_grad():
-            hasp = pitch is not None and pitchf is not None
-            arg = (feats, p_len, pitch, pitchf, sid) if hasp else (feats, p_len, sid)
-            audio1 = (net_g.infer(*arg)[0][0, 0]).data.cpu().float().numpy()
-            del hasp, arg
-        del feats, p_len, padding_mask
+            has_pitch = pitch is not None and pitchf is not None
+            arg = (feats, p_len, pitch, pitchf, sid) if has_pitch else (feats, p_len, sid)
+            audio1 = net_g.infer(*arg)[0][0, 0].data.cpu().float().numpy()
+        del has_pitch, arg, feats, p_len, padding_mask
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         t2 = ttime()
@@ -273,32 +267,29 @@ class Pipeline(object):
         times[2] += t2 - t1
         return audio1
 
-    def pipeline(
-            self,
-            model,
-            net_g,
-            sid,
-            audio,
-            input_audio_path,
-            times,
-            f0_up_key,
-            f0_method,
-            file_index,
-            index_rate,
-            if_f0,
-            filter_radius,
-            tgt_sr,
-            resample_sr,
-            rms_mix_rate,
-            version,
-            protect,
-            f0_file=None,
+    def _run_pipeline_mono(
+        self,
+        model,
+        net_g,
+        sid,
+        audio,
+        input_audio_path,
+        times,
+        f0_up_key,
+        f0_method,
+        file_index,
+        index_rate,
+        if_f0,
+        filter_radius,
+        tgt_sr,
+        resample_sr,
+        rms_mix_rate,
+        version,
+        protect,
+        f0_file,
     ):
-        if (
-                file_index != ""
-                and os.path.exists(file_index)
-                and index_rate != 0
-        ):
+        # This is the original chunk logic, unchanged except for being a helper method.
+        if file_index != "" and os.path.exists(file_index) and index_rate != 0:
             try:
                 index = faiss.read_index(file_index)
                 big_npy = index.reconstruct_n(0, index.ntotal)
@@ -307,25 +298,25 @@ class Pipeline(object):
                 index = big_npy = None
         else:
             index = big_npy = None
+
         audio = signal.filtfilt(bh, ah, audio)
         audio_pad = np.pad(audio, (self.window // 2, self.window // 2), mode="reflect")
         opt_ts = []
         if audio_pad.shape[0] > self.t_max:
             audio_sum = np.zeros_like(audio)
             for i in range(self.window):
-                audio_sum += np.abs(audio_pad[i: i - self.window])
+                audio_sum += np.abs(audio_pad[i : i - self.window])
             for t in range(self.t_center, audio.shape[0], self.t_center):
                 opt_ts.append(
                     t
                     - self.t_query
                     + np.where(
-                        audio_sum[t - self.t_query: t + self.t_query]
-                        == audio_sum[t - self.t_query: t + self.t_query].min()
+                        audio_sum[t - self.t_query : t + self.t_query]
+                        == audio_sum[t - self.t_query : t + self.t_query].min()
                     )[0][0]
                 )
         s = 0
         audio_opt = []
-        t = None
         t1 = ttime()
         audio_pad = np.pad(audio, (self.t_pad, self.t_pad), mode="reflect")
         p_len = audio_pad.shape[0] // self.window
@@ -340,7 +331,7 @@ class Pipeline(object):
                 inp_f0 = np.array(inp_f0, dtype="float32")
             except:
                 traceback.print_exc()
-        sid = torch.tensor(sid, device=self.device).unsqueeze(0).long()
+        sid_tensor = torch.tensor(sid, device=self.device).unsqueeze(0).long()
         pitch, pitchf = None, None
         if if_f0 == 1:
             pitch, pitchf = self.get_f0(
@@ -360,90 +351,222 @@ class Pipeline(object):
             pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
         t2 = ttime()
         times[1] += t2 - t1
+
         for t in opt_ts:
             t = t // self.window * self.window
             if if_f0 == 1:
-                audio_opt.append(
-                    self.vc(
-                        model,
-                        net_g,
-                        sid,
-                        audio_pad[s: t + self.t_pad2 + self.window],
-                        pitch[:, s // self.window: (t + self.t_pad2) // self.window],
-                        pitchf[:, s // self.window: (t + self.t_pad2) // self.window],
-                        times,
-                        index,
-                        big_npy,
-                        index_rate,
-                        version,
-                        protect,
-                    )[self.t_pad_tgt: -self.t_pad_tgt]
+                seg = self.vc(
+                    model,
+                    net_g,
+                    sid_tensor,
+                    audio_pad[s : t + self.t_pad2 + self.window],
+                    pitch[:, s // self.window : (t + self.t_pad2) // self.window],
+                    pitchf[:, s // self.window : (t + self.t_pad2) // self.window],
+                    times,
+                    index,
+                    big_npy,
+                    index_rate,
+                    version,
+                    protect,
                 )
+                seg = seg[self.t_pad_tgt : -self.t_pad_tgt]
             else:
-                audio_opt.append(
-                    self.vc(
-                        model,
-                        net_g,
-                        sid,
-                        audio_pad[s: t + self.t_pad2 + self.window],
-                        None,
-                        None,
-                        times,
-                        index,
-                        big_npy,
-                        index_rate,
-                        version,
-                        protect,
-                    )[self.t_pad_tgt: -self.t_pad_tgt]
+                seg = self.vc(
+                    model,
+                    net_g,
+                    sid_tensor,
+                    audio_pad[s : t + self.t_pad2 + self.window],
+                    None,
+                    None,
+                    times,
+                    index,
+                    big_npy,
+                    index_rate,
+                    version,
+                    protect,
                 )
+                seg = seg[self.t_pad_tgt : -self.t_pad_tgt]
+            audio_opt.append(seg)
             s = t
+
+        # Final chunk
         if if_f0 == 1:
-            audio_opt.append(
-                self.vc(
-                    model,
-                    net_g,
-                    sid,
-                    audio_pad[t:],
-                    pitch[:, t // self.window:] if t is not None else pitch,
-                    pitchf[:, t // self.window:] if t is not None else pitchf,
-                    times,
-                    index,
-                    big_npy,
-                    index_rate,
-                    version,
-                    protect,
-                )[self.t_pad_tgt: -self.t_pad_tgt]
+            final_seg = self.vc(
+                model,
+                net_g,
+                sid_tensor,
+                audio_pad[s:],
+                pitch[:, s // self.window :] if s else pitch,
+                pitchf[:, s // self.window :] if s else pitchf,
+                times,
+                index,
+                big_npy,
+                index_rate,
+                version,
+                protect,
             )
+            final_seg = final_seg[self.t_pad_tgt : -self.t_pad_tgt]
         else:
-            audio_opt.append(
-                self.vc(
-                    model,
-                    net_g,
-                    sid,
-                    audio_pad[t:],
-                    None,
-                    None,
-                    times,
-                    index,
-                    big_npy,
-                    index_rate,
-                    version,
-                    protect,
-                )[self.t_pad_tgt: -self.t_pad_tgt]
+            final_seg = self.vc(
+                model,
+                net_g,
+                sid_tensor,
+                audio_pad[s:],
+                None,
+                None,
+                times,
+                index,
+                big_npy,
+                index_rate,
+                version,
+                protect,
             )
+            final_seg = final_seg[self.t_pad_tgt : -self.t_pad_tgt]
+        audio_opt.append(final_seg)
+
         audio_opt = np.concatenate(audio_opt)
         if rms_mix_rate != 1:
             audio_opt = change_rms(audio, 16000, audio_opt, tgt_sr, rms_mix_rate)
+
         if tgt_sr != resample_sr >= 16000:
-            audio_opt = librosa.resample(
-                audio_opt, orig_sr=tgt_sr, target_sr=resample_sr
-            )
+            audio_opt = librosa.resample(audio_opt, orig_sr=tgt_sr, target_sr=resample_sr)
+
         audio_max = np.abs(audio_opt).max() / 0.99
         max_int16 = 32768
         if audio_max > 1:
             max_int16 /= audio_max
         audio_opt = (audio_opt * max_int16).astype(np.int16)
-        del pitch, pitchf, sid
+
+        del pitch, pitchf, sid_tensor
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return audio_opt
+
+    def pipeline(
+        self,
+        model,
+        net_g,
+        sid,
+        audio,
+        input_audio_path,
+        times,
+        f0_up_key,
+        f0_method,
+        file_index,
+        index_rate,
+        if_f0,
+        filter_radius,
+        tgt_sr,
+        resample_sr,
+        rms_mix_rate,
+        version,
+        protect,
+        f0_file=None,
+    ):
+        """
+        If 'audio' is stereo, split into left/right, run the same logic for each,
+        then re-stack the outputs. If mono, run as before.
+        """
+        # Check if 'audio' is stereo
+        if audio.ndim == 2:
+            # Suppose shape is (samples, 2)
+            # If shape is (2, samples), transpose it to (samples, 2)
+            if audio.shape[0] == 2 and audio.shape[0] < audio.shape[1]:
+                audio = audio.T
+
+            if audio.shape[1] == 2:
+                # split into left, right
+                left = audio[:, 0]
+                right = audio[:, 1]
+
+                left_opt = self._run_pipeline_mono(
+                    model,
+                    net_g,
+                    sid,
+                    left,
+                    input_audio_path,
+                    times,
+                    f0_up_key,
+                    f0_method,
+                    file_index,
+                    index_rate,
+                    if_f0,
+                    filter_radius,
+                    tgt_sr,
+                    resample_sr,
+                    rms_mix_rate,
+                    version,
+                    protect,
+                    f0_file,
+                )
+                right_opt = self._run_pipeline_mono(
+                    model,
+                    net_g,
+                    sid,
+                    right,
+                    input_audio_path,
+                    times,
+                    f0_up_key,
+                    f0_method,
+                    file_index,
+                    index_rate,
+                    if_f0,
+                    filter_radius,
+                    tgt_sr,
+                    resample_sr,
+                    rms_mix_rate,
+                    version,
+                    protect,
+                    f0_file,
+                )
+                # align lengths
+                min_len = min(len(left_opt), len(right_opt))
+                left_opt = left_opt[:min_len]
+                right_opt = right_opt[:min_len]
+
+                # stack as stereo
+                return np.stack([left_opt, right_opt], axis=1)
+            else:
+                # fallback: treat as mono if shape isn't strictly (samples, 2)
+                return self._run_pipeline_mono(
+                    model,
+                    net_g,
+                    sid,
+                    audio.flatten(),
+                    input_audio_path,
+                    times,
+                    f0_up_key,
+                    f0_method,
+                    file_index,
+                    index_rate,
+                    if_f0,
+                    filter_radius,
+                    tgt_sr,
+                    resample_sr,
+                    rms_mix_rate,
+                    version,
+                    protect,
+                    f0_file,
+                )
+        else:
+            # mono path (original)
+            return self._run_pipeline_mono(
+                model,
+                net_g,
+                sid,
+                audio,
+                input_audio_path,
+                times,
+                f0_up_key,
+                f0_method,
+                file_index,
+                index_rate,
+                if_f0,
+                filter_radius,
+                tgt_sr,
+                resample_sr,
+                rms_mix_rate,
+                version,
+                protect,
+                f0_file,
+            )

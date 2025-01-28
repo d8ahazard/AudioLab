@@ -150,7 +150,10 @@ class VC:
             return "You need to upload an audio", None
         f0_up_key = int(f0_up_key)
         try:
-            audio = load_audio(input_audio_path, 16000)
+            # Pass mono=False to preserve stereo
+            audio = load_audio(input_audio_path, 16000, mono=False)
+            logger.info(f"Loaded audio shape: {audio.shape}")  # Log shape for debugging
+
             audio_max = np.abs(audio).max() / 0.95
             if audio_max > 1:
                 audio /= audio_max
@@ -182,10 +185,12 @@ class VC:
                 protect,
                 f0_file,
             )
+
             if self.tgt_sr != resample_sr >= 16000:
                 tgt_sr = resample_sr
             else:
                 tgt_sr = self.tgt_sr
+
             index_info = (
                 "Index:\n%s." % file_index
                 if os.path.exists(file_index)

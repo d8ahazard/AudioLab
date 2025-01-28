@@ -1,10 +1,6 @@
-import os
-import traceback
-
-import librosa
-import numpy as np
 import av
-from io import BytesIO
+import librosa
+import soundfile as sf
 
 
 def wav2(input_file, output_file, container_fmt, sr=44100):
@@ -43,30 +39,24 @@ def wav2(input_file, output_file, container_fmt, sr=44100):
     inp.close()
 
 
-def load_audio(file_path, sr=16000):
+def load_audio(file, sr=16000, mono=False):
     """
-    Load an audio file into a float32 NumPy array at the given sample rate (sr).
-    First try PyAV in-memory decoding to float32 (mono).
-    Fallback to librosa if PyAV fails.
+    Loads an audio file with optional resampling to 'sr' and optional downmixing to mono.
+    Returns a NumPy array of shape:
+      - (num_samples,) if mono or single-channel
+      - (num_samples, num_channels) if stereo (or multi-channel) and mono=False
     """
-    file_path = str(file_path).strip('"').strip()
+    # Read file with soundfile
+    audio, sr_in = sf.read(file)  # shape is (num_samples, num_channels) if stereo
 
-    if not os.path.exists(file_path):
-        raise RuntimeError(f"Audio path not found: {file_path}")
+    # If needed, resample using librosa
+    if sr_in != sr:
+        # Use named arguments to avoid version-specific issues
+        audio = librosa.resample(y=audio.T, orig_sr=sr_in, target_sr=sr).T
+        # Now 'audio' is shape (num_samples, num_channels)
 
-    try:
-        # Decode to PCM float32 in memory
-        with open(file_path, "rb") as f, BytesIO() as out_buf:
-            wav2(f, out_buf, "f32le", sr=sr)  # decode -> float32, 1-channel
-            return np.frombuffer(out_buf.getvalue(), dtype=np.float32).flatten()
+    # Optionally downmix to mono
+    if mono and audio.ndim > 1:
+        audio = audio.mean(axis=1)
 
-    except AttributeError:
-        # If PyAV has issues, fallback to librosa
-        print(f"PyAV decoding failed for {file_path}, falling back to librosa...")
-        audio, _ = librosa.load(file_path, sr=sr, mono=True)
-        return audio.astype(np.float32)
-
-    except Exception:
-        raise RuntimeError(
-            f"Could not load audio from {file_path}\n{traceback.format_exc()}"
-        )
+    return audio
