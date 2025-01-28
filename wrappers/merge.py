@@ -36,21 +36,6 @@ class Merge(BaseWrapper):
             overrides={"frame_rate": int(audio.frame_rate * 2 ** (pitch_shift / 12))}
         )
 
-    @staticmethod
-    def simple_noise_gate(segment: AudioSegment, threshold_db=-60) -> AudioSegment:
-        """
-        Silences portions of audio below threshold_db (in 20ms chunks).
-        """
-        chunk_size = 20  # ms
-        new_audio = AudioSegment.empty()
-        for i in range(0, len(segment), chunk_size):
-            chunk = segment[i:i+chunk_size]
-            if chunk.dBFS < threshold_db:
-                # Mute it by aggressively lowering volume
-                chunk = chunk - 80
-            new_audio += chunk
-        return new_audio
-
     def process_audio(self, pj_inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pj_outputs = []
 
@@ -183,9 +168,6 @@ class Merge(BaseWrapper):
 
             # Optional normalization
             merged_segment = effects.normalize(merged_segment)
-
-            # Optional simple noise gate to reduce hiss
-            merged_segment = self.simple_noise_gate(merged_segment, threshold_db=-60)
 
             # Final export (only once!)
             # If you have a known extension like .mp3, set format="mp3", etc.
