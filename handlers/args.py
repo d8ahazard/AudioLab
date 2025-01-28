@@ -14,20 +14,29 @@ class ArgHandler:
             self.args = {}
         if not hasattr(self, "descriptions"):
             self.descriptions = {}
+        if not hasattr(self, "elements"):
+            self.elements = {}  # Dictionary to track registered elements
 
     def register_description(self, wrapper_name: str, elem_name: str, description: str):
         elem_id = f"{wrapper_name}_{elem_name}"
         self.descriptions[elem_id] = description
 
     def register_element(self, wrapper_name: str, elem_name: str, gradio_element: Component, description: str = None):
-        # Initialize wrapper key in the dictionary
+        # Initialize wrapper key in the dictionaries
         if wrapper_name not in self.args:
             self.args[wrapper_name] = {}
+        if wrapper_name not in self.elements:
+            self.elements[wrapper_name] = {}
 
         # Get initial value (if available)
         element_value = getattr(gradio_element, "value", None)
         print(f"Registered {wrapper_name}.{elem_name} -> {element_value}")
         self.args[wrapper_name][elem_name] = element_value
+        self.elements[wrapper_name][elem_name] = gradio_element
+
+        # Optionally register description
+        if description:
+            self.register_description(wrapper_name, elem_name, description)
 
         # Set listeners for the element
         for method in ["upload", "change", "clear"]:
@@ -44,8 +53,13 @@ class ArgHandler:
             self.args[wrapper_name][elem_name] = value
             print(f"Updated {wrapper_name}.{elem_name} -> {value}")
 
+    def get_element(self, wrapper_name: str, elem_name: str):
+        # Retrieve the actual Gradio element
+        return self.elements.get(wrapper_name, {}).get(elem_name, None)
+
     def get_args(self):
         return self.args
+
 
     def get_descriptions_js(self):
         return """

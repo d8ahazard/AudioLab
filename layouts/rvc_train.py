@@ -564,7 +564,6 @@ def train1key(
     if not inputs:
         return "Please provide input files."
 
-
     def get_info_str(strr):
         infos.append(strr)
         return "\n".join(infos)
@@ -682,8 +681,6 @@ def list_project_weights(project_dir):
 
 def render():
     with gr.Row():
-        but5 = gr.Button("Train", variant="primary")
-    with gr.Row():
         with gr.Column():
             voice_name = gr.Textbox(label="Voice Name", value="")
             with gr.Row():
@@ -708,7 +705,6 @@ def render():
             )
             separate_vocals = gr.Checkbox(label="Separate Vocals", value=True)
             with gr.Accordion(label="Advanced", open=False):
-
                 sample_rate = gr.Radio(
                     label="Target Sampling Rate",
                     choices=["40k", "48k"],
@@ -824,8 +820,12 @@ def render():
         with gr.Column():
             input_files = gr.File(label="Input Files", type="filepath", file_types=["audio"], file_count="multiple")
         with gr.Column():
+            with gr.Row():
+                start_train = gr.Button("Train", variant="primary")
+                cancel_train = gr.Button("Cancel", variant="secondary", visible=False)
+
             info3 = gr.Textbox(label="Output Info", value="", max_lines=10)
-            but5.click(
+            start_train.click(
                 train1key,
                 [
                     voice_name,

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import threading
@@ -6,7 +8,6 @@ from typing import Any, List, Dict
 import librosa
 import numpy as np
 import soundfile as sf
-from scipy import signal
 
 from handlers.config import model_path, output_path
 from handlers.reverb import extract_reverb
@@ -22,8 +23,6 @@ class Separate(BaseWrapper):
       2) Optionally removes reverb/echo/noise/crowd,
       3) Can do background-vocal splitting,
       4) Can do advanced drum separation if requested.
-
-    Uses the new ensemble approach from `ensemble_separator.py` (via separate_music).
     """
 
     def register_api_endpoint(self, api) -> Any:
@@ -33,6 +32,7 @@ class Separate(BaseWrapper):
     priority = 1
     separator = None
     default = True
+    required = True
     description = (
         "Separate audio into distinct stems (vocals, instruments, bass, drums, etc.), "
         "optionally remove reverb, echo/delay, crowd noise, and general background noise."
@@ -40,6 +40,18 @@ class Separate(BaseWrapper):
     file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
+        "delete_extra_stems": TypedInput(
+            default=True,
+            description="Automatically delete intermediate stem files after processing to save disk space. Disable this if you want to retain all intermediate outputs.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+        "separate_bg_vocals": TypedInput(
+            default=True,
+            description="Separates background vocals from the main vocals, creating an additional stem for detailed manipulation.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
         "separate_stems": TypedInput(
             default=False,
             description="Enable to separate the audio into distinct stems, such as vocals, instruments, and percussion. Useful for remixing or isolating specific elements.",
@@ -61,18 +73,6 @@ class Separate(BaseWrapper):
         "alt_bass_model": TypedInput(
             default=False,
             description="Use an alternative bass model for better bass separation. This may improve the quality of the bass stem if the bass part was played on an electric/plucked bass.",
-            type=bool,
-            gradio_type="Checkbox"
-        ),
-        "delete_extra_stems": TypedInput(
-            default=True,
-            description="Automatically delete intermediate stem files after processing to save disk space. Disable this if you want to retain all intermediate outputs.",
-            type=bool,
-            gradio_type="Checkbox"
-        ),
-        "separate_bg_vocals": TypedInput(
-            default=True,
-            description="Separates background vocals from the main vocals, creating an additional stem for detailed manipulation.",
             type=bool,
             gradio_type="Checkbox"
         ),
@@ -168,123 +168,15 @@ class Separate(BaseWrapper):
         for m in needed:
             self.separator.download_model_files(m)
 
-    def separate_bg_multi(self, current_path, output_dir):
-        """
-        Run 3 background-vocal models on the same input track, then combine
-        their outputs into a single final Vocals and Instrumental stem via
-        simple ensemble averaging + lowpass/highpass filtering.
-
-        Returns: [all outputs], [final_instrumental_path, final_vocals_path]
-        """
-
-        # Simple Linkwitz-Riley style filter. Adjust cutoff and order as desired.
-        def lr_filter(audio, cutoff, ftype, order=6, sr=44100):
-            """
-            audio shape: (channels, samples)
-            cutoff: frequency in Hz
-            ftype: 'lowpass' or 'highpass'
-            order: 6 or 4, etc. (but we do order // 2 for actual Butter)
-            sr: sample rate
-            """
-            nyquist = 0.5 * sr
-            norm_cutoff = cutoff / nyquist
-            b, a = signal.butter(order // 2, norm_cutoff, btype=ftype, analog=False, output='ba')
-            sos = signal.tf2sos(b, a)
-            filtered = signal.sosfiltfilt(sos, audio, axis=1)
-            return filtered
-
-        # Grab a base name for final output
-
-        base_name = os.path.splitext(os.path.basename(current_path))[0]
-
-        # 1) Use each model to separate Vocals & Instrumental.
-        bg_model = [
-            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
-            "UVR_MDXNET_KARA_2.onnx",
-            "UVR_MDXNET_KARA.onnx"
-        ]
-
-        # We'll store the resulting vocals/instrumental from each model
-        # as np arrays in lists:
-        vocals_list = []
-        bg_list = []
-        out_files = []
-        sr = 44100
-        for background_vocal_model in bg_model:
-            self.separator.load_model(background_vocal_model)
-            files = self.separator.separate(current_path)
-            files = [os.path.join(output_dir, f) for f in files]
-            out_files.extend(files)
-            v_path = None
-            bg_path = None
-            for f in files:
-                if "(Vocals)_(Vocals)" in f:
-                    v_path = f
-                elif "(Vocals)_(Instrumental)" in f:
-                    bg_path = f
-
-            if v_path and os.path.exists(v_path):
-                v_data, sr = librosa.load(v_path, mono=False, sr=44100)
-                if len(v_data.shape) == 1:
-                    v_data = np.stack([v_data, v_data], axis=0)
-                vocals_list.append(v_data)
-            if bg_path and os.path.exists(bg_path):
-                bg_data, sr = librosa.load(bg_path, mono=False, sr=44100)
-                if len(bg_data.shape) == 1:
-                    bg_data = np.stack([bg_data, bg_data], axis=0)
-                bg_list.append(bg_data)
-
-        if len(vocals_list) < 3 or len(bg_list) < 3:
-            return out_files, []
-
-        ref_len = vocals_list[0].shape[1]
-        for arr in vocals_list[1:]:
-            if arr.shape[1] < ref_len:
-                ref_len = arr.shape[1]
-
-        for i in range(len(vocals_list)):
-            vocals_list[i] = vocals_list[i][:, :ref_len]
-
-        stacked_v = np.stack(vocals_list, axis=0)
-        avg_vocals = np.mean(stacked_v, axis=0)
-
-        vocals_low = lr_filter(avg_vocals, cutoff=10000, ftype='lowpass', order=6, sr=44100) * 1.01
-        vocals_high = lr_filter(vocals_list[1], cutoff=10000, ftype='highpass', order=6, sr=44100)
-        final_vocals = vocals_low + vocals_high
-
-        ref_len_i = bg_list[0].shape[1]
-        for arr in bg_list[1:]:
-            if arr.shape[1] < ref_len_i:
-                ref_len_i = arr.shape[1]
-        for i in range(len(bg_list)):
-            bg_list[i] = bg_list[i][:, :ref_len_i]
-        stacked_i = np.stack(bg_list, axis=0)
-        avg_bg = np.mean(stacked_i, axis=0)
-
-        bg_low = lr_filter(avg_bg, 8000, 'lowpass', order=6, sr=44100)
-        bg_high = lr_filter(bg_list[2], 8000, 'highpass', order=6, sr=44100)
-        final_bg = bg_low + bg_high
-
-        os.makedirs(output_dir, exist_ok=True)
-        final_vocals_path = os.path.join(output_dir, f"{base_name}_(Vocals).wav")
-        final_bg_path = os.path.join(output_dir, f"{base_name}_(BG_Vocals).wav")
-
-        min_len = min(final_vocals.shape[1], final_bg.shape[1])
-        final_vocals = final_vocals[:, :min_len]
-        final_bg = final_bg[:, :min_len]
-
-        sf.write(final_vocals_path, final_vocals.T, sr, subtype="FLOAT")
-        sf.write(final_bg_path, final_bg.T, sr, subtype="FLOAT")
-        out_files.extend([final_vocals_path, final_bg_path])
-        return out_files, [final_bg_path, final_vocals_path]
-
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         """
         The big method:
-          1) Calls `separate_music` to get stems,
-          2) Optionally splits background vocals from main,
-          3) Then runs reverb/echo/delay/crowd/noise removal in the user-specified way,
-          4) Returns final stems.
+          1) Potentially skip separation if the stems/ config already matches,
+          2) If needed, calls `separate_music` to get stems,
+          3) Optionally splits background vocals from main,
+          4) Then runs reverb/echo/delay/crowd/noise removal in the user-specified way,
+          5) Saves a JSON for caching separation results,
+          6) Returns final stems.
         """
         self.setup()
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
@@ -321,99 +213,188 @@ class Separate(BaseWrapper):
             self.separator.output_dir = out_dir
             os.makedirs(out_dir, exist_ok=True)
 
-            # 1) Actual separation
-            separated_stems = separate_music(
-                input_audio=[input_file],
-                output_folder=out_dir,
-                cpu=False,
-                overlap_demucs=0.1,
-                overlap_VOCFT=0.1,
-                overlap_VitLarge=1,
-                overlap_InstVoc=1,
-                weight_InstVoc=8,
-                weight_VOCFT=1,
-                weight_VitLarge=5,
-                single_onnx=False,
-                large_gpu=True,
-                BigShifts=7,
-                vocals_only=not separate_stems,
-                use_VOCFT=True,
-                output_format="FLOAT",
-                callback=callback,
-                separate_drums=separate_drums,
-                separate_woodwinds=separate_woodwinds,
-                alt_bass_model=alt_bass_model
-            )
-            all_generated.extend(separated_stems)
+            # 1) Check if there's a JSON with existing separation info
+            cache_file = os.path.join(out_dir, "separation_info.json")
+            skip_separation = False
+            if os.path.exists(cache_file):
+                # Read the cache
+                with open(cache_file, "r") as f:
+                    cached_data = json.load(f)
 
-            # 2) Optionally do BG Vocal splitting (like your old logic).
-            #    We'll look for e.g. "...(Vocals).wav", run a karaoke model, rename the "instrumental" => BG_Vocals
-            updated_stems = []
-            for full_path in separated_stems:
-                base_name = os.path.basename(full_path)
-                if "(Vocals)" in base_name and separate_bg_vocals:
-                    # run a Karaoke model on the vocal track
-                    out_files, final_stems = self.separate_bg_multi(full_path, out_dir)
-                    all_generated.extend(out_files)
-                    updated_stems.extend(final_stems)   # [BG_Vocals, Vocals]
-                else:
-                    updated_stems.append(full_path)
+                # Compare config
+                # Make a small dict of current separation config
+                current_config = {
+                    "file": input_file,
+                    "separate_stems": separate_stems,
+                    "separate_drums": separate_drums,
+                    "separate_woodwinds": separate_woodwinds,
+                    "alt_bass_model": alt_bass_model,
+                    "separate_bg_vocals": separate_bg_vocals,
+                    # removal toggles
+                    "reverb_removal": reverb_removal,
+                    "echo_removal": echo_removal,
+                    "delay_removal": delay_removal,
+                    "crowd_removal": crowd_removal,
+                    "noise_removal": noise_removal,
+                    # model picks
+                    "delay_removal_model": delay_removal_model,
+                    "noise_removal_model": noise_removal_model,
+                    "crowd_removal_model": crowd_removal_model,
+                    "store_reverb_ir": store_reverb_ir,
+                }
 
-            # 3) Transform chain: reverb -> echo -> delay -> crowd -> noise
-            transformations = [
-                ("deverb_bs_roformer_8_384dim_10depth.ckpt", "No Reverb", reverb_removal),
-                (delay_removal_model, "No Echo", echo_removal),
-                (delay_removal_model, "No Delay", delay_removal),
-                (crowd_removal_model, "No Crowd", crowd_removal),
-                (noise_removal_model, "No Noise", noise_removal),
-            ]
+                # If the configs match exactly, check files & hashes
+                if cached_data.get("config") == current_config:
+                    # verify all stems exist and match
+                    output_stems = []
+                    all_stems_good = True
+                    for stem_info in cached_data.get("stems", []):
+                        path = stem_info["path"]
+                        output_stems.append(path)
+                        digest = stem_info["hash"]
 
-            final_stem_paths = []
-            for stem_path in updated_stems:
-                current_path = stem_path
-                # each transform can produce e.g. "(No Reverb)" and its complementary track
-                # we pick the "(No Reverb)" track as the new current_path
-                for model_file, out_label, transform_flag in transformations:
-                    if self._should_apply_transform(os.path.basename(current_path), transform_flag):
-                        self.separator.load_model(model_file)
-                        partial = self.separator.separate(current_path)
-                        # join
-                        partial_full = [os.path.join(project.project_dir, "stems", p) for p in partial]
-                        all_generated.extend(partial_full)
+                        if not os.path.exists(path):
+                            all_stems_good = False
+                            break
+                        if self._hash_file(path) != digest:
+                            all_stems_good = False
+                            break
 
-                        # we typically want the "NoReverb", "NoEcho", etc. track
-                        pick = None
-                        alt = None
-                        if len(partial_full) == 2:
-                            if out_label.replace(" ", "") in partial_full[0]:
-                                pick = partial_full[0]
-                                alt = partial_full[1]
+                    if all_stems_good:
+                        # We can skip separation; retrieve the final stems from JSON
+                        skip_separation = True
+                        # Our code also manipulates stems after separation, so let's gather them:
+                        final_stem_paths = [st["path"] for st in cached_data["stems"]]
+                        proj_stems.extend(final_stem_paths)
+                        outputs.extend(final_stem_paths)
+                        project.add_output("stems", final_stem_paths)
+                        projects_out.append(project)
+                        continue
+
+            # 2) If we don't skip separation, do the separation process
+            if not skip_separation:
+                # 2A) Actual separation
+                separated_stems = separate_music(
+                    input_audio=[input_file],
+                    output_folder=out_dir,
+                    cpu=False,
+                    overlap_demucs=0.1,
+                    overlap_VOCFT=0.1,
+                    overlap_VitLarge=1,
+                    overlap_InstVoc=1,
+                    weight_InstVoc=8,
+                    weight_VOCFT=1,
+                    weight_VitLarge=5,
+                    single_onnx=False,
+                    large_gpu=True,
+                    BigShifts=7,
+                    vocals_only=not separate_stems,
+                    use_VOCFT=True,
+                    output_format="FLOAT",
+                    callback=callback,
+                    separate_drums=separate_drums,
+                    separate_woodwinds=separate_woodwinds,
+                    alt_bass_model=alt_bass_model
+                )
+                all_generated.extend(separated_stems)
+
+                # 2B) Optionally do BG Vocal splitting
+                updated_stems = []
+                for full_path in separated_stems:
+                    base_name = os.path.basename(full_path)
+                    if "(Vocals)" in base_name and separate_bg_vocals:
+                        self.separator.load_model("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
+                        out_files = self.separator.separate(full_path)
+                        out_files_full = [os.path.join(out_dir, p) for p in out_files]
+                        out_files = [self._rename_bgvocal(p) for p in out_files_full]
+                        all_generated.extend(out_files)
+                        updated_stems.extend(out_files)  # [BG_Vocals, Vocals]
+                    else:
+                        updated_stems.append(full_path)
+
+                # 2C) Transform chain: reverb -> echo -> delay -> crowd -> noise
+                transformations = [
+                    ("deverb_bs_roformer_8_384dim_10depth.ckpt", "No Reverb", reverb_removal),
+                    (delay_removal_model, "No Echo", echo_removal),
+                    (delay_removal_model, "No Delay", delay_removal),
+                    (crowd_removal_model, "No Crowd", crowd_removal),
+                    (noise_removal_model, "No Noise", noise_removal),
+                ]
+
+                final_stem_paths = []
+                for stem_path in updated_stems:
+                    current_path = stem_path
+                    for model_file, out_label, transform_flag in transformations:
+                        if self._should_apply_transform(os.path.basename(current_path), transform_flag):
+                            self.separator.load_model(model_file)
+                            partial = self.separator.separate(current_path)
+                            partial_full = [os.path.join(out_dir, p) for p in partial]
+                            all_generated.extend(partial_full)
+
+                            pick, alt = None, None
+                            if len(partial_full) == 2:
+                                if out_label.replace(" ", "") in partial_full[0]:
+                                    pick = partial_full[0]
+                                    alt = partial_full[1]
+                                else:
+                                    pick = partial_full[1]
+                                    alt = partial_full[0]
+
+                                current_path = self._rename_file(os.path.basename(input_file), pick)
+
+                                # If reverb removal from main vocals, maybe store IR
+                                if out_label == "No Reverb" and "(Main Vocals)" in stem_path and store_reverb_ir and alt:
+                                    try:
+                                        out_ir = os.path.join(project.project_dir, "impulse_response.ir")
+                                        extract_reverb(current_path, alt, out_ir)
+                                    except Exception as e:
+                                        print("Error extracting IR:", e)
                             else:
-                                pick = partial_full[1]
-                                alt = partial_full[0]
+                                # if we have more or fewer than 2 stems
+                                for pf in partial_full:
+                                    if out_label.replace(" ", "") in pf:
+                                        current_path = self._rename_file(os.path.basename(input_file), pf)
+                                        break
+                    final_stem_paths.append(current_path)
 
-                            current_path = self._rename_file(os.path.basename(input_file), pick)
-                            # if reverb removal from main vocals, maybe store IR
-                            if out_label == "No Reverb" and "(Vocals)" in stem_path and store_reverb_ir and alt:
-                                try:
-                                    out_ir = os.path.join(project.project_dir, "impulse_response.ir")
-                                    extract_reverb(current_path, alt, out_ir)
-                                except Exception as e:
-                                    print("Error extracting IR:", e)
-                        else:
-                            # if we have more or fewer than 2 stems
-                            # pick whichever has out_label
-                            for pf in partial_full:
-                                if out_label.replace(" ", "") in pf:
-                                    current_path = self._rename_file(os.path.basename(input_file), pf)
-                                    break
+                proj_stems.extend(final_stem_paths)
+                project.add_output("stems", proj_stems)
+                outputs.extend(final_stem_paths)
+                projects_out.append(project)
 
-                final_stem_paths.append(current_path)
+                # 3) Write out a JSON to skip future repeated separation
+                cache_info = {
+                    "config": {
+                        "file": input_file,
+                        "separate_stems": separate_stems,
+                        "separate_drums": separate_drums,
+                        "separate_woodwinds": separate_woodwinds,
+                        "alt_bass_model": alt_bass_model,
+                        "separate_bg_vocals": separate_bg_vocals,
+                        "reverb_removal": reverb_removal,
+                        "echo_removal": echo_removal,
+                        "delay_removal": delay_removal,
+                        "crowd_removal": crowd_removal,
+                        "noise_removal": noise_removal,
+                        "delay_removal_model": delay_removal_model,
+                        "noise_removal_model": noise_removal_model,
+                        "crowd_removal_model": crowd_removal_model,
+                        "store_reverb_ir": store_reverb_ir
+                    },
+                    "stems": []
+                }
 
-            proj_stems.extend(final_stem_paths)
-            project.add_output("stems", proj_stems)
-            outputs.extend(final_stem_paths)
-            projects_out.append(project)
+                # Include paths + file hashes
+                for p in final_stem_paths:
+                    hash_val = self._hash_file(p)
+                    cache_info["stems"].append({
+                        "path": p,
+                        "hash": hash_val,
+                    })
+
+                with open(cache_file, "w") as f:
+                    json.dump(cache_info, f, indent=2)
+            # End if not skip_separation
 
         # 4) Clean up intermediate if requested
         if delete_extra_stems:
@@ -422,6 +403,101 @@ class Separate(BaseWrapper):
                     self.del_stem(p)
 
         return projects_out
+
+    def test_vocal_models(self, input_file: str):
+        """
+        Test the vocal separation models by running them on a single input track.
+        Layer vocal and instrumental/other outputs into combined tracks using weighted contributions.
+        Normalize and apply noise removal based on averaged min/max amplitudes.
+        """
+        self.setup()
+        out_dir = os.path.join(output_path, "test_vocal_models")
+        os.makedirs(out_dir, exist_ok=True)
+
+        # Define models with weights for vocals and instrumentals
+        bg_model = [
+            ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),  # vocals (8.4), instrumental (16.0)
+            ("MDX23C-8KFFT-InstVoc_HQ_2.ckpt", 7.2, 14.9),  # vocals (7.2), instrumental (14.9)
+            ("UVR-MDX-NET-Voc_FT.onnx", 6.9, 14.9),  # vocals (6.9), instrumental (14.9)
+            ("Kim_Vocal_2.onnx", 6.9, 14.9),  # vocals (6.9), instrumental (14.9)
+            ("Kim_Vocal_1.onnx", 6.8, 14.9),  # vocals (6.8), instrumental (14.9)
+            ("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt", 6.8, 16.4),
+            # vocals (6.8), instrumental (16.4)
+        ]
+
+        all_vocals = []
+        all_instrumentals = []
+        vocal_weights = []
+        instrumental_weights = []
+        sr = None  # Sampling rate
+        max_amplitude = 0  # Track max amplitude across all files
+
+        self.separator.output_dir = out_dir
+        input_base, _ = os.path.splitext(os.path.basename(input_file))
+        for background_vocal_model, vocal_weight, instrumental_weight in bg_model:
+            model_base = background_vocal_model.replace('.', '_')  # Handle periods in filenames
+            vocal_file = os.path.join(out_dir, f"{input_base}_(Vocals)_{model_base}.wav")
+            instrumental_file = os.path.join(out_dir, f"{input_base}_(Instrumental)_{model_base}.wav")
+
+            if not os.path.exists(vocal_file) or not os.path.exists(instrumental_file):
+                self.separator.load_model(background_vocal_model)
+                files = self.separator.separate(input_file)
+                files = [os.path.join(out_dir, f) for f in files]
+
+                vocal_file = files[0] if "(Vocals)" in files[0] else files[1]
+                instrumental_file = files[1] if "(Vocals)" in files[0] else files[0]
+
+            # Load files and track max amplitude
+            vocals, sr = librosa.load(vocal_file, sr=None, mono=False)
+            instrumentals, _ = librosa.load(instrumental_file, sr=None, mono=False)
+
+            max_amplitude = max(
+                max_amplitude,
+                np.max(np.abs(vocals)),
+                np.max(np.abs(instrumentals)),
+            )
+
+            # Weight and store outputs
+            all_vocals.append(vocals * vocal_weight)
+            all_instrumentals.append(instrumentals * instrumental_weight)
+            vocal_weights.append(vocal_weight)
+            instrumental_weights.append(instrumental_weight)
+
+        # Combine and normalize outputs
+        def combine_and_normalize(tracks, weights):
+            max_length = max(track.shape[-1] for track in tracks)
+            combined = np.zeros((tracks[0].shape[0], max_length), dtype=np.float32)  # Stereo
+
+            for i, track in enumerate(tracks):
+                combined[:, :track.shape[-1]] += track / sum(weights)
+
+            # Normalize to max amplitude
+            combined /= np.max(np.abs(combined))
+            combined *= max_amplitude
+            return combined
+
+        combined_vocals = combine_and_normalize(all_vocals, vocal_weights)
+        combined_instrumentals = combine_and_normalize(all_instrumentals, instrumental_weights)
+
+        # Noise removal
+        def remove_noise(audio):
+            # Compute average of min/max amplitudes for noise threshold
+            non_silent = audio[np.abs(audio) > 0.01]  # Avoid zeros
+            if non_silent.size > 0:
+                threshold = (np.min(non_silent) + np.max(non_silent)) / 2
+                audio[np.abs(audio) < threshold] = 0  # Zero out low-amplitude noise
+            return audio
+
+        combined_vocals = remove_noise(combined_vocals)
+        combined_instrumentals = remove_noise(combined_instrumentals)
+
+        # Save final files
+        vocal_file = os.path.join(out_dir, f"{input_base}_Combined_Vocals.wav")
+        instrumental_file = os.path.join(out_dir, f"{input_base}_Combined_Instrumentals.wav")
+        sf.write(vocal_file, combined_vocals.T, sr)  # Transpose for stereo
+        sf.write(instrumental_file, combined_instrumentals.T, sr)  # Transpose for stereo
+
+        return vocal_file, instrumental_file
 
     def del_stem(self, path: str) -> bool:
         try:
@@ -444,21 +520,25 @@ class Separate(BaseWrapper):
         if setting == "All":
             return True
         if setting == "All Vocals":
-            return "(Vocals)" in stem_name or "(BG_Vocals)" in stem_name
+            return "Vocals)" in stem_name
         if setting == "Main Vocals":
-            return "(Vocals)" in stem_name and "(BG_Vocals)" not in stem_name
+            return "Vocals)" in stem_name and "(BG_Vocals)" not in stem_name
         return False
 
     @staticmethod
     def _rename_bgvocal(filepath: str) -> str:
         """
-        For the Karaoke sub-separation of main vocals, the 'instrumental' track is actually BG vocals.
-        We'll rename the file so it has '(BG_Vocals)' instead of '(Instrumental)'.
+        For the Karaoke sub-separation of main vocals, the 'instrumental' track
+        is actually BG vocals.
         Example: 'SongName_(Instrumental).wav' => 'SongName_(BG_Vocals).wav'
         """
         dirname = os.path.dirname(filepath)
         oldbase = os.path.basename(filepath)
-        newbase = oldbase.replace("(Instrumental)", "(BG_Vocals)")
+        newbase = oldbase.replace("(Vocals)_(Instrumental)", "(Vocals)(BG_Vocals)")
+        newbase = newbase.replace("(Vocals)_(Vocals)", "(Vocals)(Main Vocals)")
+        newbase = newbase.replace("(Vocals)(Instrumental)", "(Vocals)(BG_Vocals)")
+        newbase = newbase.replace("(Vocals)(Vocals)", "(Vocals)(Main Vocals)")
+        newbase = newbase.replace("_mel_band_roformer_karaoke_aufr33_viperx_sdr_10", "")
         newpath = os.path.join(dirname, newbase)
         if os.path.exists(filepath):
             if os.path.exists(newpath):
@@ -477,16 +557,14 @@ class Separate(BaseWrapper):
         base_only = os.path.splitext(os.path.basename(base_in))[0]
         all_parens = re.findall(r"\([^)]*\)", os.path.basename(filepath))
 
-        # references to remove
         to_strip = [
             "deverb_bs_roformer", "UVR-DeEcho-DeReverb", "UVR-De-Echo-Normal",
             "UVR-DeNoise", "UVR-DeNoise-Lite", "mel_band_roformer", "MDX23C", "UVR-MDX-NET",
             "drumsep", "roformer", "viperx", "crowd", "karaoke", "instrumental", "_InstVoc", "_VOCFT",
-            "NoReverb", "NoEcho", "NoDelay", "NoCrowd", "NoNoise"
+            "NoReverb", "NoEcho", "NoDelay", "NoCrowd", "NoNoise", "_mel_band_roformer_karaoke_aufr33_viperx_sdr_10"
         ]
         filtered = []
         for g in all_parens:
-            # keep only user-friendly parentheses
             if not any(p.lower() in g.lower() for p in to_strip):
                 filtered.append(g)
 
@@ -498,3 +576,15 @@ class Separate(BaseWrapper):
                 os.remove(final_path)
             os.rename(filepath, final_path)
         return final_path
+
+    @staticmethod
+    def _hash_file(filepath: str) -> str:
+        """
+        Compute a sha256 hash of the file contents.
+        Useful for verifying the file hasn't changed between runs.
+        """
+        sha256_hash = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                sha256_hash.update(chunk)
+        return sha256_hash.hexdigest()

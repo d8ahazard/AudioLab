@@ -1,4 +1,8 @@
-import handlers.processing # noqa (Keep this here, and first, as it is required for multiprocessing to work)
+import re
+
+import yt_dlp
+
+import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 import argparse
 import importlib
 import os
@@ -8,16 +12,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
-
 import gradio as gr
 from torchaudio._extension import _init_dll_path
 
 from handlers.args import ArgHandler
-from handlers.config import model_path
+from handlers.config import model_path, output_path
 from layouts.rvc_train import render as rvc_render
 from layouts.tts import render_tts
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
+import logging
+
+# Set log level for audio_separate to INFO
+logging.getLogger("separate").setLevel(logging.INFO)
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
     _init_dll_path()
@@ -59,8 +66,8 @@ def list_wrappers():
                 traceback.print_exc()
 
     all_wrappers = sorted(all_wrappers, key=lambda x: get_processor(x).priority)
-    selected_wrappers = [wrapper for wrapper in all_wrappers if get_processor(wrapper).default]
-    print(f"Found {len(all_wrappers)} wrappers: {all_wrappers}")
+    selected_wrappers = [wrapper for wrapper in all_wrappers if
+                         get_processor(wrapper).default or get_processor(wrapper).required]
     return all_wrappers, selected_wrappers
 
 
@@ -85,6 +92,18 @@ def toggle_visibility(processors: List[str], all_wrappers: List[str], all_accord
     ]
 
 
+def enforce_defaults(processors: List[str]):
+    wrappers, _ = list_wrappers()
+    required_wrappers = [wrapper for wrapper in wrappers if get_processor(wrapper).required]
+    # Add any required_wrapper that is not already in processors
+    for wrapper in required_wrappers:
+        if wrapper not in processors:
+            processors.append(wrapper)
+    # Sort the processors by priority
+    processors = sorted(processors, key=lambda x: get_processor(x).priority)
+    return gr.update(value=processors)
+
+
 def get_audio_files(file_paths: List[str]) -> List[str]:
     audio_files = []
     for file_path in file_paths:
@@ -105,11 +124,79 @@ def is_audio(file_path: str) -> bool:
     return Path(file_path).suffix in ['.wav', '.mp3', '.flac']
 
 
-def update_output_preview(output: str) -> Tuple[gr.update, gr.update]:
+def download_file(url):
+    # 1. Validate the URL
+    if not url or not url.startswith('http'):
+        return gr.update()
+
+    try:
+        # 2. Pre-fetch media information
+        ydl_opts = {
+            'format': 'bestaudio/best',  # Ensure we get the highest quality audio
+            'noplaylist': True,  # Avoid downloading entire playlists
+            'quiet': True,  # Minimize yt-dlp output
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:  # Handle playlist case (unlikely with noplaylist=True)
+                info = info['entries'][0]
+
+            # Extract and sanitize the title to use as a filename
+            title = info.get('title', 'unknown_title')
+            sanitized_title = re.sub(r'[\\/*?:"<>|]', "_", title)
+
+            # Construct the file path
+            download_dir = os.path.join(output_path, "downloaded")
+            os.makedirs(download_dir, exist_ok=True)
+            file_path = os.path.join(download_dir, f"{sanitized_title}.mp3")
+
+            # 6. Check if the file already exists
+            if os.path.exists(file_path):
+                return gr.update(value=[file_path])
+
+            # Update ydl_opts for downloading
+            ydl_opts.update({
+                'outtmpl': os.path.join(download_dir, sanitized_title),  # Exclude extension
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            })
+
+            # 4. Handle downloading the file
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
+                ydl_download.download([url])
+
+            # Ensure the file was downloaded
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found after download: {file_path}")
+
+            # Return the file path for gr.File
+            return gr.update(value=[file_path])
+    except Exception as e:
+        print(f"Error: {e}")
+        return gr.update()
+
+
+def update_preview(output: str) -> Tuple[gr.update, gr.update]:
     show_audio = is_audio(output)
     show_image = not show_audio
     return (gr.update(visible=show_audio, value=output if show_audio else None),
             gr.update(visible=show_image, value=output if show_image else None))
+
+
+def update_preview_select(input_files: List[str]) -> Tuple[gr.update, gr.update, gr.update]:
+    if not input_files:
+        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+    audio_files = get_audio_files(input_files)
+    image_files = get_image_files(input_files)
+    first_audio = audio_files[0] if audio_files else None
+    first_image = image_files[0] if image_files else None
+    return (gr.update(choices=input_files, value=first_audio, visible=bool(audio_files) or bool(image_files)),
+            gr.update(value=first_audio, visible=bool(audio_files)),
+            gr.update(value=first_image, visible=bool(image_files)),
+            )
 
 
 def process(processors: List[str], inputs: List[str], progress=gr.Progress()) -> List[str]:
@@ -121,11 +208,17 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
 
     progress(0, f"Processing with {len(processors)} processors...")
     outputs = []
+    all_outputs = []
     inputs = [ProjectFiles(file_path) for file_path in inputs]
+    # Store the clone pitch shift value for the next processor
+    clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
     for processor_title in processors:
         tgt_processor = get_processor(processor_title)
         processor_key = tgt_processor.title.replace(' ', '')
         processor_settings = settings.get(processor_key, {}) if settings else {}
+        # If the processor is 'merge', set the pitch_shift to the last clone pitch shift
+        if processor_title == 'Merge':
+            processor_settings['pitch_shift'] = clone_pitch_shift
         if len(processor_settings):
             print(f"Processor settings for {processor_title}:")
             print("---------------------------------------------------------------------")
@@ -135,12 +228,13 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
         else:
             print(f"No settings found for {processor_title}.")
         outputs = tgt_processor.process_audio(inputs, progress_callback, **processor_settings)
+        for output in outputs:
+            all_outputs.extend(output.last_outputs)
         inputs = outputs
 
-    last_output_files = []
-    for output in outputs:
-        last_output_files.extend(output.last_outputs)
-    outputs = last_output_files
+    # Last output should be first in the list
+    all_outputs.reverse()
+    outputs = all_outputs
     output_audio_files = get_audio_files(outputs)
     output_image_files = get_image_files(outputs)
     output_images_and_audio = output_audio_files + output_image_files
@@ -186,37 +280,59 @@ if __name__ == '__main__':
         js += f"\n{css}"
 
     with gr.Blocks(title='AudioLab', head=js) as ui:
-        with gr.Tabs():
-            with gr.Tab(label='TTS'):
+        with gr.Tabs(selected="process"):
+            with gr.Tab(label='TTS', id="tts"):
                 render_tts()
-            with gr.Tab(label='Process'):
-                processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers, elem_id='processor_list')
+            with gr.Tab(label='Process', id="process"):
+                processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers,
+                                                  elem_id='processor_list')
                 progress_display = gr.HTML(label='Progress', value='')
 
                 accordions = []
                 with gr.Row():
-                    start_processing = gr.Button(value='Start Processing')
-
-                with gr.Row():
                     with gr.Column() as settings_ui:
                         for wrapper_name in wrappers:
                             processor = get_processor(wrapper_name)
-                            show_accordion = len(processor.allowed_kwargs) > 0 and processor.default
+                            all_kwargs = processor.allowed_kwargs
+                            # Filter by kwargs with render=True
+                            render_kwargs = {key: value for key, value in all_kwargs.items() if value.render}
+                            show_accordion = len(render_kwargs) > 0 and processor.default
                             accordion = gr.Accordion(label=processor.title, visible=show_accordion, open=False)
                             with accordion:
                                 processor.render_options(gr.Column())
                             accordions.append(accordion)
 
                     with gr.Column():
+                        input_select = gr.Dropdown(label='Select Input Preview', choices=[], value=None, visible=False,
+                                                   interactive=True)
+                        input_audio = gr.Audio(label='Input Audio', value=None, visible=False)
+                        input_image = gr.Image(label='Input Image', value=None, visible=False)
                         input_files = gr.File(label='Input Files', file_count='multiple', file_types=['audio', 'video'])
+                        arg_handler.register_element("main", "process_inputs", input_files)
+                        with gr.Row():
+                            with gr.Column(scale=2):
+                                input_url = gr.Textbox(label='Input URL', placeholder='Enter URL', visible=True,
+                                                       interactive=True)
+                            with gr.Column():
+                                input_url_button = gr.Button(value='Load', visible=True, interactive=True)
                     with gr.Column():
-                        output_files = gr.File(label='Output Files', file_count='multiple',
-                                               file_types=['audio', 'video'],
-                                               interactive=False)
+                        with gr.Row():
+                            start_processing = gr.Button(value='Start Processing')
+                            cancel_processing = gr.Button(value='Cancel Processing', variant='secondary')
+
                         output_select = gr.Dropdown(label='Select Output Preview', choices=[], value=None,
                                                     visible=False, interactive=True)
                         output_audio = gr.Audio(label='Output Audio', value=None, visible=False)
                         output_image = gr.Image(label='Output Image', value=None, visible=False)
+                        output_files = gr.File(label='Output Files', file_count='multiple',
+                                               file_types=['audio', 'video'],
+                                               interactive=False)
+
+                processor_list.input(
+                    fn=enforce_defaults,
+                    inputs=[processor_list],
+                    outputs=[processor_list]
+                )
 
                 processor_list.change(
                     fn=lambda processors: toggle_visibility(processors, wrappers, accordions),
@@ -224,10 +340,28 @@ if __name__ == '__main__':
                     outputs=[accordion for accordion in accordions]
                 )
 
+                input_files.change(
+                    fn=update_preview_select,
+                    inputs=[input_files],
+                    outputs=[input_select, input_audio, input_image]
+                )
+
+                input_select.change(
+                    fn=update_preview,
+                    inputs=[input_select],
+                    outputs=[input_audio, input_image]
+                )
+
                 output_select.change(
-                    fn=update_output_preview,
+                    fn=update_preview,
                     inputs=[output_select],
                     outputs=[output_audio, output_image]
+                )
+
+                input_url_button.click(
+                    fn=download_file,
+                    inputs=[input_url],
+                    outputs=[input_files]
                 )
 
                 start_processing.click(
@@ -235,7 +369,7 @@ if __name__ == '__main__':
                     inputs=[processor_list, input_files],
                     outputs=[output_files, output_select, output_audio, output_image, progress_display]
                 )
-            with gr.Tab(label="Train"):
+            with gr.Tab(label="Train", id="train"):
                 rvc_render()
 
     # Launch the UI with specified host and port

@@ -91,6 +91,7 @@ class BaseWrapper:
     allowed_kwargs = {}
     description = "Base Wrapper"
     default = False
+    required = False
 
     def __new__(cls):
         if cls._instance is None:

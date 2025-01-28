@@ -1,4 +1,5 @@
 import os
+import subprocess
 from typing import List, Dict, Any
 
 from util.data_classes import ProjectFiles
@@ -36,13 +37,21 @@ class Convert(BaseWrapper):
                 continue
             output_folder = os.path.join(project.project_dir)
             os.makedirs(output_folder, exist_ok=True)
-            for input_file in non_mp3_inputs:
+            for idx, input_file in enumerate(non_mp3_inputs):
+                if callback:
+                    pct_done = int((idx + 1) / len(non_mp3_inputs) * 100)
+                    callback(pct_done, f"Converting {os.path.basename(input_file)}")
                 file_name, ext = os.path.splitext(os.path.basename(input_file))
-                output_file = os.path.join(output_folder, f"{file_name}.mp3")
+                output_file = os.path.join(output_folder, f"{file_name}(Final).mp3")
                 if os.path.exists(output_file):
                     os.remove(output_file)
                 # Convert to MP3
-                os.system(f'ffmpeg -i "{input_file}" -b:a {bitrate} "{output_file}"')
+                subprocess.run(
+                    f'ffmpeg -i "{input_file}" -b:a {bitrate} "{output_file}"',
+                    shell=True,
+                    stdout=subprocess.DEVNULL,  # Suppress stdout
+                    stderr=subprocess.PIPE,  # Redirect stderr to capture errors (optional)
+                )
                 outputs.append(output_file)
             project.add_output("converted", outputs)
             pj_outputs.append(project)

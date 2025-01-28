@@ -16,7 +16,7 @@ class ProjectFiles:
         file_hash = hash_gen.hexdigest()[:8]  # Shorten the hash to 8 characters for brevity
         print(f"Hash of {input_file}: {file_hash}")
         # Create a project directory for the input file and hash
-        project_name = os.path.basename(input_file).split('.')[0].replace(' ', '_')
+        project_name, _ = os.path.splitext(os.path.basename(input_file))
         project_dir = os.path.join(output_path, f"{project_name}_{file_hash}")
         os.makedirs(project_dir, exist_ok=True)
         source_dir = os.path.join(project_dir, 'source')

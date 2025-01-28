@@ -1,8 +1,17 @@
+import os
+
 import gradio as gr
+
+from handlers.args import ArgHandler
 from handlers.tts import TTSHandler
+
+arg_handler = ArgHandler()
+SEND_TO_PROCESS_BUTTON: gr.Button = None
+OUTPUT_AUDIO: gr.Audio = None
 
 
 def render_tts():
+    global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
     tts_handler = TTSHandler()
 
     def update_tts_model(language):
@@ -28,10 +37,6 @@ def render_tts():
             return f"Error: {str(e)}"
 
     with gr.Row():
-        start_tts = gr.Button(value="Start TTS")
-        send_to_process = gr.Button(value="Send to Process")
-
-    with gr.Row():
         with gr.Column():
             tts_language = gr.Dropdown(label="Language", choices=tts_handler.available_languages(), value="en")
             tts_model = gr.Dropdown(label="Model", choices=tts_handler.available_models(),
@@ -44,12 +49,30 @@ def render_tts():
         with gr.Column():
             speaker_wav = gr.File(label="Speaker Audio", file_count="single", file_types=["audio"])
         with gr.Column():
-            output_audio = gr.Audio(label="Output Audio")
+            with gr.Row():
+                start_tts = gr.Button(value="Start TTS")
+                SEND_TO_PROCESS_BUTTON = gr.Button(value="Send to Process", variant="secondary")
+            OUTPUT_AUDIO = gr.Audio(label="Output Audio")
 
     tts_language.change(update_tts_model, inputs=tts_language, outputs=tts_model)
     tts_model.change(select_tts_model, inputs=tts_model, outputs=[speaker_list])
     start_tts.click(
         fn=run_tts,
         inputs=[input_text, tts_model, speaker_wav, speaker_list, speed_slider],
-        outputs=output_audio
+        outputs=OUTPUT_AUDIO
     )
+
+
+def send_to_process(file_to_send, existing_inputs):
+    if not file_to_send or not os.path.exists(file_to_send):
+        return gr.update()
+    if file_to_send in existing_inputs:
+        return gr.update()
+    existing_inputs.append(file_to_send)
+    return gr.update(value=existing_inputs)
+
+
+def listen():
+    process_inputs = arg_handler.get_element("main", "process_inputs")
+    if process_inputs:
+        SEND_TO_PROCESS_BUTTON.click(fn=send_to_process, inputs=[OUTPUT_AUDIO, process_inputs], outputs=process_inputs)

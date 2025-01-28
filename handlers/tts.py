@@ -13,12 +13,28 @@ class TTSHandler:
         # Get device
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model_dict = TTS().list_models().models_dict
-        self.model_data = {}
         self.tts_models = self.model_dict.get("tts_models", {})
         self.tts_languages = [key for key in self.tts_models.keys() if key != "multilingual"]
         self.selected_model = None
         self.tts = None
-        self.load_model("multilingual/xtts_v2")
+        self.model_data = {}
+
+        # Fetch metadata for the default model
+        self.fetch_model_metadata("multilingual/xtts_v2")
+
+    def fetch_model_metadata(self, model_name):
+        full_model_path = "tts_models/" + model_name
+        if "multilingual" in full_model_path:
+            lang = "multilingual"
+        else:
+            lang = self.language
+        try:
+            self.model_data = self.tts_models.get(lang, {}).get(
+                model_name.split("/")[0], {}).get(model_name.split("/")[1], {}
+            )
+        except:
+            self.model_data = {}
+        print(f"Fetched metadata for model: {full_model_path}, data: {self.model_data}")
 
     def handle(self, text: str, model_name: str, speaker_wav: str, selected_speaker: str, speed: float = 1.0):
         output_dir = os.path.join(output_path, "tts")
@@ -52,20 +68,9 @@ class TTSHandler:
     def load_model(self, model_name):
         full_model_path = "tts_models/" + model_name
         if self.selected_model != full_model_path or not self.tts:
-            # Find the model_data
-            if "multilingual" in full_model_path:
-                lang = "multilingual"
-            else:
-                lang = self.language
-            try:
-                model_data = self.tts_models.get(lang, {}).get(model_name.split("/")[0], {}).get(model_name.split("/")[1], {})
-            except:
-                model_data = {}
-            self.model_data = model_data
-            print(f"Loading model: {full_model_path}, data: {model_data}")
-
-            self.selected_model = full_model_path
+            print(f"Loading model: {full_model_path}")
             self.tts = TTS(model_name=full_model_path).to(self.device)
+            self.selected_model = full_model_path
         if self.device == "cuda":
             self.tts.to("cuda")
         return self.tts

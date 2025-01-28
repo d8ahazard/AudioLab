@@ -230,7 +230,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             mix_np = mix_np.T
 
         # 1) Vocals
-        vocals, instruments = self._build_vocals_ensemble(mix_np, sr)
+        vocals, instruments = self.test_vocal_models(mix_np, sr)
 
         stems = {
             "vocals": vocals,
@@ -378,76 +378,79 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
         return stems, sr_dict
 
-    def _build_vocals_ensemble(self, mix_np, sr):
+    def test_vocal_models(self, mix_np, sr):
         """
-        1) MDX23C InstVoc
-        2) Roformer 368
-        3) optional VOC-FT
-        Weighted multi-band => final vocals & final instrumentals
+        Replaces _build_vocals_ensemble. Separates and combines vocals and instrumentals
+        using a weighted ensemble of models.
+        Returns two arrays: combined vocals and combined instrumentals.
         """
+        # Define models with weights for vocals and instrumentals
+        bg_model = [
+            ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),  # vocals (8.4), instrumental (16.0)
+            ("MDX23C-8KFFT-InstVoc_HQ_2.ckpt", 7.2, 14.9),  # vocals (7.2), instrumental (14.9)
+            ("UVR-MDX-NET-Voc_FT.onnx", 6.9, 14.9),  # vocals (6.9), instrumental (14.9)
+            ("Kim_Vocal_2.onnx", 6.9, 14.9),  # vocals (6.9), instrumental (14.9)
+            ("Kim_Vocal_1.onnx", 6.8, 14.9),  # vocals (6.8), instrumental (14.9)
+            ("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt", 6.8, 16.4)  # vocals (6.8), instrumental (16.4)
+        ]
 
-        # --- 1) Separate using MDX23C and Roformer. Optional VOC-FT. ---
-        mdx_files = self._separate_as_arrays(mix_np, sr, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-        mdx_vocals = mdx_files.get("vocals", np.zeros_like(mix_np))
-        mdx_instruments = mdx_files.get("instrumental", np.zeros_like(mix_np))
+        all_vocals = []
+        all_instrumentals = []
+        vocal_weights = []
+        instrumental_weights = []
 
-        rof_files = self._separate_as_arrays(mix_np, sr, "model_bs_roformer_ep_368_sdr_12.9628.ckpt")
-        rof_vocals = rof_files.get("vocals", np.zeros_like(mix_np))
-        rof_instruments = rof_files.get("instrumental", np.zeros_like(mix_np))
+        max_amplitude = 0  # Track max amplitude across all stems
 
-        vocft_vocals = None
-        vocft_instruments = None
-        if self.use_vocft:
-            vft_files = self._separate_as_arrays(mix_np, sr, "UVR-MDX-NET-Voc_FT.onnx")
-            vocft_vocals = vft_files.get("vocals", np.zeros_like(mix_np))
-            vocft_instruments = vft_files.get("instrumental", np.zeros_like(mix_np))
+        for model_name, vocal_weight, instrumental_weight in bg_model:
+            # Perform separation using the model
+            separated_stems = self._separate_as_arrays(mix_np, sr, model_name)
 
-        # --- 2) Match shapes just in case. ---
-        mdx_vocals = match_array_shapes(mdx_vocals, mix_np)
-        rof_vocals = match_array_shapes(rof_vocals, mix_np)
-        mdx_instruments = match_array_shapes(mdx_instruments, mix_np)
-        rof_instruments = match_array_shapes(rof_instruments, mix_np)
+            # Retrieve vocals and instrumentals, or default to silence if missing
+            vocals = separated_stems.get("vocals", np.zeros_like(mix_np))
+            instrumentals = separated_stems.get("instrumental", np.zeros_like(mix_np))
 
-        if vocft_vocals is not None:
-            vocft_vocals = match_array_shapes(vocft_vocals, mix_np)
-            vocft_instruments = match_array_shapes(vocft_instruments, mix_np)
+            # Update max amplitude for normalization
+            max_amplitude = max(
+                max_amplitude,
+                np.max(np.abs(vocals)),
+                np.max(np.abs(instrumentals))
+            )
 
-        # --- 3) Weighted averaging for vocals (low band). ---
-        if vocft_vocals is None:
-            wsum_v = self.weight_inst + self.weight_rof
-            vocals_low_mix = (self.weight_inst * mdx_vocals + self.weight_rof * rof_vocals) / wsum_v
-        else:
-            wsum_v = self.weight_vocft + self.weight_inst + self.weight_rof
-            vocals_low_mix = (
-                                     self.weight_vocft * vocft_vocals +
-                                     self.weight_inst * mdx_vocals +
-                                     self.weight_rof * rof_vocals
-                             ) / wsum_v
+            # Weight and store outputs
+            all_vocals.append(vocals * vocal_weight)
+            all_instrumentals.append(instrumentals * instrumental_weight)
+            vocal_weights.append(vocal_weight)
+            instrumental_weights.append(instrumental_weight)
 
-        # --- 4) Multi-band final vocals. Use MDX23C as high band reference. ---
-        vocals_low = lr_filter(vocals_low_mix, 10000, "lowpass", 6, sr) * 1.01055
-        vocals_high = lr_filter(mdx_vocals, 10000, "highpass", 6, sr)
-        final_vocals = vocals_low + vocals_high
+        # Combine and normalize outputs
+        def combine_and_normalize(tracks, weights):
+            max_length = max(track.shape[-1] for track in tracks)
+            combined = np.zeros((tracks[0].shape[0], max_length), dtype=np.float32)  # Stereo
 
-        # --- 5) Weighted averaging for instruments (low band). ---
-        if vocft_instruments is None:
-            wsum_i = self.weight_inst + self.weight_rof
-            inst_low_mix = (self.weight_inst * mdx_instruments + self.weight_rof * rof_instruments) / wsum_i
-        else:
-            wsum_i = self.weight_vocft + self.weight_inst + self.weight_rof
-            inst_low_mix = (
-                                   self.weight_vocft * vocft_instruments +
-                                   self.weight_inst * mdx_instruments +
-                                   self.weight_rof * rof_instruments
-                           ) / wsum_i
+            for i, track in enumerate(tracks):
+                combined[:, :track.shape[-1]] += track / sum(weights)
 
-        # --- 6) Multi-band final instrumentals. Again, MDX23C as high band reference. ---
-        inst_low = lr_filter(inst_low_mix, 10000, "lowpass", 6, sr)
-        inst_high = lr_filter(mdx_instruments, 10000, "highpass", 6, sr)
-        final_instrumentals = inst_low + inst_high
+            # Normalize to max amplitude
+            combined /= np.max(np.abs(combined))
+            combined *= max_amplitude
+            return combined
 
-        # Return two ensemble arrays
-        return final_vocals, final_instrumentals
+        combined_vocals = combine_and_normalize(all_vocals, vocal_weights)
+        combined_instrumentals = combine_and_normalize(all_instrumentals, instrumental_weights)
+
+        # Noise removal
+        def remove_noise(audio):
+            non_silent = audio[np.abs(audio) > 0.01]  # Exclude very low values
+            if non_silent.size > 0:
+                threshold = (np.min(non_silent) + np.max(non_silent)) / 2
+                audio[np.abs(audio) < threshold] = 0  # Zero out low-amplitude noise
+            return audio
+
+        combined_vocals = remove_noise(combined_vocals)
+        combined_instrumentals = remove_noise(combined_instrumentals)
+
+        # Return combined tracks
+        return combined_vocals, combined_instrumentals
 
     def _separate_as_arrays(self, mix_np, sr, model_name: str):
         """
