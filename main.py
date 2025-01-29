@@ -23,8 +23,7 @@ from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 import logging
 
-# Set log level for audio_separate to INFO
-logging.getLogger("separate").setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
     _init_dll_path()
@@ -62,7 +61,7 @@ def list_wrappers():
                         all_wrappers.append(wrapper_instance.title)
                         break
             except Exception as e:
-                print(f"Error importing module {module_name}: {e}")
+                logger.warning(f"Error importing module {module_name}: {e}")
                 traceback.print_exc()
 
     all_wrappers = sorted(all_wrappers, key=lambda x: get_processor(x).priority)
@@ -175,7 +174,7 @@ def download_file(url):
             # Return the file path for gr.File
             return gr.update(value=[file_path])
     except Exception as e:
-        print(f"Error: {e}")
+        logger.warning(f"Error: {e}")
         return gr.update()
 
 
@@ -212,7 +211,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     inputs = [ProjectFiles(file_path) for file_path in inputs]
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
-    for processor_title in processors:
+    for idx, processor_title in enumerate(processors):
         tgt_processor = get_processor(processor_title)
         processor_key = tgt_processor.title.replace(' ', '')
         processor_settings = settings.get(processor_key, {}) if settings else {}
@@ -220,13 +219,13 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
         if processor_title == 'Merge':
             processor_settings['pitch_shift'] = clone_pitch_shift
         if len(processor_settings):
-            print(f"Processor settings for {processor_title}:")
-            print("---------------------------------------------------------------------")
+            logger.info(f"Processor settings for {processor_title}:")
+            logger.info("---------------------------------------------------------------------")
             for key in processor_settings:
-                print(f"{key}: {processor_settings[key]}")
-            print("---------------------------------------------------------------------")
+                logger.info(f"{key}: {processor_settings[key]}")
+            logger.info("---------------------------------------------------------------------")
         else:
-            print(f"No settings found for {processor_title}.")
+            logger.info(f"No settings found for {processor_title}.")
         outputs = tgt_processor.process_audio(inputs, progress_callback, **processor_settings)
         for output in outputs:
             all_outputs.extend(output.last_outputs)
@@ -242,7 +241,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     first_audio = output_audio_files[0] if output_audio_files else None
     end_time = datetime.now()
     total_time_in_seconds = (end_time - start_time).total_seconds()
-    print(f"Processing complete with {len(processors)} processors in {total_time_in_seconds:.2f} seconds")
+    logger.info(f"Processing complete with {len(processors)} processors in {total_time_in_seconds:.2f} seconds")
     return (gr.update(value=outputs, visible=bool(outputs)),
             gr.update(value=first_audio, visible=bool(first_audio), choices=output_images_and_audio, interactive=True),
             gr.update(value=first_audio, visible=bool(first_audio)),

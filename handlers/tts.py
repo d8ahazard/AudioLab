@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 
@@ -6,6 +7,7 @@ from TTS.api import TTS
 
 from handlers.config import output_path
 
+logger = logging.getLogger(__name__)
 
 class TTSHandler:
     def __init__(self, language="en"):
@@ -34,7 +36,7 @@ class TTSHandler:
             )
         except:
             self.model_data = {}
-        print(f"Fetched metadata for model: {full_model_path}, data: {self.model_data}")
+        logger.info(f"Fetched metadata for model: {full_model_path}, data: {self.model_data}")
 
     def handle(self, text: str, model_name: str, speaker_wav: str, selected_speaker: str, speed: float = 1.0):
         output_dir = os.path.join(output_path, "tts")
@@ -47,7 +49,7 @@ class TTSHandler:
         lang = self.language if "multilingual" in full_model_path else None
         self.tts.tts_to_file(text=text, speaker_wav=speaker_wav, file_path=output_file, language=lang, speed=speed,
                              speaker=selected_speaker)
-        print(f"Output file: {output_file}")
+        logger.info(f"Output file: {output_file}")
         if self.device == "cuda":
             self.tts.to("cpu")
             torch.cuda.empty_cache()
@@ -68,7 +70,7 @@ class TTSHandler:
     def load_model(self, model_name):
         full_model_path = "tts_models/" + model_name
         if self.selected_model != full_model_path or not self.tts:
-            print(f"Loading model: {full_model_path}")
+            logger.info(f"Loading model: {full_model_path}")
             self.tts = TTS(model_name=full_model_path).to(self.device)
             self.selected_model = full_model_path
         if self.device == "cuda":
@@ -83,8 +85,4 @@ class TTSHandler:
             speakers = getattr(self.tts, "speakers", None)
             if speakers:
                 return speakers
-            else:
-                print("Model is multi-speaker but no speakers are defined.")
-        else:
-            print("Model is not multi-speaker or speakers property is unavailable.")
         return []

@@ -6,7 +6,9 @@ from pydub import AudioSegment, effects
 from handlers.reverb import apply_reverb
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
+import logging
 
+logger = logging.getLogger(__name__)
 
 class Merge(BaseWrapper):
     title = "Merge"
@@ -45,6 +47,7 @@ class Merge(BaseWrapper):
         pitch_shift = filtered_kwargs.get("pitch_shift", 0)
 
         for project in pj_inputs:
+            logger.info(f"Processing project: {os.path.basename(project.project_dir)}")
             src_stem = project.src_file
             src_name, _ = os.path.splitext(os.path.basename(src_stem))
             output_folder = os.path.join(project.project_dir, "merged")
@@ -56,8 +59,10 @@ class Merge(BaseWrapper):
 
             new_inputs = []
             for stem_path in inputs:
+                logger.info(f"Processing stem: {os.path.basename(stem_path)}")
                 if "(Main Vocals)" in stem_path:
                     if os.path.exists(ir_file):
+                        logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
                         stem_name, ext = os.path.splitext(os.path.basename(stem_path))
                         reverb_stem_path = os.path.join(project.project_dir, "stems", f"{stem_name}(Re-Reverb){ext}")
                         reverb_stem = apply_reverb(stem_path, ir_file, reverb_stem_path)
@@ -67,6 +72,7 @@ class Merge(BaseWrapper):
                 else:
                     seg = AudioSegment.from_file(stem_path)
                 if pitch_shift != 0 and "(Main Vocals)" not in stem_path:
+                    logger.info(f"Applying pitch shift to {os.path.basename(stem_path)}")
                     seg = self.shift_pitch(seg, pitch_shift)
                 new_inputs.append(seg)
 

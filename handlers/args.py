@@ -1,4 +1,7 @@
 from gradio.components.base import Component
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ArgHandler:
@@ -30,7 +33,7 @@ class ArgHandler:
 
         # Get initial value (if available)
         element_value = getattr(gradio_element, "value", None)
-        print(f"Registered {wrapper_name}.{elem_name} -> {element_value}")
+        logger.info(f"Registered {wrapper_name}.{elem_name} -> {element_value}")
         self.args[wrapper_name][elem_name] = element_value
         self.elements[wrapper_name][elem_name] = gradio_element
 
@@ -51,7 +54,7 @@ class ArgHandler:
         # Dynamically update the dictionary with new values
         if wrapper_name in self.args and elem_name in self.args[wrapper_name]:
             self.args[wrapper_name][elem_name] = value
-            print(f"Updated {wrapper_name}.{elem_name} -> {value}")
+            logger.info(f"Updated {wrapper_name}.{elem_name} -> {value}")
 
     def get_element(self, wrapper_name: str, elem_name: str):
         # Retrieve the actual Gradio element
@@ -59,7 +62,6 @@ class ArgHandler:
 
     def get_args(self):
         return self.args
-
 
     def get_descriptions_js(self):
         return """
@@ -182,8 +184,3 @@ class ArgHandler:
       waitForGradioApp();
     }
     """
-
-
-
-
-

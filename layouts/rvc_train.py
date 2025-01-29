@@ -19,15 +19,15 @@ from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 
 from handlers.config import model_path, output_path, app_path
-from rvc.configs.config import Config
-from rvc.infer.modules.train.extract.extract_f0_print import extract_f0_features
-from rvc.infer.modules.train.extract.extract_f0_rmvpe import extract_f0_features_rmvpe
-from rvc.infer.modules.train.extract.extract_f0_rmvpe_dml import extract_f0_features_rmvpe_dml
-from rvc.infer.modules.train.extract_feature_print import extract_feature_print
-from rvc.infer.modules.train.preprocess import preprocess_trainset
-from rvc.infer.modules.train.train import train_main
-from rvc.infer.modules.vc.modules import VC
-from rvc.utils import HParams
+from modules.rvc.configs.config import Config
+from modules.rvc.infer.modules.train.extract.extract_f0_print import extract_f0_features
+from modules.rvc.infer.modules.train.extract.extract_f0_rmvpe import extract_f0_features_rmvpe
+from modules.rvc.infer.modules.train.extract.extract_f0_rmvpe_dml import extract_f0_features_rmvpe_dml
+from modules.rvc.infer.modules.train.extract_feature_print import extract_feature_print
+from modules.rvc.infer.modules.train.preprocess import preprocess_trainset
+from modules.rvc.infer.modules.train.train import train_main
+from modules.rvc.infer.modules.vc.modules import VC
+from modules.rvc.utils import HParams
 from util.data_classes import ProjectFiles
 from wrappers.separate import Separate
 
@@ -552,7 +552,7 @@ def train1key(
         return "Please provide only one project name."
 
     if (not project_name or project_name == "") and existing_project_name:
-        print("Using existing project name")
+        logger.info("Using existing project name")
         project_name = existing_project_name
         resuming_training = True
         input_dir = os.path.join(output_path, "voices", project_name, "raw")
@@ -612,7 +612,7 @@ def train1key(
                     shutil.copyfile(f, output_file)
 
             except Exception as e:
-                print(f"Error processing file {f}: {e}")
+                logger.error(f"Error processing file {f}: {e}")
         preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus)
 
         # Extract pitch features
@@ -863,7 +863,7 @@ def render():
                     audio = AudioSegment.from_file(f)
                     total_length += len(audio) / 1000  # Convert milliseconds to seconds
                 except Exception as e:
-                    print(f"Error processing file {f}: {e}")
+                    logger.error(f"Error processing file {f}: {e}")
             total_length /= 60  # Convert seconds to minutes
             info_value = f"Total length of input files: {total_length:.2f} minutes."
             info_value += "\nRecommended is 30-60 minutes."

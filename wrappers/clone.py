@@ -1,11 +1,9 @@
 import os
 from typing import Any, Dict, List
 
-import librosa
-
 from handlers.config import model_path
-from rvc.configs.config import Config
-from rvc.infer.modules.vc.modules import VC
+from modules.rvc.configs.config import Config
+from modules.rvc.infer.modules.vc.modules import VC
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 

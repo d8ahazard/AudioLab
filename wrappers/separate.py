@@ -14,6 +14,9 @@ from handlers.reverb import extract_reverb
 from modules.audio_separator.audio_separator import separate_music
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Separate(BaseWrapper):
@@ -154,7 +157,7 @@ class Separate(BaseWrapper):
         out_dir = os.path.join(output_path, "audio_separator")
         os.makedirs(out_dir, exist_ok=True)
 
-        self.separator = Separator(model_file_dir=model_dir, output_dir=out_dir)
+        self.separator = Separator(log_level=logging.ERROR, model_file_dir=model_dir, output_dir=out_dir)
 
         needed = [
             "deverb_bs_roformer_8_384dim_10depth.ckpt",
@@ -262,7 +265,6 @@ class Separate(BaseWrapper):
 
                     if all_stems_good:
                         # We can skip separation; retrieve the final stems from JSON
-                        skip_separation = True
                         # Our code also manipulates stems after separation, so let's gather them:
                         final_stem_paths = [st["path"] for st in cached_data["stems"]]
                         proj_stems.extend(final_stem_paths)
@@ -346,6 +348,7 @@ class Separate(BaseWrapper):
                                 if out_label == "No Reverb" and "(Main Vocals)" in stem_path and store_reverb_ir and alt:
                                     try:
                                         out_ir = os.path.join(project.project_dir, "impulse_response.ir")
+                                        logger.info(f"Extracting reverb IR from {os.path.basename(alt)}")
                                         extract_reverb(current_path, alt, out_ir)
                                     except Exception as e:
                                         print("Error extracting IR:", e)
