@@ -199,7 +199,7 @@ def update_preview_select(input_files: List[str]) -> Tuple[gr.update, gr.update,
             )
 
 
-def process(processors: List[str], inputs: List[str], progress=gr.Progress()) -> List[str]:
+def process(processors: List[str], inputs: List[str], progress=gr.Progress(track_tqdm=True)) -> List[str]:
     start_time = datetime.now()
     settings = arg_handler.get_args()
 
