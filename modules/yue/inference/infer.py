@@ -599,6 +599,7 @@ def generate_music(
             if inst_path.endswith(".wav") and "instrumental" in inst_path:
                 vocal_path = inst_path.replace("instrumental", "vocal")
                 if not os.path.exists(vocal_path):
+                    print(f"Skipping {inst_path} as vocal path not found: {vocal_path}")
                     continue
                 recons_mix = os.path.join(
                     recons_mix_dir, os.path.basename(inst_path).replace("instrumental", "mixed")
@@ -620,53 +621,52 @@ def generate_music(
     vocoder_output_dir = os.path.join(base_out_dir, "vocoder")
     vocoder_stems_dir = os.path.join(vocoder_output_dir, "stems")
     vocoder_mix_dir = os.path.join(vocoder_output_dir, "mix")
-    final_vocal_path = os.path.join(vocoder_stems_dir, "vocal.wav")
-    final_inst_path = os.path.join(vocoder_stems_dir, "instrumental.wav")
     recons_mix = os.path.join(recons_mix_dir, "mixed_upsampled.wav")
     final_path = os.path.join(base_out_dir, os.path.basename(recons_mix))
 
     os.makedirs(vocoder_mix_dir, exist_ok=True)
     os.makedirs(vocoder_stems_dir, exist_ok=True)
-
+    output_paths = []
+    outputs = []
     vocal_output = None
     instrumental_output = None
 
     vocal_decoder, inst_decoder = build_codec_model(config_path, vocal_decoder_path, inst_decoder_path)
 
     for npy in stage2_result:
-        if "instrumental" in npy:
-            instrumental_output = process_audio(
-                npy,
-                final_inst_path,
-                rescale,
-                inst_decoder,
-                codec_model,
-            )
-        else:
-            vocal_output = process_audio(
-                npy,
-                final_vocal_path,
-                rescale,
-                vocal_decoder,
-                codec_model,
-            )
+        final_path = os.path.splitext(npy)[0] + ".wav"
+        output = process_audio(
+            npy,
+            final_path,
+            rescale,
+            inst_decoder,
+            codec_model,
+        )
+        output_paths.append(final_path)
+        outputs.append(output)
 
-        try:
-            mix_output = instrumental_output + vocal_output
-            save_audio(mix_output, recons_mix, 44100, rescale)
-            print(f"Created upsampled mix: {recons_mix}")
+    if len(outputs) == 2:
+        mix_output = outputs[0] + outputs[1]
+        save_audio(mix_output, recons_mix, 44100, rescale)
+        print(f"Created upsampled mix: {recons_mix}")
 
-            replace_low_freq_with_energy_matched(
-                a_file=recons_mix,
-                b_file=recons_mix,
-                c_file=final_path,
-                cutoff_freq=5500.0,
-            )
-            return [final_path, final_vocal_path, final_inst_path]
-        except RuntimeError as e:
-            print(e)
-            print(f"Mixing or post-process failed for {recons_mix}!")
-
+        replace_low_freq_with_energy_matched(
+            a_file=recons_mix,
+            b_file=recons_mix,
+            c_file=final_path,
+            cutoff_freq=5500.0,
+        )
+        # Prepend final_path to the list of output_paths
+        output_paths.insert(0, final_path)
+        for cleanup in [codec_model, vocal_decoder, inst_decoder, model_stage2]:
+            try:
+                cleanup.to("cpu")
+                del cleanup
+            except Exception as e:
+                print(f"Error unloading model: {e}")
+        torch.cuda.empty_cache()
+        return output_paths
+    
     for cleanup in [codec_model, vocal_decoder, inst_decoder, model_stage2]:
         try:
             cleanup.to("cpu")
@@ -674,3 +674,4 @@ def generate_music(
         except Exception as e:
             print(f"Error unloading model: {e}")
     torch.cuda.empty_cache()
+    return output_paths
