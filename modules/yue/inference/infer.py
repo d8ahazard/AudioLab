@@ -620,7 +620,7 @@ def generate_music(
     vocoder_output_dir = os.path.join(base_out_dir, "vocoder")
     vocoder_stems_dir = os.path.join(vocoder_output_dir, "stems")
     vocoder_mix_dir = os.path.join(vocoder_output_dir, "mix")
-    final_vocal_path = os.path.join(vocoder_stems_dir, "vocal.wav"),
+    final_vocal_path = os.path.join(vocoder_stems_dir, "vocal.wav")
     final_inst_path = os.path.join(vocoder_stems_dir, "instrumental.wav")
     recons_mix = os.path.join(recons_mix_dir, "mixed_upsampled.wav")
     final_path = os.path.join(base_out_dir, os.path.basename(recons_mix))

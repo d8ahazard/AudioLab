@@ -56,9 +56,8 @@ def process_audio(input_file, output_file, rescale, decoder, soundstream, cuda_i
     duration = time() - start_time
     rtf = (out.shape[1] / 44100.0) / duration
     print(f"Decoded in {duration:.2f}s ({rtf:.2f}x RTF)")
-
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     print(f"Saving to {output_file}")
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     save_audio(out, output_file, 44100, rescale=rescale)
     print(f"Saved: {output_file}")
     return out
@@ -102,95 +101,3 @@ def find_matching_pairs(input_folder):
             ))
 
     return pairs
-
-
-def main():
-    parser = argparse.ArgumentParser(description='High fidelity neural audio codec using Vocos decoder.')
-    parser.add_argument('--input_folder', type=Path, required=True, help='Input folder containing NPY files.')
-    parser.add_argument('--output_base', type=Path, required=True, help='Base output folder.')
-    parser.add_argument('--resume_path', type=str, default='./final_ckpt/ckpt_00360000.pth',
-                        help='Path to model checkpoint.')
-    parser.add_argument('--config_path', type=str, default='./config.yaml', help='Path to Vocos config file.')
-    parser.add_argument('--vocal_decoder_path', type=str,
-                        default='/aifs4su/mmcode/codeclm/xcodec_mini_infer_newdecoder/decoders/decoder_131000.pth',
-                        help='Path to Vocos decoder weights.')
-    parser.add_argument('--inst_decoder_path', type=str,
-                        default='/aifs4su/mmcode/codeclm/xcodec_mini_infer_newdecoder/decoders/decoder_151000.pth',
-                        help='Path to Vocos decoder weights.')
-    parser.add_argument('-r', '--rescale', action='store_true', help='Rescale output to avoid clipping.')
-    args = parser.parse_args()
-
-    # Validate inputs
-    if not args.input_folder.exists():
-        sys.exit(f"Input folder {args.input_folder} does not exist.")
-    if not os.path.isfile(args.config_path):
-        sys.exit(f"{args.config_path} file does not exist.")
-    # if not os.path.isfile(args.decoder_path):
-    #     sys.exit(f"{args.decoder_path} file does not exist.")
-
-    # Create output directories
-    mix_dir = args.output_base / 'mix'
-    stems_dir = args.output_base / 'stems'
-    os.makedirs(mix_dir, exist_ok=True)
-    os.makedirs(stems_dir, exist_ok=True)
-
-    # Initialize models
-    config_ss = OmegaConf.load("./final_ckpt/config.yaml")
-    soundstream = build_soundstream_model(config_ss)
-    parameter_dict = torch.load(args.resume_path)
-    soundstream.load_state_dict(parameter_dict['codec_model'])
-    soundstream.eval()
-
-    vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path)
-
-    # Find and process matching pairs
-    pairs = find_matching_pairs(args.input_folder)
-    print(f"Found {len(pairs)} matching pairs")
-    pairs = [p for p in pairs if not os.path.exists(mix_dir / f'{p[2]}.mp3')]
-    print(f"{len(pairs)} to reconstruct...")
-
-    for instrumental_file, vocal_file, base_name in tqdm(pairs):
-        print(f"\nProcessing pair: {base_name}")
-        # Create stems directory for this song
-        song_stems_dir = stems_dir / base_name
-        os.makedirs(song_stems_dir, exist_ok=True)
-
-        try:
-            # Process instrumental
-            instrumental_output = process_audio(
-                instrumental_file,
-                song_stems_dir / 'instrumental.mp3',
-                args.rescale,
-                args,
-                inst_decoder,
-                soundstream
-            )
-
-            # Process vocal
-            vocal_output = process_audio(
-                vocal_file,
-                song_stems_dir / 'vocal.mp3',
-                args.rescale,
-                args,
-                vocal_decoder,
-                soundstream
-            )
-        except IndexError as e:
-            print(e)
-            continue
-
-        # Create and save mix
-        try:
-            mix_output = instrumental_output + vocal_output
-            save_audio(mix_output, mix_dir / f'{base_name}.mp3', 44100, args.rescale)
-            print(f"Created mix: {mix_dir / f'{base_name}.mp3'}")
-        except RuntimeError as e:
-            print(e)
-            print(f"mix {base_name} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}")
-
-
-if __name__ == '__main__':
-    main()
-
-    # Example Usage
-    # python reconstruct_separately.py --input_folder test_samples --output_base test

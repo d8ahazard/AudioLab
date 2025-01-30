@@ -1,4 +1,6 @@
+import json
 import os
+import random
 import zipfile
 
 import gradio as gr
@@ -6,6 +8,7 @@ import requests
 
 from handlers.config import model_path
 from modules.yue.inference.infer import generate_music
+from modules.yue.inference.xcodec_mini_infer.utils.utils import seed_everything
 
 # Language mapping for selecting the correct Stage 1 model
 STAGE1_MODELS = {
@@ -63,6 +66,7 @@ def render():
                 disable_offload_model = gr.Checkbox(label="Disable Model Offloading", value=False)
                 rescale = gr.Checkbox(label="Rescale Output")
                 cuda_idx = gr.Number(value=0, label="CUDA Index")
+                seed = gr.Slider(value=-1, label="Seed", minimum=-1, maximum=4294967295, step=1)
 
             # Middle Column - Input Data
             with gr.Column():
@@ -101,10 +105,13 @@ def render():
                         model_language, use_audio_prompt, genre_txt, lyrics_txt,
                         audio_prompt_path, prompt_start_time, prompt_end_time,
                         max_new_tokens, run_n_segments, stage2_batch_size,
-                        keep_intermediate, disable_offload_model, cuda_idx, rescale,
+                        keep_intermediate, disable_offload_model, cuda_idx, rescale, seed,
                         progress=gr.Progress(track_tqdm=True)
                 ):
                     fetch_and_extxract_models()
+                    if seed == -1:
+                        seed = random.randint(0, 4294967295)
+                    seed_everything(seed)
                     stage1_model = update_model_selection(model_language, use_audio_prompt)
                     output_paths = generate_music(
                         stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
@@ -115,6 +122,30 @@ def render():
                         top_p=0.93, temperature=1.0, repetition_penalty=1.2,
                         callback=progress
                     )
+                    first_output = output_paths[0] if len(output_paths) > 0 else None
+                    if first_output:
+                        final_dir = os.path.dirname(first_output)
+                        base, _ = os.path.splitext(os.path.basename(first_output))
+                        config_path = os.path.join(final_dir, f"{base}_config.json")
+                        config_data = {
+                            "model_language": model_language,
+                            "use_audio_prompt": use_audio_prompt,
+                            "genre_txt": genre_txt,
+                            "lyrics_txt": lyrics_txt,
+                            "audio_prompt_path": audio_prompt_path,
+                            "prompt_start_time": prompt_start_time,
+                            "prompt_end_time": prompt_end_time,
+                            "max_new_tokens": max_new_tokens,
+                            "run_n_segments": run_n_segments,
+                            "stage2_batch_size": stage2_batch_size,
+                            "keep_intermediate": keep_intermediate,
+                            "disable_offload_model": disable_offload_model,
+                            "cuda_idx": cuda_idx,
+                            "rescale": rescale,
+                            "seed": seed
+                        }
+                        with open(config_path, "w") as f:
+                            f.write(json.dumps(config_data, indent=4))
                     return output_paths
 
                 # Start button click event
@@ -124,7 +155,7 @@ def render():
                         model_language, use_audio_prompt, genre_txt, lyrics_txt,
                         audio_prompt_path, prompt_start_time, prompt_end_time,
                         max_new_tokens, run_n_segments, stage2_batch_size,
-                        keep_intermediate, disable_offload_model, cuda_idx, rescale
+                        keep_intermediate, disable_offload_model, cuda_idx, rescale, seed
                     ],
                     outputs=[output_mix, output_vocal, output_inst]
                 )
