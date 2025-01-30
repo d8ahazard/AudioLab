@@ -154,7 +154,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, 
             print(f'{output_filename} stage2 has done.')
             # Even if it's skipped, we might still want to mark this step done.
             stage2_result.append(output_filename)
-            if callback:
+            if callback is not None:
                 step += 1
                 callback(step, f"Stage2 inference skipped for item {i + 1}/{len(stage1_output_set)}", total)
             continue
@@ -209,7 +209,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, 
         stage2_result.append(output_filename)
 
         # Update progress for this item
-        if callback:
+        if callback is not None:
             step += 1
             callback(step, f"Stage2 inference complete for item {i + 1}/{len(stage1_output_set)}", total)
 
@@ -322,7 +322,7 @@ def generate_music(
 
     # Update progress: loaded Stage1
     step += 1
-    if callback:
+    if callback is not None:
         callback(step, "Loaded Stage1 model", total_steps)
 
     codectool = CodecManipulator("xcodec", 0, 1)
@@ -445,7 +445,7 @@ def generate_music(
 
         # Update progress for this Stage1 segment
         step += 1
-        if callback:
+        if callback is not None:
             callback(step, f"Generated Stage1 segment {i}/{run_n_segments - 1}", total_steps)
 
     if use_audio_prompt:
@@ -501,7 +501,7 @@ def generate_music(
 
     # Offload Stage1 model
     step += 1
-    if callback:
+    if callback is not None:
         callback(step, "Offloading Stage1 model", total_steps)
 
     if not disable_offload_model:
@@ -515,7 +515,7 @@ def generate_music(
     # 6) Stage2 Inference
     # ------------------------------------------------------------------
     step += 1
-    if callback:
+    if callback is not None:
         callback(step, "Loading Stage2 model", total_steps)
 
     model_stage2 = AutoModelForCausalLM.from_pretrained(
@@ -539,7 +539,7 @@ def generate_music(
     print("Stage 2 DONE.\n")
 
     step += 1
-    if callback:
+    if callback is not None:
         callback(step, "Offloading Stage2 model", total_steps)
 
     print("Offloading Stage2 model from GPU to CPU...")
@@ -551,7 +551,7 @@ def generate_music(
     # 7) Reconstruct .wav from codes
     # ------------------------------------------------------------------
     step += 1
-    if callback:
+    if callback is not None:
         callback(step, "Reconstructing raw .wav from codes", total_steps)
 
     recons_output_dir = os.path.join(base_out_dir, "recons")
@@ -614,7 +614,7 @@ def generate_music(
     # 8) Final upsampling (Vocoder)
     # ------------------------------------------------------------------
     step += 1
-    if callback:
+    if callback is not None:
         callback(step, "Upsampling final audio", total_steps)
 
     vocoder_output_dir = os.path.join(base_out_dir, "vocoder")
