@@ -27,7 +27,7 @@ def render_tts():
             gr.update(choices=speakers, value=speaker)
         )
 
-    def run_tts(text, model, speaker_sample, speaker, speed, progress=gr.Progress()):
+    def run_tts(text, model, speaker_sample, speaker, speed, progress=gr.Progress(track_tqdm=True)):
         try:
             spoken = tts_handler.handle(
                 text=text, model_name=model, speaker_wav=speaker_sample, selected_speaker=speaker, speed=speed

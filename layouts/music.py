@@ -102,7 +102,7 @@ def render():
                         audio_prompt_path, prompt_start_time, prompt_end_time,
                         max_new_tokens, run_n_segments, stage2_batch_size,
                         keep_intermediate, disable_offload_model, cuda_idx, rescale,
-                        progress=gr.Progress()
+                        progress=gr.Progress(track_tqdm=True)
                 ):
                     fetch_and_extxract_models()
                     stage1_model = update_model_selection(model_language, use_audio_prompt)

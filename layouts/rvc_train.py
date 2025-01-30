@@ -156,7 +156,7 @@ def get_pretrained_models(path_str, f0_str, sr2):
     )
 
 
-def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
+def separate_vocal(audio_files: List[str], progress=gr.Progress(track_tqdm=True)) -> List[str]:
     progress(0, f"Separating vocals from {len(audio_files)} audio files...")
     separator = Separate()
     args = {
