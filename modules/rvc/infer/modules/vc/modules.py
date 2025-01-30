@@ -37,6 +37,8 @@ class VC:
         self.hubert_model = None
 
         self.config = config
+        self.global_step = 0
+        self.total_steps = 0
 
     def get_vc(self, sid, *to_return_protect):
         logger.info("Get sid: " + sid)
@@ -147,6 +149,7 @@ class VC:
             protect,
             reverb_param_path=None,
             do_noise_removal=False,
+            callback=None,
     ):
         """
         Processes a single audio file, resampling as needed for processing, and restoring the original sample rate.
@@ -173,6 +176,8 @@ class VC:
                 return_sr=True
             )
 
+            if callback:
+                callback(self.global_step / self.total_steps, f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}", self.total_steps)
             logger.info(f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}")
 
             # Normalize if necessary
@@ -182,6 +187,7 @@ class VC:
             # (B) Handle Stereo -> Mono conversion (Mid-Side Encoding)
             # ----------------------------------------------------------------
             if audio_float.ndim == 2 and audio_float.shape[1] == 2:
+                callback(self.global_step / self.total_steps, "Converting stereo to mono (Mid-Side Encoding)", self.total_steps)
                 logger.info("Converting stereo to mono (Mid-Side Encoding)")
                 mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
             else:
@@ -214,6 +220,8 @@ class VC:
                 self.hubert_model = load_hubert(self.config)
 
             logger.info("Running pipeline...")
+            if callback:
+                callback(self.global_step / self.total_steps, "Running pipeline...", self.total_steps)
             audio_opt_16k = self.pipeline.pipeline(
                 self.hubert_model, self.net_g, sid, mono_for_pipeline, input_audio_path, times,
                 f0_up_key, f0_method, file_index, index_rate, self.if_f0,
@@ -236,6 +244,8 @@ class VC:
             # (F) Reconstruct Stereo if applicable (Mid-Side Decoding)
             # ----------------------------------------------------------------
             if side_og is not None:
+                if callback:
+                    callback(self.global_step / self.total_steps, "Reconstructing stereo (Mid-Side Decoding)", self.total_steps)
                 logger.info("Reconstructing stereo (Mid-Side Decoding)")
                 new_len = len(audio_opt_float)
                 if new_len != orig_len:
@@ -254,34 +264,21 @@ class VC:
             # (G) Apply Noise Removal (if enabled)
             # ----------------------------------------------------------------
             if do_noise_removal:
+                if callback:
+                    callback(self.global_step / self.total_steps, "Applying noise removal...", self.total_steps)
                 logger.info("Applying noise removal...")
                 from handlers.noise_removal import restore_silence
                 if final_float.shape[1] == 1:
                     final_float = restore_silence(mono_og, final_float[:, 0]).reshape(-1, 1)
 
             # ----------------------------------------------------------------
-            # (H) Apply Reverb (if enabled)
-            # ----------------------------------------------------------------
-            if reverb_param_path:
-                logger.info("Applying reverb...")
-                temp_input = f"temp_in_{uuid.uuid4()}.wav"
-                temp_output = f"temp_out_{uuid.uuid4()}.wav"
-
-                sf.write(temp_input, final_float, og_sr, format="WAV", subtype="PCM_16")
-                apply_reverb(temp_input, reverb_param_path, temp_output)
-                wet_signal, _ = load_audio(temp_output, sr=og_sr, mono=False)
-                os.remove(temp_input)
-                os.remove(temp_output)
-                final_float = wet_signal
-
-            # ----------------------------------------------------------------
             # (I) Final Amplitude Scaling & Clipping
             # ----------------------------------------------------------------
-            max_val = np.max(np.abs(final_float))
-            if max_val > 1.0:
-                logger.info(f"Clipping audio with max value: {max_val}")
-                final_float /= max_val  # Simple limiting
-            final_float = np.clip(final_float, -1.0, 1.0)
+            # max_val = np.max(np.abs(final_float))
+            # if max_val > 1.0:
+            #     logger.info(f"Clipping audio with max value: {max_val}")
+            #     final_float /= max_val  # Simple limiting
+            # final_float = np.clip(final_float, -1.0, 1.0)
 
             return f"Success. Processing time: {times}", (og_sr, final_float)
 
@@ -304,6 +301,7 @@ class VC:
             protect,
             format1,
             project_dir,
+            callback=None,
     ):
         outputs = []
 
@@ -318,6 +316,8 @@ class VC:
             if self.pipeline is None:
                 self.get_vc(model)
             for path in paths:
+                if callback:
+                    callback(self.global_step / self.total_steps, f"Processing {path}", self.total_steps)
                 info, opt = self.vc_single(
                     model,
                     sid,
@@ -330,6 +330,7 @@ class VC:
                     resample_sr,
                     rms_mix_rate,
                     protect,
+                    callback=callback
                 )
                 if "Success" in info:
                     try:
@@ -339,15 +340,10 @@ class VC:
                         cloned_name = f"{base_name}(Cloned).wav"
 
                         output_file = os.path.join(opt_root, f"{cloned_name}")
-
-                        try:
-                            # Save the processed audio
-                            sf.write(output_file, audio_opt, tgt_sr, format="wav", subtype="PCM_16")
-                            outputs.append(output_file)
-                        except Exception as e:
-                            logger.info(f"Error saving audio file: {e}")
-                            traceback.print_exc()
-
+                        # Save the processed audio
+                        sf.write(output_file, audio_opt, tgt_sr, format="wav", subtype="PCM_16")
+                        outputs.append(output_file)
+                        self.global_step += 1
                     except Exception as e:
                         traceback.print_exc()
 

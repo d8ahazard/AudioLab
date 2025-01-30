@@ -18,6 +18,7 @@ from torchaudio._extension import _init_dll_path
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path
 from layouts.rvc_train import render as rvc_render
+from layouts.music import render as render_music
 from layouts.tts import render_tts
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
@@ -282,6 +283,8 @@ if __name__ == '__main__':
         with gr.Tabs(selected="process"):
             with gr.Tab(label='TTS', id="tts"):
                 render_tts()
+            with gr.Tab(label="Music", id="music"):
+                render_music()
             with gr.Tab(label='Process', id="process"):
                 processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers,
                                                   elem_id='processor_list')

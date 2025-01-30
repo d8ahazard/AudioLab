@@ -14,6 +14,8 @@ AudioLab is an open-source powerhouse designed to bridge the gap in voice-clonin
 ## 🌟 Features
 
 ### Audio Processing Capabilities
+- **Music Generation:** Create music from scratch or remix existing tracks using the brand-new YuE model(s).
+- **Text-to-Speech:** Convert text into natural-sounding speech, clone voices, and more using Coqui TTS.
 - **Audio Separation:** Isolate vocals, drums, bass, and other components from an audio track.
 - **Vocal Isolation:** Differentiate lead vocals from background vocals.
 - **Noise Removal:** Eliminate reverb, echo, crowd noise, and other unwanted sounds.
@@ -100,6 +102,7 @@ AudioLab stands on the shoulders of giants. Here are the amazing open-source pro
 - [MVSEP-MDX23](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model) - Advanced music separation.
 - [WhisperX](https://github.com/m-bain/whisperX) - Accurate audio transcription.
 - [Coqui TTS](https://github.com/coqui-ai/TTS) - For state-of-the-art text-to-speech.
+- [YuE](https://github.com/multimodal-art-projection/YuE) - For music generation.
 
 ---
 
@@ -112,6 +115,7 @@ We welcome contributions! Check out the [Contributing Guide](CONTRIBUTING.md) fo
 ## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Various submodules may have their own licenses.
 
 ---
 

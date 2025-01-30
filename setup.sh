@@ -10,7 +10,7 @@ python3 -m pip install --upgrade pip==24.0
 
 # Install Torch and related libraries
 echo "Installing PyTorch and related packages..."
-if python3 -m pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-gpu fairseq --extra-index-url "$CUDA_URL"; then
+if "python3 -m pip install flash-attn torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-gpu fairseq --extra-index-url" "$CUDA_URL"; then
     echo "PyTorch packages installed successfully."
 else
     echo "Error installing PyTorch packages. Ensure CUDA version compatibility." >&2

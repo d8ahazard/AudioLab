@@ -178,7 +178,20 @@ class Clone(BaseWrapper):
         filter_radius = filtered_kwargs.get("filter_radius", 5)
 
         outputs = []
+        total_steps = len(inputs)
+        if clone_bg_vocals:
+            total_steps *= 2
+        # For the callback
+        self.vc.total_steps = total_steps
+
         for project in inputs:
+
+            project_name = os.path.basename(project.project_dir)
+
+            def project_callback(step, message, steps=total_steps):
+                if callback:
+                    callback(step, f"({project_name}) {message}", steps)
+
             last_outputs = project.last_outputs
             # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
             filtered_inputs = [p for p in last_outputs if "(Vocals)" in p]
@@ -203,6 +216,7 @@ class Clone(BaseWrapper):
                 rms_mix_rate=rms_mix_rate,
                 protect=protect,
                 project_dir=project.project_dir,
+                callback=project_callback
             )
             # Append (selected_voice) and (pitch_extraction_method) to the output file name
             for output in clone_outputs:

@@ -20,6 +20,14 @@ python -m pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-g
     exit /b 1
 )
 
+REM Collecting flash-attn https://github.com/bdashore3/flash-attention/releases/download/v2.7.0.post2/flash_attn-2.7.0.post2+cu124torch2.5.1cxx11abiFALSE-cp310-cp310-win_amd64.whl
+echo Installing flash-attn...
+python -m pip install https://github.com/bdashore3/flash-attention/releases/download/v2.7.0.post2/flash_attn-2.7.0.post2+cu124torch2.5.1cxx11abiFALSE-cp310-cp310-win_amd64.whl || (
+    echo Error installing flash-attn.
+    exit /b 1
+)
+
+
 REM Install torchlibrosa and librosa
 echo Installing torchlibrosa and librosa...
 python -m pip install torchlibrosa>=0.0.9 librosa>=0.10.2.post1 || (
