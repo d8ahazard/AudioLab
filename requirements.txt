@@ -3,6 +3,8 @@ audio-separator[gpu]>=0.28.5
 chardet
 cog
 demucs>=4.0.1
+descript-audiotools>=0.7.2
+descript-audio-codec
 diffusers>=0.32.1
 einops>=0.8.0
 ffmpeg
@@ -12,12 +14,14 @@ gradio>=5.1.0
 huggingface_hub>=0.27.1
 matchering>=2.0.6
 matplotlib>=3.10.0
+metrics
 ml_collections
 numpy
 onnxruntime-gpu>=1.20.1
 onnxsim
 opencv-python>=4.10.0.84
 pandas>=2.2.3
+pesq
 phonemizer>=3.3.0
 praat-parselmouth>=0.4.4
 progressbar
