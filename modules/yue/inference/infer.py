@@ -639,7 +639,6 @@ def generate_music(
                 npy,
                 final_inst_path,
                 rescale,
-                None,
                 inst_decoder,
                 codec_model,
             )
@@ -648,7 +647,6 @@ def generate_music(
                 npy,
                 final_vocal_path,
                 rescale,
-                None,
                 vocal_decoder,
                 codec_model,
             )
