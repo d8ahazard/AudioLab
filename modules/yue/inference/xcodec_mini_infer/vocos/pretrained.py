@@ -1,38 +1,41 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict, Tuple, Union, Optional
+import sys
+from pathlib import Path
+from typing import Any, Optional
 
 import torch
 import yaml
 from huggingface_hub import hf_hub_download
 from torch import nn
+
 from modules.yue.inference.xcodec_mini_infer.vocos.feature_extractors import FeatureExtractor, EncodecFeatures
 from modules.yue.inference.xcodec_mini_infer.vocos.heads import FourierHead
 from modules.yue.inference.xcodec_mini_infer.vocos.models import Backbone
-from modules.yue.inference.xcodec_mini_infer import vocos
+
+# Ensure the project root is in sys.path
+project_root = Path(__file__).resolve().parents[4]  # Adjust based on your folder structure
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 
-def instantiate_class(args: Union[Any, Tuple[Any, ...]], init: Dict[str, Any]) -> Any:
-    """Instantiates a class with the given args and init.
-
-    Args:
-        args: Positional arguments required for instantiation.
-        init: Dict of the form {"class_path":...,"init_args":...}.
-
-    Returns:
-        The instantiated class object.
-    """
+def instantiate_class(args, init):
+    """Instantiates a class dynamically using its module path."""
     kwargs = init.get("init_args", {})
     if not isinstance(args, tuple):
         args = (args,)
 
     class_module, class_name = init["class_path"].rsplit(".", 1)
 
+    # Ensure full module path
+    if not class_module.startswith("modules.yue.inference.xcodec_mini_infer"):
+        class_module = f"modules.yue.inference.xcodec_mini_infer.{class_module}"
+
     try:
-        module = __import__(class_module, fromlist=[class_name])
-    except ModuleNotFoundError:
         module = importlib.import_module(class_module)
+    except ModuleNotFoundError:
+        raise ImportError(f"Could not import {class_module}. Make sure it exists and is in sys.path.")
 
     args_class = getattr(module, class_name)
     return args_class(*args, **kwargs)
@@ -47,7 +50,7 @@ class Vocos(nn.Module):
     """
 
     def __init__(
-        self, feature_extractor: FeatureExtractor, backbone: Backbone, head: FourierHead,
+            self, feature_extractor: FeatureExtractor, backbone: Backbone, head: FourierHead,
     ):
         super().__init__()
         self.feature_extractor = feature_extractor
@@ -150,6 +153,7 @@ class Vocos(nn.Module):
 
         return features
 
+
 class VocosDecoder(nn.Module):
     """
     The Vocos class represents a Fourier-based neural vocoder for audio synthesis.
@@ -159,7 +163,7 @@ class VocosDecoder(nn.Module):
     """
 
     def __init__(
-        self, backbone: Backbone, head: FourierHead,
+            self, backbone: Backbone, head: FourierHead,
     ):
         super().__init__()
         self.backbone = backbone
