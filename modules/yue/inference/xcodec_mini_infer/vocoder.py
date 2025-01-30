@@ -58,6 +58,7 @@ def process_audio(input_file, output_file, rescale, decoder, soundstream, cuda_i
     print(f"Decoded in {duration:.2f}s ({rtf:.2f}x RTF)")
 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    print(f"Saving to {output_file}")
     save_audio(out, output_file, 44100, rescale=rescale)
     print(f"Saved: {output_file}")
     return out
