@@ -17,9 +17,10 @@ from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorL
 from handlers.config import model_path, output_path
 from modules.yue.inference.codecmanipulator import CodecManipulator
 from modules.yue.inference.mmtokenizer import _MMSentencePieceTokenizer
-from modules.yue.inference.xcodec_mini_infer.models.soundstream_hubert_new import SoundStream # DO NOT REMOVE THIS IMPORT
+from modules.yue.inference.xcodec_mini_infer.models.soundstream_hubert_new import SoundStream
 from modules.yue.inference.xcodec_mini_infer.post_process_audio import replace_low_freq_with_energy_matched
 from modules.yue.inference.xcodec_mini_infer.vocoder import build_codec_model
+from modules.yue.inference.xcodec_mini_infer.vocoder import process_audio
 
 codectool = None
 codectool_stage2 = None
@@ -130,16 +131,32 @@ def stage2_generate(model, prompt, batch_size=16):
     return output
 
 
-def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
+def save_audio(wav: torch.Tensor, path, sample_rate: int, rescale: bool = False):
+    folder_path = os.path.dirname(path)
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    limit = 0.99
+    max_val = wav.abs().max()
+    wav = wav * min(limit / max_val, 1) if rescale else wav.clamp(-limit, limit)
+    torchaudio.save(str(path), wav, sample_rate=sample_rate, encoding='PCM_S', bits_per_sample=16)
+
+
+def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, callback=None, step=0, total=1):
     global codectool_stage2
     if not isinstance(codectool_stage2, CodecManipulator):
         raise ValueError("Please set the codec tool first.")
+
     stage2_result = []
     for i in tqdm(range(len(stage1_output_set))):
         output_filename = os.path.join(stage2_output_dir, os.path.basename(stage1_output_set[i]))
 
         if os.path.exists(output_filename):
             print(f'{output_filename} stage2 has done.')
+            # Even if it's skipped, we might still want to mark this step done.
+            stage2_result.append(output_filename)
+            if callback:
+                step += 1
+                callback(step, f"Stage2 inference skipped for item {i + 1}/{len(stage1_output_set)}", total)
             continue
 
         # Load the prompt
@@ -176,10 +193,10 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
         if output_duration * 50 != prompt.shape[-1]:
             ending = stage2_generate(model, prompt[:, output_duration * 50:], batch_size=1)
             output = np.concatenate([output, ending], axis=0)
+
         output = codectool_stage2.ids2npy(output)
 
         # Fix invalid codes (a dirty solution, which may harm the quality of audio)
-        # We are trying to find better one
         fixed_output = copy.deepcopy(output)
         for idx, line in enumerate(output):
             for j, element in enumerate(line):
@@ -187,21 +204,16 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4):
                     counter = Counter(line)
                     most_frequent = sorted(counter.items(), key=lambda x: x[1], reverse=True)[0][0]
                     fixed_output[idx, j] = most_frequent
-        # save output
+
         np.save(output_filename, fixed_output)
         stage2_result.append(output_filename)
-    return stage2_result
 
+        # Update progress for this item
+        if callback:
+            step += 1
+            callback(step, f"Stage2 inference complete for item {i + 1}/{len(stage1_output_set)}", total)
 
-# convert audio tokens to audio
-def save_audio(wav: torch.Tensor, path, sample_rate: int, rescale: bool = False):
-    folder_path = os.path.dirname(path)
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
-    limit = 0.99
-    max_val = wav.abs().max()
-    wav = wav * min(limit / max_val, 1) if rescale else wav.clamp(-limit, limit)
-    torchaudio.save(str(path), wav, sample_rate=sample_rate, encoding='PCM_S', bits_per_sample=16)
+    return stage2_result, step
 
 
 def generate_music(
@@ -220,7 +232,6 @@ def generate_music(
         disable_offload_model: bool = False,
         cuda_idx: int = 0,
         rescale: bool = False,
-        # You can expose these typical generation hyperparams as well:
         top_p: float = 0.93,
         temperature: float = 1.0,
         repetition_penalty: float = 1.2,
@@ -229,6 +240,8 @@ def generate_music(
     """
     Generates multi-stage music from text prompts, optional audio prompts, and uses
     stage1 / stage2 models that reside under `os.path.join(model_path, "YuE")`.
+
+    ...
 
     Args:
         stage1_model (str): Path to Stage 1 model.
@@ -251,7 +264,6 @@ def generate_music(
         repetition_penalty (float): Penalty for repeated tokens.
         callback (Callable): Optional callback function for progress updates. Uses the same inputs as a gr.Progress(),
         i.e. progress(step, desc, total)
-
     Returns:
         A list of the paths to the output files
     """
@@ -263,10 +275,19 @@ def generate_music(
             "Please provide `audio_prompt_path` when `use_audio_prompt` is True."
         )
 
+    # ---------------------------------------------------
+    # Setup steps for the progress bar
+    # We'll assume 2 stage1 outputs (vocal + instrumental).
+    # total_steps = run_n_segments (Stage1 segments)
+    #              + 2            (Stage2 items)
+    #              + 7            (major pipeline steps)
+    # ---------------------------------------------------
+    total_steps = run_n_segments + 2 + 7
+    step = 0
+
     # ------------------------------------------------------------------
     # 1) Model paths (assume everything is under model_path/YuE):
     # ------------------------------------------------------------------
-
     basic_model_config = os.path.join(model_path, "YuE", "config.yaml")
     resume_path = os.path.join(model_path, "YuE", "ckpt_00360000.pth")
     config_path = os.path.join(model_path, "YuE", "config_decoder.yaml")
@@ -291,7 +312,6 @@ def generate_music(
         os.path.join(model_path, "YuE", "tokenizer.model")
     )
 
-    # Load Stage1 model
     model = AutoModelForCausalLM.from_pretrained(
         stage1_model,
         torch_dtype=torch.bfloat16,
@@ -300,16 +320,16 @@ def generate_music(
     model.to(device)
     model.eval()
 
-    # Set up CodecManipulators for stage1 and stage2
+    # Update progress: loaded Stage1
+    step += 1
+    if callback:
+        callback(step, "Loaded Stage1 model", total_steps)
+
     codectool = CodecManipulator("xcodec", 0, 1)
     codectool_stage2 = CodecManipulator("xcodec", 0, 8)
 
-    # Load the xcodec base model
     model_config = OmegaConf.load(basic_model_config)
-    codec_class_name = model_config.generator.name
     codec_model = SoundStream(**model_config.generator.config).to(device)
-    # Eval is bad and scares people, plus import inspection is a thing
-    # codec_model = eval(codec_class_name)(**model_config.generator.config).to(device)
     parameter_dict = torch.load(resume_path, map_location="cpu")
     codec_model.load_state_dict(parameter_dict["codec_model"])
     codec_model.to(device)
@@ -318,10 +338,8 @@ def generate_music(
     # ------------------------------------------------------------------
     # 4) Prepare Stage1 prompting
     # ------------------------------------------------------------------
-    from modules.yue.inference.xcodec_mini_infer.vocoder import process_audio
     genres = genre_txt
     lyrics = split_lyrics(lyrics_txt)
-
     full_lyrics = "\n".join(lyrics)
     prompt_texts = [
         f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"
@@ -331,37 +349,33 @@ def generate_music(
     random_id = uuid.uuid4()
     output_seq = None
 
-    # special tokens
     start_of_segment = mmtokenizer.tokenize("[start_of_segment]")
     end_of_segment = mmtokenizer.tokenize("[end_of_segment]")
 
-    # Additional placeholders
     raw_output = None
 
-    # If we're not using audio_prompt, we can unload the codec_model
+    # If not using an audio prompt, offload the codec_model early
     if not use_audio_prompt:
         print("Offloading codec model from GPU to CPU...")
         codec_model.to("cpu")
         codec_model.eval()
         torch.cuda.empty_cache()
 
-    # We generate N segments in total. The first prompt is instructions, so skip it in iteration
     run_n_segments = min(run_n_segments + 1, len(lyrics))
     for i, p in enumerate(tqdm(prompt_texts[:run_n_segments])):
-        section_text = p.replace("[start_of_segment]", "").replace("[end_of_segment]", "")
-        guidance_scale = 1.5 if i <= 1 else 1.2
         if i == 0:
             continue
 
+        section_text = p.replace("[start_of_segment]", "").replace("[end_of_segment]", "")
+        guidance_scale = 1.5 if i <= 1 else 1.2
+
         if i == 1:
             if use_audio_prompt:
-                # Load user-supplied audio prompt
                 audio_prompt = load_audio_mono(audio_prompt_path)
                 audio_prompt.unsqueeze_(0)
                 with torch.no_grad():
                     raw_codes = codec_model.encode(audio_prompt.to(device), target_bw=0.5)
                 raw_codes = raw_codes.transpose(0, 1).cpu().numpy().astype(np.int16)
-                # Format audio prompt
                 code_ids = codectool.npy2ids(raw_codes[0])
                 audio_prompt_codec = code_ids[int(prompt_start_time * 50): int(prompt_end_time * 50)]
                 audio_prompt_codec_ids = [mmtokenizer.soa] + codectool.sep_ids + audio_prompt_codec + [
@@ -391,17 +405,15 @@ def generate_music(
         else:
             input_ids = prompt_ids
 
-        # Check context limit
         max_context = 16384 - max_new_tokens - 1
         if input_ids.shape[-1] > max_context:
             print(
-                f"Section {i}: input length {input_ids.shape[-1]} > context length {max_context},"
-                " truncating to last {max_context} tokens."
+                f"Section {i}: input length {input_ids.shape[-1]} > context length {max_context}, "
+                "truncating..."
             )
             input_ids = input_ids[:, -max_context:]
 
-        # Create block processor for restricting token ranges
-
+        from transformers import LogitsProcessorList
         with torch.no_grad():
             gen_output = model.generate(
                 input_ids=input_ids,
@@ -421,26 +433,27 @@ def generate_music(
                 ),
                 guidance_scale=guidance_scale,
             )
-            # Ensure it ends with [eoa]
             if gen_output[0][-1].item() != mmtokenizer.eoa:
                 tensor_eoa = torch.as_tensor([[mmtokenizer.eoa]], device=device)
                 gen_output = torch.cat((gen_output, tensor_eoa), dim=1)
 
         if i > 1:
-            # append new result
             new_part = gen_output[:, input_ids.shape[-1]:]
             raw_output = torch.cat([raw_output, prompt_ids, new_part], dim=1)
         else:
             raw_output = gen_output
+
+        # Update progress for this Stage1 segment
+        step += 1
+        if callback:
+            callback(step, f"Generated Stage1 segment {i}/{run_n_segments - 1}", total_steps)
 
     if use_audio_prompt:
         print("Offloading codec model from GPU to CPU...")
         codec_model.to("cpu")
         codec_model.eval()
         torch.cuda.empty_cache()
-    # ------------------------------------------------------------------
-    # 5) Parse out vocal vs. instrumental from the final Stage1 output
-    # ------------------------------------------------------------------
+
     ids = raw_output[0].cpu().numpy()
     soa_idx = np.where(ids == mmtokenizer.soa)[0].tolist()
     eoa_idx = np.where(ids == mmtokenizer.eoa)[0].tolist()
@@ -456,7 +469,6 @@ def generate_music(
         codec_ids = ids[soa_idx[i] + 1: eoa_idx[i]]
         if codec_ids[0] == 32016:
             codec_ids = codec_ids[1:]
-        # ensure even length
         codec_ids = codec_ids[: 2 * (codec_ids.shape[0] // 2)]
         vocals_ids = codectool.ids2npy(rearrange(codec_ids, "(n b) -> b n", b=2)[0])
         instrumentals_ids = codectool.ids2npy(rearrange(codec_ids, "(n b) -> b n", b=2)[1])
@@ -467,7 +479,6 @@ def generate_music(
     vocals = np.concatenate(vocals, axis=1)
     instrumentals = np.concatenate(instrumentals, axis=1)
 
-    # Save stage1 outputs
     vocal_save_path = os.path.join(
         stage1_output_dir,
         f"cot_{genres.replace(' ', '-')}_tp{top_p}_T{temperature}_rp{repetition_penalty}_maxtk{max_new_tokens}_vocal_{random_id}".replace(
@@ -488,7 +499,11 @@ def generate_music(
 
     stage1_output_set = [vocal_save_path, inst_save_path]
 
-    # Offload Stage1 model if desired
+    # Offload Stage1 model
+    step += 1
+    if callback:
+        callback(step, "Offloading Stage1 model", total_steps)
+
     if not disable_offload_model:
         print("Offloading model from GPU to CPU...")
         model.cpu()
@@ -499,7 +514,9 @@ def generate_music(
     # ------------------------------------------------------------------
     # 6) Stage2 Inference
     # ------------------------------------------------------------------
-    print("Stage 2 inference...")
+    step += 1
+    if callback:
+        callback(step, "Loading Stage2 model", total_steps)
 
     model_stage2 = AutoModelForCausalLM.from_pretrained(
         stage2_model,
@@ -509,13 +526,22 @@ def generate_music(
     model_stage2.to(device)
     model_stage2.eval()
 
-    stage2_result = stage2_inference(
-        model_stage2, stage1_output_set, stage2_output_dir, batch_size=stage2_batch_size
+    print("Stage 2 inference...")
+    stage2_result, step = stage2_inference(
+        model_stage2,
+        stage1_output_set,
+        stage2_output_dir,
+        batch_size=stage2_batch_size,
+        callback=callback,
+        step=step,
+        total=total_steps
     )
-    print(stage2_result)
     print("Stage 2 DONE.\n")
 
-    # Unload stage2 model
+    step += 1
+    if callback:
+        callback(step, "Offloading Stage2 model", total_steps)
+
     print("Offloading Stage2 model from GPU to CPU...")
     model_stage2.to("cpu")
     model_stage2.eval()
@@ -524,6 +550,10 @@ def generate_music(
     # ------------------------------------------------------------------
     # 7) Reconstruct .wav from codes
     # ------------------------------------------------------------------
+    step += 1
+    if callback:
+        callback(step, "Reconstructing raw .wav from codes", total_steps)
+
     recons_output_dir = os.path.join(base_out_dir, "recons")
     recons_mix_dir = os.path.join(recons_output_dir, "mix")
     os.makedirs(recons_mix_dir, exist_ok=True)
@@ -537,16 +567,12 @@ def generate_music(
         max_val = wav.abs().max()
         wav = wav * min(limit / max_val, 1) if do_rescale else wav.clamp(-limit, limit)
 
-        # Ensure the file is saved as .wav
         wav_path = os.path.splitext(path)[0] + ".wav"
         print(f"Saving audio to {wav_path}")
-        # Save as WAV instead of MP3
         torchaudio.save(wav_path, wav, sample_rate=sample_rate, encoding="PCM_S", bits_per_sample=16)
-
-        return wav_path  # Return the correct WAV path
+        return wav_path
 
     tracks = []
-    # Reload codec model here
     if not use_audio_prompt:
         codec_model.to(device)
         codec_model.eval()
@@ -567,12 +593,10 @@ def generate_music(
         tracks.append(save_path)
         save_audio(decoded_waveform, save_path, 16000, do_rescale=rescale)
 
-    # Mix vocals & instrumentals
     import soundfile as sf
     for inst_path in tracks:
         try:
             if inst_path.endswith(".wav") and "instrumental" in inst_path:
-                # Attempt to find matching vocal track
                 vocal_path = inst_path.replace("instrumental", "vocal")
                 if not os.path.exists(vocal_path):
                     continue
@@ -586,11 +610,13 @@ def generate_music(
         except Exception as e:
             print(e)
 
-
     # ------------------------------------------------------------------
     # 8) Final upsampling (Vocoder)
     # ------------------------------------------------------------------
-    # Set this here so it's always got something...
+    step += 1
+    if callback:
+        callback(step, "Upsampling final audio", total_steps)
+
     vocoder_output_dir = os.path.join(base_out_dir, "vocoder")
     vocoder_stems_dir = os.path.join(vocoder_output_dir, "stems")
     vocoder_mix_dir = os.path.join(vocoder_output_dir, "mix")
@@ -605,22 +631,19 @@ def generate_music(
     vocal_output = None
     instrumental_output = None
 
-    # Pre-loaded from above: vocal_decoder, inst_decoder
     vocal_decoder, inst_decoder = build_codec_model(config_path, vocal_decoder_path, inst_decoder_path)
 
     for npy in stage2_result:
         if "instrumental" in npy:
-            # Process instrumental
             instrumental_output = process_audio(
                 npy,
                 final_inst_path,
                 rescale,
-                None,  # We no longer pass 'args' but pass needed arguments directly
+                None,
                 inst_decoder,
                 codec_model,
             )
         else:
-            # Process vocal
             vocal_output = process_audio(
                 npy,
                 final_vocal_path,
@@ -632,14 +655,12 @@ def generate_music(
 
         try:
             mix_output = instrumental_output + vocal_output
-
             save_audio(mix_output, recons_mix, 44100, rescale)
             print(f"Created upsampled mix: {recons_mix}")
 
-            # Post-process
             replace_low_freq_with_energy_matched(
-                a_file=recons_mix,  # 16kHz in original code, but we used 44.1k just now
-                b_file=recons_mix,  # If you have a separate 48k or 44.1k mix, you might adjust
+                a_file=recons_mix,
+                b_file=recons_mix,
                 c_file=final_path,
                 cutoff_freq=5500.0,
             )
@@ -648,8 +669,7 @@ def generate_music(
             print(e)
             print(f"Mixing or post-process failed for {recons_mix}!")
 
-    # Delete all models after moving to CPU
-    for cleanup in [codec_model, vocal_decoder, inst_decoder, model, model_stage2]:
+    for cleanup in [codec_model, vocal_decoder, inst_decoder, model_stage2]:
         try:
             cleanup.to("cpu")
             del cleanup
