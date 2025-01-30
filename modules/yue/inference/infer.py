@@ -156,7 +156,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, 
             stage2_result.append(output_filename)
             if callback is not None:
                 step += 1
-                callback(step, f"Stage2 inference skipped for item {i + 1}/{len(stage1_output_set)}", total)
+                callback(step / total, f"Stage2 inference skipped for item {i + 1}/{len(stage1_output_set)}", total)
             continue
 
         # Load the prompt
@@ -211,7 +211,7 @@ def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, 
         # Update progress for this item
         if callback is not None:
             step += 1
-            callback(step, f"Stage2 inference complete for item {i + 1}/{len(stage1_output_set)}", total)
+            callback(step / total, f"Stage2 inference complete for item {i + 1}/{len(stage1_output_set)}", total)
 
     return stage2_result, step
 
@@ -323,7 +323,7 @@ def generate_music(
     # Update progress: loaded Stage1
     step += 1
     if callback is not None:
-        callback(step, "Loaded Stage1 model", total_steps)
+        callback(step / total_steps, "Loaded Stage1 model", total_steps)
 
     codectool = CodecManipulator("xcodec", 0, 1)
     codectool_stage2 = CodecManipulator("xcodec", 0, 8)
@@ -446,7 +446,7 @@ def generate_music(
         # Update progress for this Stage1 segment
         step += 1
         if callback is not None:
-            callback(step, f"Generated Stage1 segment {i}/{run_n_segments - 1}", total_steps)
+            callback(step / total_steps, f"Generated Stage1 segment {i}/{run_n_segments - 1}", total_steps)
 
     if use_audio_prompt:
         print("Offloading codec model from GPU to CPU...")
@@ -502,7 +502,7 @@ def generate_music(
     # Offload Stage1 model
     step += 1
     if callback is not None:
-        callback(step, "Offloading Stage1 model", total_steps)
+        callback(step / total_steps, "Offloading Stage1 model", total_steps)
 
     if not disable_offload_model:
         print("Offloading model from GPU to CPU...")
@@ -516,7 +516,7 @@ def generate_music(
     # ------------------------------------------------------------------
     step += 1
     if callback is not None:
-        callback(step, "Loading Stage2 model", total_steps)
+        callback(step / total_steps, "Loading Stage2 model", total_steps)
 
     model_stage2 = AutoModelForCausalLM.from_pretrained(
         stage2_model,
@@ -540,7 +540,7 @@ def generate_music(
 
     step += 1
     if callback is not None:
-        callback(step, "Offloading Stage2 model", total_steps)
+        callback(step / total_steps, "Offloading Stage2 model", total_steps)
 
     print("Offloading Stage2 model from GPU to CPU...")
     model_stage2.to("cpu")
@@ -552,7 +552,7 @@ def generate_music(
     # ------------------------------------------------------------------
     step += 1
     if callback is not None:
-        callback(step, "Reconstructing raw .wav from codes", total_steps)
+        callback(step / total_steps, "Reconstructing raw .wav from codes", total_steps)
 
     recons_output_dir = os.path.join(base_out_dir, "recons")
     recons_mix_dir = os.path.join(recons_output_dir, "mix")
@@ -615,7 +615,7 @@ def generate_music(
     # ------------------------------------------------------------------
     step += 1
     if callback is not None:
-        callback(step, "Upsampling final audio", total_steps)
+        callback(step / total_steps, "Upsampling final audio", total_steps)
 
     vocoder_output_dir = os.path.join(base_out_dir, "vocoder")
     vocoder_stems_dir = os.path.join(vocoder_output_dir, "stems")
