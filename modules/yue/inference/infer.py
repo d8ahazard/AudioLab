@@ -666,7 +666,7 @@ def generate_music(
                 print(f"Error unloading model: {e}")
         torch.cuda.empty_cache()
         return output_paths
-    
+
     for cleanup in [codec_model, vocal_decoder, inst_decoder, model_stage2]:
         try:
             cleanup.to("cpu")

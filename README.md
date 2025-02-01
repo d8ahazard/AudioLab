@@ -1,11 +1,13 @@
 # AudioLab
 
-![AudioLab Logo](https://via.placeholder.com/728x90.png) <!-- Replace with your actual logo or banner image -->
+![AudioLab Logo](./res/audiolab_lg.png)
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![CUDA](https://img.shields.io/badge/CUDA-cu121-brightgreen)](https://developer.nvidia.com/cuda-downloads)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen)](CONTRIBUTING.md)
+
+#### Thanks to RunDiffusion for supporting this application!!! ####
 
 AudioLab is an open-source powerhouse designed to bridge the gap in voice-cloning and audio separation technologies. Built with modularity and extensibility in mind, it serves as your go-to solution for advanced audio processing needs. Whether you're an audio engineer, researcher, or hobbyist, AudioLab has something for you.
 
