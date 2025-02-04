@@ -23,16 +23,12 @@
 }
 
 /*override the root --body-background-fill variable to use --bg-dark */
-root {
-    --body-background-fill: var(--bg-dark);
+:root {
+    --body-background-fill: var(--bg-dark) !important;
 }
 
 gradio-app {
     background: var(--bg-dark) !important;
-}
-
-.built-with {
-    display: none;
 }
 
 footer {
