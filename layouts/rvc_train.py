@@ -579,16 +579,15 @@ def train1key(
     feature_dir = os.path.join(exp_dir, "3_feature256" if project_version == "v1" else "3_feature768")
     f0_dir = os.path.join(exp_dir, "2a_f0")
     f0nsf_dir = os.path.join(exp_dir, "2b-f0nsf")
-    raw_dir = os.path.join(exp_dir, "raw")
     missing_dirs = []
-    for d in [gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, raw_dir]:
+    for d in [gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, data_dir]:
         if not os.path.exists(d):
             missing_dirs.append(d)
     # Preprocess
     if not resuming_training or len(missing_dirs) > 0:
         yield get_info_str("Step1: Preprocessing data")
         vocal_files = inputs
-        if separate_vocals and not os.path.exists(raw_dir):
+        if separate_vocals:
             vocal_files, bg_vocal_files = separate_vocal(inputs)
             yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
 
