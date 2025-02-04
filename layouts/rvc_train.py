@@ -575,8 +575,8 @@ def train1key(
             vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
             yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
         non_wav_vocal_files = [f for f in vocal_files if not f.endswith(".wav")]
-        for index, f in enumerate(non_wav_vocal_files):
-            progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(non_wav_vocal_files)})")
+        for index, f in enumerate(vocal_files):
+            progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
             try:
                 base_name, ext = os.path.splitext(os.path.basename(f))
                 output_file = os.path.join(data_dir, f"{base_name}.wav")
