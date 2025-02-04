@@ -18,6 +18,7 @@ import torchaudio
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 
+from handlers.args import ArgHandler
 from handlers.config import model_path, output_path, app_path
 from modules.rvc.configs.config import Config
 from modules.rvc.infer.modules.train.extract.extract_f0_print import extract_f0_features
@@ -680,197 +681,289 @@ def list_project_weights(project_dir):
 
 
 def render():
-    with gr.Row():
-        with gr.Column():
-            voice_name = gr.Textbox(label="Voice Name", value="")
-            with gr.Row():
-                existing_project = gr.Dropdown(label="Existing Project", choices=list_voice_projects(), value="")
-                refresh_button = gr.Button("Refresh", variant="secondary")
-                refresh_button.click(fn=list_voice_projects_ui, outputs=[existing_project])
-            total_epochs = gr.Slider(
-                minimum=2,
-                maximum=1000,
-                step=1,
-                label="Total Training Epochs",
-                value=125,
-                interactive=True,
-            )
-            train_batch_size = gr.Slider(
-                minimum=1,
-                maximum=40,
-                step=1,
-                label="Batch Size per GPU",
-                value=default_batch_size,
-                interactive=True,
-            )
-            separate_vocals = gr.Checkbox(label="Separate Vocals", value=True)
-            with gr.Accordion(label="Advanced", open=False):
-                sample_rate = gr.Radio(
-                    label="Target Sampling Rate",
-                    choices=["40k", "48k"],
-                    value="48k",
-                    interactive=True,
+    with gr.Blocks() as rvc_train:
+        gr.Markdown("## RVC Training")
+        with gr.Row():
+            # GR Markdown saying RVC Training and cool emoji
+            with gr.Column():
+                gr.Markdown("### 🔧 Settings")
+                voice_name = gr.Textbox(
+                    label="Voice Name",
+                    value="",
+                    elem_classes="hintitem", elem_id="rvc_voice_name"
                 )
-                use_pitch_guidance = gr.Radio(
-                    label="Use Pitch Guidance",
-                    choices=[True, False],
-                    value=True,
-                    interactive=True,
-                )
-                model_version = gr.Radio(
-                    label="Model Version",
-                    choices=["v1", "v2"],
-                    value="v2",
-                    interactive=True,
-                    visible=True,
-                )
-                num_cpu_processes = gr.Slider(
-                    minimum=0,
-                    maximum=config.n_cpu,
+                with gr.Row():
+                    existing_project = gr.Dropdown(
+                        label="Existing Project",
+                        choices=list_voice_projects(),
+                        value="",
+                        elem_classes="hintitem", elem_id="rvc_existing_project"
+                    )
+                    refresh_button = gr.Button(
+                        "Refresh",
+                        variant="secondary",
+                        elem_classes="hintitem", elem_id="rvc_refresh_button"
+                    )
+                    refresh_button.click(fn=list_voice_projects_ui, outputs=[existing_project])
+
+                total_epochs = gr.Slider(
+                    minimum=2,
+                    maximum=1000,
                     step=1,
-                    label="Number of CPU processes for pitch extraction and data processing",
-                    value=int(np.ceil(config.n_cpu / 1.5)),
-                    visible=config.n_cpu >= 1,
+                    label="Total Training Epochs",
+                    value=125,
                     interactive=True,
+                    elem_classes="hintitem", elem_id="rvc_total_epochs"
                 )
-                speaker_id = gr.Slider(
-                    minimum=0,
-                    maximum=4,
-                    step=1,
-                    label="Speaker ID",
-                    value=0,
-                    interactive=True,
-                )
-                pitch_extraction_method = gr.Radio(
-                    label="Pitch Extraction Method",
-                    choices=["pm", "harvest", "dio", "rmvpe", "rmvpe_gpu"],
-                    value="rmvpe_gpu",
-                    interactive=True,
-                )
-                gpus_rmvpe = gr.Textbox(
-                    label="Number of GPUs for RMVPE",
-                    value=f"{gpus}-{gpus}",
-                    interactive=True,
-                    visible=F0GPUVisible,
-                )
-                pitch_extraction_method.change(
-                    fn=change_f0_method,
-                    inputs=[pitch_extraction_method],
-                    outputs=[gpus_rmvpe],
-                )
-                save_epoch_frequency = gr.Slider(
+
+                train_batch_size = gr.Slider(
                     minimum=1,
-                    maximum=50,
+                    maximum=40,
                     step=1,
-                    label="Save Checkpoint Frequency (in epochs)",
-                    value=5,
+                    label="Batch Size per GPU",
+                    value=default_batch_size,
                     interactive=True,
+                    elem_classes="hintitem", elem_id="rvc_train_batch_size"
                 )
-                save_latest_only = gr.Radio(
-                    label="Save Only the Latest Checkpoint to Save Disk Space",
-                    choices=["Yes", "No"],
-                    value="No",
-                    interactive=True,
-                )
-                cache_dataset_to_gpu = gr.Radio(
-                    label="Cache Dataset to GPU",
-                    choices=["Yes", "No"],
-                    value="Yes",
-                    interactive=True,
-                )
-                save_weights_each_ckpt = gr.Radio(
-                    label="Save Weights at Each Checkpoint",
-                    choices=["Yes", "No"],
-                    value="Yes",
-                    interactive=True,
-                )
-                pretrained_generator = gr.Textbox(
-                    label="Pretrained Generator Path",
-                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G48k.pth"),
-                    interactive=True,
-                    visible=False
-                )
-                pretrained_discriminator = gr.Textbox(
-                    label="Pretrained Discriminator Path",
-                    value=os.path.join(model_path, "rvc", "pretrained_v2", "f0D48k.pth"),
-                    interactive=True,
-                    visible=False
-                )
-                more_gpu_ids = gr.Textbox(
-                    label="Enter GPU IDs separated by `-` (e.g., `0-1-2` for GPUs 0, 1, and 2)",
-                    value=gpus,
-                    interactive=True,
-                )
-            sample_rate.change(
-                change_sr2,
-                [sample_rate, use_pitch_guidance, model_version],
-                [pretrained_generator, pretrained_discriminator],
-            )
-            model_version.change(
-                change_version19,
-                [sample_rate, use_pitch_guidance, model_version],
-                [pretrained_generator, pretrained_discriminator, sample_rate],
-            )
-            use_pitch_guidance.change(
-                change_f0,
-                [use_pitch_guidance, sample_rate, model_version],
-                [pitch_extraction_method, gpus_rmvpe, pretrained_generator, pretrained_discriminator],
-            )
 
-        with gr.Column():
-            input_files = gr.File(label="Input Files", type="filepath", file_types=["audio"], file_count="multiple")
-        with gr.Column():
-            with gr.Row():
-                start_train = gr.Button("Train", variant="primary")
-                cancel_train = gr.Button("Cancel", variant="secondary", visible=False)
+                separate_vocals = gr.Checkbox(
+                    label="Separate Vocals",
+                    value=True,
+                    elem_classes="hintitem", elem_id="rvc_separate_vocals"
+                )
 
-            info3 = gr.Textbox(label="Output Info", value="", max_lines=10)
-            start_train.click(
-                train1key,
-                [
-                    voice_name,
-                    existing_project,
-                    separate_vocals,
-                    sample_rate,
-                    use_pitch_guidance,
-                    input_files,
-                    speaker_id,
-                    num_cpu_processes,
-                    pitch_extraction_method,
-                    save_epoch_frequency,
-                    total_epochs,
-                    train_batch_size,
-                    save_latest_only,
-                    pretrained_generator,
-                    pretrained_discriminator,
-                    more_gpu_ids,
-                    cache_dataset_to_gpu,
-                    save_weights_each_ckpt,
-                    model_version,
-                    gpus_rmvpe,
-                ],
-                info3,
-                api_name="train_start_all",
+                with gr.Accordion(label="Advanced", open=False):
+                    sample_rate = gr.Radio(
+                        label="Target Sampling Rate",
+                        choices=["40k", "48k"],
+                        value="48k",
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_sample_rate"
+                    )
+                    use_pitch_guidance = gr.Radio(
+                        label="Use Pitch Guidance",
+                        choices=[True, False],
+                        value=True,
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_pitch_guidance"
+                    )
+                    model_version = gr.Radio(
+                        label="Model Version",
+                        choices=["v1", "v2"],
+                        value="v2",
+                        interactive=True,
+                        visible=True,
+                        elem_classes="hintitem", elem_id="rvc_model_version"
+                    )
+                    num_cpu_processes = gr.Slider(
+                        minimum=0,
+                        maximum=config.n_cpu,
+                        step=1,
+                        label="Number of CPU Processes",
+                        value=int(np.ceil(config.n_cpu / 1.5)),
+                        visible=config.n_cpu >= 1,
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_num_cpu"
+                    )
+                    speaker_id = gr.Slider(
+                        minimum=0,
+                        maximum=4,
+                        step=1,
+                        label="Speaker ID",
+                        value=0,
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_speaker_id"
+                    )
+                    pitch_extraction_method = gr.Radio(
+                        label="Pitch Extraction Method",
+                        choices=["pm", "harvest", "dio", "rmvpe", "rmvpe_gpu"],
+                        value="rmvpe_gpu",
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_pitch_extraction"
+                    )
+                    gpus_rmvpe = gr.Textbox(
+                        label="Number of GPUs for RMVPE",
+                        value=f"{gpus}-{gpus}",
+                        interactive=True,
+                        visible=F0GPUVisible,
+                        elem_classes="hintitem", elem_id="rvc_gpus_rmvpe"
+                    )
+                    pitch_extraction_method.change(
+                        fn=change_f0_method,
+                        inputs=[pitch_extraction_method],
+                        outputs=[gpus_rmvpe],
+                    )
+                    save_epoch_frequency = gr.Slider(
+                        minimum=1,
+                        maximum=50,
+                        step=1,
+                        label="Save Checkpoint Frequency (Epochs)",
+                        value=5,
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_save_epoch_frequency"
+                    )
+                    save_latest_only = gr.Radio(
+                        label="Save Only Latest Checkpoint",
+                        choices=["Yes", "No"],
+                        value="No",
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_save_latest_only"
+                    )
+                    cache_dataset_to_gpu = gr.Radio(
+                        label="Cache Dataset to GPU",
+                        choices=["Yes", "No"],
+                        value="Yes",
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_cache_dataset"
+                    )
+                    save_weights_each_ckpt = gr.Radio(
+                        label="Save Weights at Each Checkpoint",
+                        choices=["Yes", "No"],
+                        value="Yes",
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_save_weights"
+                    )
+                    pretrained_generator = gr.Textbox(
+                        label="Pretrained Generator Path",
+                        value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G48k.pth"),
+                        interactive=True,
+                        visible=False,
+                        elem_classes="hintitem", elem_id="rvc_pretrained_generator"
+                    )
+                    pretrained_discriminator = gr.Textbox(
+                        label="Pretrained Discriminator Path",
+                        value=os.path.join(model_path, "rvc", "pretrained_v2", "f0D48k.pth"),
+                        interactive=True,
+                        visible=False,
+                        elem_classes="hintitem", elem_id="rvc_pretrained_discriminator"
+                    )
+                    more_gpu_ids = gr.Textbox(
+                        label="GPU IDs (e.g., 0-1-2)",
+                        value=gpus,
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_gpu_ids"
+                    )
+                sample_rate.change(
+                    change_sr2,
+                    [sample_rate, use_pitch_guidance, model_version],
+                    [pretrained_generator, pretrained_discriminator],
+                )
+                model_version.change(
+                    change_version19,
+                    [sample_rate, use_pitch_guidance, model_version],
+                    [pretrained_generator, pretrained_discriminator, sample_rate],
+                )
+                use_pitch_guidance.change(
+                    change_f0,
+                    [use_pitch_guidance, sample_rate, model_version],
+                    [pitch_extraction_method, gpus_rmvpe, pretrained_generator, pretrained_discriminator],
+                )
+            with gr.Column():
+                gr.Markdown("### 🎤 Input")
+                input_files = gr.File(
+                    label="Input Files",
+                    type="filepath",
+                    file_types=["audio"],
+                    file_count="multiple",
+                    elem_classes="hintitem", elem_id="rvc_input_files"
+                )
+            with gr.Column():
+                gr.Markdown("### 🎶 Outputs")
+                with gr.Row():
+                    start_train = gr.Button(
+                        "Train",
+                        elem_classes="hintitem", elem_id="rvc_start_train", variant="primary"
+                    )
+                    cancel_train = gr.Button(
+                        "Cancel",
+                        variant="secondary",
+                        visible=False,
+                        elem_classes="hintitem", elem_id="rvc_cancel_train"
+                    )
+
+                info3 = gr.Textbox(
+                    label="Output Info",
+                    value="",
+                    max_lines=10,
+                    elem_classes="hintitem", elem_id="rvc_output_info"
+                )
+                start_train.click(
+                    train1key,
+                    [
+                        voice_name,
+                        existing_project,
+                        separate_vocals,
+                        sample_rate,
+                        use_pitch_guidance,
+                        input_files,
+                        speaker_id,
+                        num_cpu_processes,
+                        pitch_extraction_method,
+                        save_epoch_frequency,
+                        total_epochs,
+                        train_batch_size,
+                        save_latest_only,
+                        pretrained_generator,
+                        pretrained_discriminator,
+                        more_gpu_ids,
+                        cache_dataset_to_gpu,
+                        save_weights_each_ckpt,
+                        model_version,
+                        gpus_rmvpe,
+                    ],
+                    info3,
+                    api_name="train_start_all",
+                )
+
+            def update_time_info(input_files):
+                total_length = 0
+                if not input_files:
+                    return gr.update(value="")
+                for f in input_files:
+                    try:
+                        audio = AudioSegment.from_file(f)
+                        total_length += len(audio) / 1000
+                    except Exception as e:
+                        logger.error(f"Error processing file {f}: {e}")
+                total_length /= 60
+                info_value = f"Total length of input files: {total_length:.2f} minutes.\nRecommended is 30-60 minutes."
+                return gr.update(value=info_value)
+
+            input_files.change(
+                fn=update_time_info,
+                inputs=[input_files],
+                outputs=[info3],
             )
+    return rvc_train
 
-        def update_time_info(input_files):
-            total_length = 0
-            if not input_files:
-                return gr.update(value="")
-            for f in input_files:
-                try:
-                    # Load the audio file using pydub
-                    audio = AudioSegment.from_file(f)
-                    total_length += len(audio) / 1000  # Convert milliseconds to seconds
-                except Exception as e:
-                    logger.error(f"Error processing file {f}: {e}")
-            total_length /= 60  # Convert seconds to minutes
-            info_value = f"Total length of input files: {total_length:.2f} minutes."
-            info_value += "\nRecommended is 30-60 minutes."
-            return gr.update(value=info_value)
 
-        input_files.change(
-            fn=update_time_info,
-            inputs=[input_files],
-            outputs=[info3],
-        )
+def register_descriptions(arg_handler: ArgHandler):
+    descriptions = {
+        "voice_name": "Enter a name for the voice model you are training.",
+        "existing_project": "Select an existing project to continue training or leave blank for a new one.",
+        "refresh_button": "Click to refresh the list of available voice projects.",
+        "total_epochs": "Set the total number of training epochs. More epochs generally improve quality.",
+        "train_batch_size": "Adjust the batch size per GPU. Higher values require more VRAM but train faster.",
+        "separate_vocals": "Check this box to separate vocals from instrumentals before training.",
+        "sample_rate": "Select the target sample rate for the model (40k or 48k).",
+        "pitch_guidance": "Choose whether to use pitch guidance for training. Helps with vocal accuracy.",
+        "model_version": "Select the RVC model version (v1 or v2).",
+        "num_cpu": "Specify the number of CPU processes for data processing and pitch extraction.",
+        "speaker_id": "Set the speaker ID to use during training. Some datasets require this.",
+        "pitch_extraction": "Select the pitch extraction method to use. RMVPE generally provides the best results.",
+        "gpus_rmvpe": "Enter the number of GPUs allocated for RMVPE-based pitch extraction.",
+        "save_epoch_frequency": "Set how often (in epochs) to save checkpoints during training.",
+        "save_latest_only": "Enable this to keep only the latest checkpoint and save disk space.",
+        "cache_dataset": "Choose whether to cache the dataset to GPU memory for faster training.",
+        "save_weights": "Enable this to save model weights at every checkpoint.",
+        "pretrained_generator": "Path to the pretrained generator model used for fine-tuning.",
+        "pretrained_discriminator": "Path to the pretrained discriminator model used for training.",
+        "gpu_ids": "Specify GPU IDs for multi-GPU training, separated by dashes (e.g., 0-1-2).",
+        "input_files": "Upload audio files for training. More data generally improves results.",
+        "start_train": "Click to begin training the voice model with the selected settings.",
+        "cancel_train": "Click to cancel the training process if needed.",
+        "output_info": "Displays logs and training progress information.",
+    }
+    for elem_id, description in descriptions.items():
+        print(f"Registering description for RVC_{elem_id}: {description}")
+        arg_handler.register_description("rvc", elem_id, description)

@@ -21,3 +21,7 @@
     right: 130px;
     top: 14px;
 }
+
+gradio-app {
+    background: var(--bg-dark) !important;
+}

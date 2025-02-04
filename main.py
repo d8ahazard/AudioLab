@@ -17,9 +17,9 @@ from torchaudio._extension import _init_dll_path
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path
-from layouts.rvc_train import render as rvc_render
-from layouts.music import render as render_music
-from layouts.tts import render_tts
+from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
+from layouts.music import render as render_music, register_descriptions as music_register_descriptions, listen as music_listen
+from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 import logging
@@ -268,6 +268,9 @@ if __name__ == '__main__':
     for wrapper_name in wrappers:
         processor = get_processor(wrapper_name)
         processor.register_descriptions(arg_handler)
+    music_register_descriptions(arg_handler)
+    tts_register_descriptions(arg_handler)
+    rvc_register_descriptions(arg_handler)
 
     with open(project_root / 'css' / 'ui.css', 'r') as css_file:
         css = css_file.read()
@@ -279,20 +282,22 @@ if __name__ == '__main__':
         js = f'<script type="text/javascript">{js}</script>'
         js += f"\n{css}"
 
-    with gr.Blocks(title='AudioLab', head=js) as ui:
+    with gr.Blocks(title='AudioLab', head=js, theme="NoCrypt/miku") as ui:
         with gr.Tabs(selected="process"):
             with gr.Tab(label='TTS', id="tts"):
                 render_tts()
             with gr.Tab(label="Music", id="music"):
-                render_music()
+                render_music(arg_handler)
             with gr.Tab(label='Process', id="process"):
+                gr.Markdown("## Music Processing")
                 processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers,
-                                                  elem_id='processor_list')
+                                                  elem_id='processor_list', key="main_processor_list")
                 progress_display = gr.HTML(label='Progress', value='')
 
                 accordions = []
                 with gr.Row():
                     with gr.Column() as settings_ui:
+                        gr.Markdown("### 🔧 Settings")
                         for wrapper_name in wrappers:
                             processor = get_processor(wrapper_name)
                             all_kwargs = processor.allowed_kwargs
@@ -305,30 +310,33 @@ if __name__ == '__main__':
                             accordions.append(accordion)
 
                     with gr.Column():
+                        gr.Markdown("### 🎤 Inputs")
                         input_select = gr.Dropdown(label='Select Input Preview', choices=[], value=None, visible=False,
-                                                   interactive=True)
-                        input_audio = gr.Audio(label='Input Audio', value=None, visible=False)
-                        input_image = gr.Image(label='Input Image', value=None, visible=False)
-                        input_files = gr.File(label='Input Files', file_count='multiple', file_types=['audio', 'video'])
+                                                   interactive=True, key="process_input_preview")
+                        input_audio = gr.Audio(label='Input Audio', value=None, visible=False, key="process_input_audio")
+                        input_image = gr.Image(label='Input Image', value=None, visible=False, key="process_input_image")
+                        input_files = gr.File(label='Input Files', file_count='multiple', file_types=['audio', 'video'],
+                                              key="process_inputs")
                         arg_handler.register_element("main", "process_inputs", input_files)
                         with gr.Row():
                             with gr.Column(scale=2):
                                 input_url = gr.Textbox(label='Input URL', placeholder='Enter URL', visible=True,
-                                                       interactive=True)
+                                                       interactive=True, key="process_input_url")
                             with gr.Column():
                                 input_url_button = gr.Button(value='Load', visible=True, interactive=True)
                     with gr.Column():
+                        gr.Markdown("### 🎶 Outputs")
                         with gr.Row():
-                            start_processing = gr.Button(value='Start Processing')
-                            cancel_processing = gr.Button(value='Cancel Processing', variant='secondary')
+                            start_processing = gr.Button(value='Start Processing', variant='primary')
+                            cancel_processing = gr.Button(value='Cancel Processing', variant='secondary', visible=False)
 
                         output_select = gr.Dropdown(label='Select Output Preview', choices=[], value=None,
-                                                    visible=False, interactive=True)
-                        output_audio = gr.Audio(label='Output Audio', value=None, visible=False)
-                        output_image = gr.Image(label='Output Image', value=None, visible=False)
+                                                    visible=False, interactive=True, key="process_output_preview")
+                        output_audio = gr.Audio(label='Output Audio', value=None, visible=False, key="process_output_audio")
+                        output_image = gr.Image(label='Output Image', value=None, visible=False, key="process_output_image")
                         output_files = gr.File(label='Output Files', file_count='multiple',
                                                file_types=['audio', 'video'],
-                                               interactive=False)
+                                               interactive=False, key="process_output_files")
 
                 processor_list.input(
                     fn=enforce_defaults,
@@ -374,6 +382,8 @@ if __name__ == '__main__':
             with gr.Tab(label="Train", id="train"):
                 rvc_render()
 
+        tts_listen()
+        music_listen()
     # Launch the UI with specified host and port
     favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
     ui.launch(server_name=server_name, server_port=server_port, favicon_path=favicon_path)

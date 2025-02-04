@@ -194,6 +194,7 @@ class BaseWrapper:
 
         elem.__setattr__("elem_id", f"{class_name}_{arg_key}")
         elem.__setattr__("elem_classes", ["hintitem"])
+        elem.__setattr__("key", f"{class_name}_{arg_key}")
 
         self.arg_handler.register_element(class_name, arg_key, elem, value.description)
         if isinstance(value.on_click, Callable):
