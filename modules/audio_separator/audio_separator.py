@@ -113,7 +113,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         callback signature: callback(current_step, description, total_steps).
         """
         self.global_step += 1
-        if self.callback:
+        if self.callback is not None:
             self.callback(self.global_step, desc, self.total_steps)
 
     def separate_music_file(self, base_name, mixed_sound_array, sample_rate, callback=None):

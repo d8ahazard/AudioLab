@@ -245,10 +245,10 @@ def if_done_multi(done, ps):
     done[0] = True
 
 
-def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
+def preprocess_dataset(trainset_dir, exp_dir, sr, n_p, progress: gr.Progress):
     sr = sr_dict[sr]
     per = config.preprocess_per if hasattr(config, "preprocess_per") else 3.0
-    return preprocess_trainset(trainset_dir, sr, n_p, exp_dir, per)
+    return preprocess_trainset(trainset_dir, sr, n_p, exp_dir, per, progress)
 
 
 def extract_f0_feature(num_processors, extract_method, use_pitch_guidance, exp_dir, project_version, gpus_rmvpe):
@@ -285,6 +285,7 @@ def click_train(
         cache_dataset_to_gpu,
         save_weights_each_ckpt,
         model_version,
+        progress=gr.Progress(),
 ):
     config = Config()
     exp_dir = os.path.join(output_path, "voices", voice_name)
@@ -404,7 +405,7 @@ def click_train(
     logger.info(f"Training with hparams: {hparams}")
 
     # Directly call the main() function from train script.
-    train_main(hparams)
+    train_main(hparams, progress)
     return "Training complete."
 
 
@@ -504,24 +505,6 @@ def train_index(exp_dir, model_version):
     yield "\n".join(infos)
 
 
-# voice_name,
-# sample_rate,
-# use_pitch_guidance,
-# input_files,
-# speaker_id,
-# num_cpu_processes,
-# pitch_extraction_method,
-# save_epoch_frequency,
-# total_epochs,
-# train_batch_size,
-# save_latest_only,
-# pretrained_generator,
-# pretrained_discriminator,
-# more_gpu_ids,
-# cache_dataset_to_gpu,
-# save_weights_each_ckpt,
-# model_version,
-# gpus_rmvpe
 
 def train1key(
         project_name,
@@ -544,6 +527,7 @@ def train1key(
         save_weights_every,
         project_version,
         gpus_rmvpe,
+        progress=gr.Progress()
 ):
     infos = []
     resuming_training = False
@@ -588,10 +572,11 @@ def train1key(
         yield get_info_str("Step1: Preprocessing data")
         vocal_files = inputs
         if separate_vocals:
-            vocal_files, bg_vocal_files = separate_vocal(inputs)
+            vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
             yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
-
-        for f in vocal_files:
+        non_wav_vocal_files = [f for f in vocal_files if not f.endswith(".wav")]
+        for index, f in enumerate(non_wav_vocal_files):
+            progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(non_wav_vocal_files)})")
             try:
                 base_name, ext = os.path.splitext(os.path.basename(f))
                 output_file = os.path.join(data_dir, f"{base_name}.wav")
@@ -613,10 +598,11 @@ def train1key(
 
             except Exception as e:
                 logger.error(f"Error processing file {f}: {e}")
-        preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus)
+        preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
 
         # Extract pitch features
         yield get_info_str("Step2: Extracting pitch features")
+        progress(0.25, "Extracting pitch features")
         extract_f0_feature(
             num_cpus,
             extraction_method,
@@ -626,10 +612,12 @@ def train1key(
             gpus_rmvpe
         )
     else:
+        progress(0.25, "Skipping pitch feature extraction")
         yield get_info_str("Step1: Data already preprocessed")
         yield get_info_str("Step2: Pitch features already extracted")
 
     # step3a:训练模型
+    progress(0.5, "Training model")
     yield get_info_str("Step3a: Training model")
     click_train(
         project_name,
@@ -647,10 +635,12 @@ def train1key(
         cache_to_gpu,
         save_weights_every,
         project_version,
+        progress
     )
 
     index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
     if not resuming_training or not os.path.exists(index_file):
+        progress(0.75, "Building index")
         yield get_info_str("Training complete, now building index.")
         [get_info_str(_) for _ in train_index(project_name, project_version)]
         yield get_info_str("PRocessing complete.!")

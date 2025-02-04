@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 from random import randint, shuffle
-
+import gradio as gr
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -67,7 +67,7 @@ class EpochRecorder:
         return f"[{current_time}] | ({elapsed_time_str})"
 
 
-def train_main(hps):
+def train_main(hps, progress: gr.Progress):
     os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
     # n_gpus = len(hps.gpus.split("-"))
     global global_step
@@ -88,7 +88,7 @@ def train_main(hps):
     for i in range(n_gpus):
         subproc = mp.Process(
             target=run,
-            args=(i, n_gpus, hps, logger),
+            args=(i, n_gpus, hps, logger, progress),
         )
         children.append(subproc)
         subproc.start()
@@ -97,7 +97,7 @@ def train_main(hps):
         children[i].join()
 
 
-def run(rank, n_gpus, hps, logger: logging.Logger):
+def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     if hps.version == "v1":
         from modules.rvc.infer.lib.infer_pack.models import MultiPeriodDiscriminator
         from modules.rvc.infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid as RVC_Model_f0
