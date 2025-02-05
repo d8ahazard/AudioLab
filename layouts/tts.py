@@ -130,10 +130,10 @@ def register_descriptions(arg_handler: ArgHandler):
     descriptions = {
         "infer_language": "Select the language for text-to-speech synthesis.",
         "infer_model": "Choose the TTS model to use for generating speech.",
-        "infer_speaker": "Select a speaker from the available voices for the chosen model.",
+        "infer_speaker": "Select a speaker from the available voices for the chosen model. Not all models have multiple speakers.",
         "infer_speed": "Adjust the speed of speech output. 1.0 is normal speed.",
         "infer_input_text": "Enter the text to be converted to speech. Supports multiple lines.",
-        "infer_speaker_wav": "Upload an audio file to provide a reference speaker voice.",
+        "infer_speaker_wav": "Upload an audio file to provide a reference speaker voice. Should be 5-15s, doesn't work with all tts models.",
         "infer_start_button": "Click to generate speech from the input text using the selected model and speaker.",
         "infer_send_to_process": "Send the generated speech output for further processing.",
         "infer_output_audio": "The synthesized speech output will be displayed here as an audio file."

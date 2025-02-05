@@ -1,13 +1,12 @@
 import hashlib
 import os
-from typing import Any, List, Callable, Dict
+from typing import Any, List, Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
 from pydub import AudioSegment
 from scipy.signal import resample, stft
 
-from handlers.config import output_path
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
@@ -35,7 +34,7 @@ def generate_output_filename(file1: str, file2: str, output_folder: str) -> str:
     )
 
 
-class Compare(BaseWrapper):
+class Compare:
     title = "Compare"
     description = "Compare two audio files using time-domain waveforms and spectrogram differences."
     priority = 1000000

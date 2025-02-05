@@ -335,19 +335,36 @@ def click_train(
                 )
             )
     fea_dim = 256 if model_version == "v1" else 768
-    mutes_dir = os.path.join(app_path, "rvc")
+    mutes_dir = os.path.join(app_path, "modules", "rvc")
+
+    mute_wav_path = os.path.join(mutes_dir, "logs", "mute", "0_gt_wavs")
+    mute_feature_path = os.path.join(mutes_dir, "logs", "mute", "3_feature")
+    mute_f0_path = os.path.join(mutes_dir, "logs", "mute", "2a_f0")
+    mute_f0nsf_path = os.path.join(mutes_dir, "logs", "mute", "2b-f0nsf")
+
+    opt = []
+
     if use_pitch_guidance:
         for _ in range(2):
             opt.append(
-                "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature%s/mute.npy|%s/logs/mute/2a_f0/mute.wav.npy|%s/logs/mute/2b-f0nsf/mute.wav.npy|%s"
-                % (mutes_dir, sample_rate, mutes_dir, fea_dim, mutes_dir, mutes_dir, speaker_index)
+                "|".join([
+                    os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
+                    os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
+                    os.path.join(mute_f0_path, "mute.wav.npy"),
+                    os.path.join(mute_f0nsf_path, "mute.wav.npy"),
+                    str(speaker_index)
+                ])
             )
     else:
         for _ in range(2):
             opt.append(
-                "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature%s/mute.npy|%s"
-                % (mutes_dir, sample_rate, mutes_dir, fea_dim, speaker_index)
+                "|".join([
+                    os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
+                    os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
+                    str(speaker_index)
+                ])
             )
+
     shuffle(opt)
     with open(os.path.join(exp_dir, "filelist.txt"), "w") as f:
         f.write("\n".join(opt))
@@ -399,7 +416,7 @@ def click_train(
     hparams.if_latest = 1 if save_latest_only == "Yes" else 0
     hparams.save_every_weights = 1 if save_weights_each_ckpt == "Yes" else 0
     hparams.if_cache_data_in_gpu = 1 if cache_dataset_to_gpu == "Yes" else 0
-    hparams.data.training_files = f"{exp_dir}/filelist.txt"
+    hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
 
     # Logging for debugging.
     logger.info(f"Training with hparams: {hparams}")
@@ -568,7 +585,7 @@ def train1key(
             missing_dirs.append(d)
     # Preprocess
     if not resuming_training or len(missing_dirs) > 0:
-        yield get_info_str("Step1: Preprocessing data")
+        yield get_info_str("Step1: Preprocessing data.")
         vocal_files = inputs
         if separate_vocals:
             vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
@@ -600,8 +617,8 @@ def train1key(
         preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
 
         # Extract pitch features
-        yield get_info_str("Step2: Extracting pitch features")
-        progress(0.25, "Extracting pitch features")
+        yield get_info_str("Step2: Extracting pitch features.")
+        progress(0.25, "Extracting pitch features.")
         extract_f0_feature(
             num_cpus,
             extraction_method,
@@ -611,13 +628,13 @@ def train1key(
             gpus_rmvpe
         )
     else:
-        progress(0.25, "Skipping pitch feature extraction")
-        yield get_info_str("Step1: Data already preprocessed")
-        yield get_info_str("Step2: Pitch features already extracted")
+        progress(0.25, "Skipping pitch feature extraction.")
+        yield get_info_str("Step1: Data already preprocessed.")
+        yield get_info_str("Step2: Pitch features already extracted.")
 
     # step3a:训练模型
-    progress(0.5, "Training model")
-    yield get_info_str("Step3a: Training model")
+    progress(0.5, "Training model.")
+    yield get_info_str("Step3a: Training model.")
     click_train(
         project_name,
         resuming_training,
@@ -642,7 +659,7 @@ def train1key(
         progress(0.75, "Building index")
         yield get_info_str("Training complete, now building index.")
         [get_info_str(_) for _ in train_index(project_name, project_version)]
-        yield get_info_str("PRocessing complete.!")
+        yield get_info_str("Processing complete.!")
 
 
 def list_voice_projects():

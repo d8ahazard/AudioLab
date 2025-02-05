@@ -52,48 +52,64 @@ class PreProcess:
         os.makedirs(self.gt_wavs_dir, exist_ok=True)
         os.makedirs(self.wavs16k_dir, exist_ok=True)
 
+    # def norm_write(self, tmp_audio, idx0, idx1):
+    #     # Construct paths using os.path.join
+    #     gt_wav_path = os.path.join(self.gt_wavs_dir, f"{idx0}_{idx1}.wav")
+    #     wavs16k_path = os.path.join(self.wavs16k_dir, f"{idx0}_{idx1}.wav")
+    #     if os.path.exists(gt_wav_path) and os.path.exists(wavs16k_path):
+    #         print(f"Skipping {idx0}-{idx1} as files already exist.")
+    #         return
+    #
+    #     try:
+    #         tmp_max = np.abs(tmp_audio).max()
+    #         if tmp_max > 2.5:
+    #             print(f"{idx0}-{idx1}-{tmp_max}-filtered")
+    #             return
+    #
+    #         tmp_audio = (tmp_audio / tmp_max * (self.max * self.alpha)) + (
+    #                 1 - self.alpha
+    #         ) * tmp_audio
+    #
+    #         # # Debug: Check if normalization introduced issues
+    #         # if not np.isfinite(tmp_audio).all():
+    #         #     print(f"Error: Audio buffer contains NaN or infinite values AFTER normalization. Skipping {idx0}-{idx1}.")
+    #         #     return
+    #         #
+    #         # Ensure finite values before writing/resampling
+    #         tmp_audio = np.nan_to_num(tmp_audio, nan=0.0, posinf=0.0, neginf=0.0)
+    #
+    #         wavfile.write(gt_wav_path, self.sr, tmp_audio.astype(np.float32))
+    #
+    #         # Resample audio safely
+    #         tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)
+    #
+    #         wavfile.write(wavs16k_path, 16000, tmp_audio.astype(np.float32))
+    #     except Exception as e:
+    #         # Delete files if resampling fails
+    #         if os.path.exists(gt_wav_path):
+    #             os.remove(gt_wav_path)
+    #         if os.path.exists(wavs16k_path):
+    #             os.remove(wavs16k_path)
+    #         print(f"Librosa resampling failed for {idx0}-{idx1}, skipping. | Error: {e}")
+    #         return
+    #
+    #     print(f"Successfully processed {idx0}-{idx1}")
+
     def norm_write(self, tmp_audio, idx0, idx1):
-        # Construct paths using os.path.join
-        gt_wav_path = os.path.join(self.gt_wavs_dir, f"{idx0}_{idx1}.wav")
-        wavs16k_path = os.path.join(self.wavs16k_dir, f"{idx0}_{idx1}.wav")
-        if os.path.exists(gt_wav_path) and os.path.exists(wavs16k_path):
-            print(f"Skipping {idx0}-{idx1} as files already exist.")
-            return
-
-        try:
-            tmp_max = np.abs(tmp_audio).max()
-            if tmp_max > 2.5:
-                print(f"{idx0}-{idx1}-{tmp_max}-filtered")
-                return
-
-            tmp_audio = (tmp_audio / tmp_max * (self.max * self.alpha)) + (
-                    1 - self.alpha
-            ) * tmp_audio
-
-            # # Debug: Check if normalization introduced issues
-            # if not np.isfinite(tmp_audio).all():
-            #     print(f"Error: Audio buffer contains NaN or infinite values AFTER normalization. Skipping {idx0}-{idx1}.")
-            #     return
-            #
-            # Ensure finite values before writing/resampling
-            tmp_audio = np.nan_to_num(tmp_audio, nan=0.0, posinf=0.0, neginf=0.0)
-
-            wavfile.write(gt_wav_path, self.sr, tmp_audio.astype(np.float32))
-
-            # Resample audio safely
-            tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)
-
-            wavfile.write(wavs16k_path, 16000, tmp_audio.astype(np.float32))
-        except Exception as e:
-            # Delete files if resampling fails
-            if os.path.exists(gt_wav_path):
-                os.remove(gt_wav_path)
-            if os.path.exists(wavs16k_path):
-                os.remove(wavs16k_path)
-            print(f"Librosa resampling failed for {idx0}-{idx1}, skipping. | Error: {e}")
-            return
-
-        print(f"Successfully processed {idx0}-{idx1}")
+        tmp_audio = (tmp_audio / np.abs(tmp_audio).max() * (self.max * self.alpha)) + (
+                1 - self.alpha
+        ) * tmp_audio
+        wavfile.write(
+            "%s/%s_%s.wav" % (self.gt_wavs_dir, idx0, idx1),
+            self.sr,
+            tmp_audio.astype(np.float32),
+        )
+        tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)  # , res_type="soxr_vhq"
+        wavfile.write(
+            "%s/%s_%s.wav" % (self.wavs16k_dir, idx0, idx1),
+            16000,
+            tmp_audio.astype(np.float32),
+        )
 
     def pipeline(self, path, idx0, callback: Callable = None):
         try:
@@ -117,7 +133,7 @@ class PreProcess:
                         tmp_audio = audio[start: start + int(self.per * self.sr)]
 
                         # Call the callback before norm_write
-                        if callback:
+                        if callback is not None:
                             progress = processed_steps / total_steps
                             callback(progress, f"Processing chunk {idx1}", total_steps)
 
@@ -131,7 +147,7 @@ class PreProcess:
                         break
 
                 # Call the callback before the last norm_write in this slice
-                if callback:
+                if callback is not None:
                     progress = processed_steps / total_steps
                     callback(progress, f"Processing chunk {idx1}", total_steps)
 
@@ -139,7 +155,7 @@ class PreProcess:
                 processed_steps += 1
 
             # Ensure final progress callback at 100%
-            if callback:
+            if callback is not None:
                 callback(1.0, "Processing complete", total_steps)
 
         except Exception:

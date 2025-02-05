@@ -11,7 +11,7 @@ import torch
 from handlers.config import model_path
 from handlers.reverb import apply_reverb
 from handlers.stereo import stereo_to_mono_ms, resample_side, mono_to_stereo_ms
-from modules.rvc.infer.lib.audio import load_audio
+from modules.rvc.infer.lib.audio import load_audio, load_audio_advanced
 from modules.rvc.infer.lib.infer_pack.models import (
     SynthesizerTrnMs256NSFsid,
     SynthesizerTrnMs256NSFsid_nono,
@@ -169,7 +169,7 @@ class VC:
             # ----------------------------------------------------------------
             # (A) Load original audio in float[-1,1] at its original sample rate (og_sr)
             # ----------------------------------------------------------------
-            audio_float, og_sr = load_audio(
+            audio_float, og_sr = load_audio_advanced(
                 file=input_audio_path,
                 sr=None,  # Do NOT resample, keep original
                 mono=False,  # Keep stereo if applicable

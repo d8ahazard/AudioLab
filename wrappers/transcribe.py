@@ -9,7 +9,7 @@ from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
 
-class Transcribe(BaseWrapper):
+class Transcribe:
     title = "Transcribe"
     description = "Transcribe audio files using WhisperX."
     priority = 100
