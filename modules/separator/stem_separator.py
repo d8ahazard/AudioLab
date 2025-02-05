@@ -84,7 +84,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
             "kuielab_a_bass.onnx"          # For optional alternate bass
         ]
         for model in self.model_list:
-            logger.info(f"Downloading model: {model}")
             self.separator.download_model_files(model)
 
         # Flags

@@ -8,6 +8,7 @@ descript-audio-codec
 diffusers>=0.32.1
 einops>=0.8.0
 ffmpeg
+ffmpeg-python
 ffmpeg_progress_yield
 ftfy>=6.3.1
 gradio>=5.1.0
