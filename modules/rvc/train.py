@@ -221,6 +221,11 @@ def run_training_epoch(epoch, hps, nets, optims, schedulers, train_loader, logge
     epoch_recorder = EpochRecorder()
     print("epoch recorder created, starting training")
     for batch_idx, data in enumerate(train_loader):
+        # Check global step limit before processing a new batch.
+        if global_step >= hps.train.total_steps:
+            logger.info("Global step limit reached. Exiting training epoch early.")
+            break
+
         (
             phone,
             phone_lengths,
@@ -325,6 +330,10 @@ def run_training_epoch(epoch, hps, nets, optims, schedulers, train_loader, logge
                     pass
 
         global_step += 1
+        if global_step >= hps.train.total_steps:
+            logger.info("Global step limit reached after batch update. Exiting training epoch early.")
+            break
+
         if callback is not None:
             desc_string = f"Epoch {epoch} | Step {global_step}"
             callback(global_step, f"Training ({desc_string})", len(train_loader))
@@ -332,7 +341,6 @@ def run_training_epoch(epoch, hps, nets, optims, schedulers, train_loader, logge
     logger.info(f"====> Epoch: {epoch} {epoch_recorder.record()}")
     if epoch >= hps.total_epoch or global_step >= hps.train.total_steps:
         logger.info("Training is done. The program is closed.")
-
         if hasattr(net_g, "module"):
             ckpt = net_g.module.state_dict()
         else:
@@ -342,7 +350,7 @@ def run_training_epoch(epoch, hps, nets, optims, schedulers, train_loader, logge
         )
         logger.info(f"saving final ckpt: {hps.name}")
         time.sleep(1)
-        # os._exit(2333333)
+        sys.exit(0)
 
 
 def run_new(
@@ -371,6 +379,8 @@ def run_new(
     Args:
         All parameters required for training, passed directly.
     """
+    global global_step
+
     # Create the hparams object
     hparams = HParams(
         exp_dir=exp_dir,
@@ -412,7 +422,6 @@ def run_new(
     hps.train.lr_decay = lr_decay
     hps.train.log_interval = 100
     hps.resume = kwargs.get("resume", None)
-    # Maybe not maybe?
     hps.train.seed = kwargs.get("seed", 42)  # Default seed
     hps.train.epochs = total_epochs
     hps.version = "v2"  # Optional versioning
@@ -429,27 +438,12 @@ def run_new(
 
     print(f"Running with hparams: {json.dumps(hps.__repr__(), indent=2)}")
 
-    global global_step
-
-    # if rank == 0:
-    # logger = get_logger(hps.model_dir)
-    # logger.info(hps)
-    # for _ in range(3):
-    #     try:
-    #         wandb.init(project=wandb_project_name, name=hps.name, config=hps)
-    #         break
-    #     except:
-    #         time.sleep(1)
-    #         print("wandb init failed")
-    #         pass
-
     torch.manual_seed(hps.train.seed)
     print("torch seed set")
     train_loader = prepare_data_loaders(hps, n_gpus, rank)
 
     total_steps = 0
     total_epochs_steps = total_epochs * len(train_loader)
-    # if epoch >= hps.total_epoch or global_step >= hps.train.total_steps
     total_steps = total_epochs_steps if total_epochs_steps < hps.train.total_steps else hps.train.total_steps
 
     def progress_callback(
@@ -467,14 +461,12 @@ def run_new(
     print("model checkpoint loaded")
     scheduler_g, scheduler_d = setup_schedulers(hps, net_g, net_d, optim_g, optim_d, epoch_str)
     print("schedulers setup")
-    # Explicit device settings for debugging
     if not torch.cuda.is_available():
         print("CUDA is not available. Ensure CUDA is properly installed and configured.")
     else:
         device = torch.device("cuda")
         print(f"Using device: {device}")
 
-    # Check Accelerator's device allocation
     accelerator = Accelerator()
     print(f"Accelerator is using device: {accelerator.device}")
     print("accelerator initialized")
@@ -487,7 +479,7 @@ def run_new(
         print("loaded accelerator state provided by --resume")
 
     for epoch in range(epoch_str, hps.train.epochs + 1):
-        if global_step > hps.train.total_steps:
+        if global_step >= hps.train.total_steps:
             break
         run_training_epoch(
             epoch,
@@ -502,3 +494,6 @@ def run_new(
         )
         scheduler_g.step()
         scheduler_d.step()
+        if epoch >= hps.total_epoch or global_step >= hps.train.total_steps:
+            print("Training is done. The program is closed.")
+            break
