@@ -282,7 +282,7 @@ if __name__ == '__main__':
         js = f'<script type="text/javascript">{js}</script>'
         js += f"\n{css}"
 
-    with gr.Blocks(title='AudioLab', head=js, theme="Taithrah/Minimal") as ui:
+    with gr.Blocks(title='AudioLab', head=js, theme="NoCrypt/miku") as ui:
         with gr.Tabs(selected="process"):
             with gr.Tab(label='TTS', id="tts"):
                 render_tts()

@@ -852,8 +852,7 @@ def render():
                     label="Input Files",
                     type="filepath",
                     file_types=["audio"],
-                    file_count="multiple",
-                    elem_classes="hintitem", elem_id="rvc_input_files"
+                    file_count="multiple"
                 )
             with gr.Column():
                 gr.Markdown("### 🎶 Outputs")
@@ -947,7 +946,6 @@ def register_descriptions(arg_handler: ArgHandler):
         "pretrained_generator": "Path to the pretrained generator model used for fine-tuning.",
         "pretrained_discriminator": "Path to the pretrained discriminator model used for training.",
         "gpu_ids": "Specify GPU IDs for multi-GPU training, separated by dashes (e.g., 0-1-2).",
-        "input_files": "Upload audio files for training. More data generally improves results.",
         "start_train": "Click to begin training the voice model with the selected settings.",
         "cancel_train": "Click to cancel the training process if needed.",
         "output_info": "Displays logs and training progress information.",

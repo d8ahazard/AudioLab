@@ -69,15 +69,13 @@ class ArgHandler:
     let hintsSet = false;
 
     function setDescriptions() {
-      console.log("[DEBUG] setDescriptions() called...");
       if (typeof gradioApp === "undefined" || !gradioApp()) {
         console.warn("[DEBUG] gradioApp() not defined or returned null.");
         return;
       }
 
       let hintItems = gradioApp().querySelectorAll(".hintitem");
-      console.log("[DEBUG] Found hintItems:", hintItems);
-
+      
       if (!hintItems || hintItems.length === 0) {
         console.log("[DEBUG] .hintitem elements not found.");
         return;
@@ -98,9 +96,6 @@ class ArgHandler:
             let description = descriptions[labelValue];
             if (description) {
                 label.title = description;
-                console.log("[DEBUG] Set description for", labelValue, "to", description);
-            } else {
-                console.log("[DEBUG] No matching description for", labelValue);
             }
         }
 
@@ -120,15 +115,11 @@ class ArgHandler:
           for (let label of labels) {
             label.title = description;
           }
-          console.log("[DEBUG] Set description for", elemId, "to", description);
-        } else {
-          console.log("[DEBUG] No matching description for", elemId);
         }
       }
     }
 
     function addHintButton(hintItem, description) {
-      console.log("[DEBUG] addHintButton() called...");
       let container = hintItem.getElementsByClassName("container")[0];
       let wrap = hintItem.getElementsByClassName("wrap")[0];
       if (!container && !wrap) {        
@@ -152,7 +143,6 @@ class ArgHandler:
       // Append the button to the container
       if (container) {
           container.appendChild(hintButton);
-          console.log("[DEBUG] Hint button added to container.");
       } else {
             hintItem.appendChild(hintButton);
         }
@@ -160,8 +150,9 @@ class ArgHandler:
 
     function waitForGradioApp() {
       console.log("[DEBUG] Waiting for gradioApp...");
+      refresh();
       const interval = setInterval(() => {
-        if (typeof gradioApp !== "undefined" && gradioApp()) {
+        if (typeof gradioApp !== "undefined" && gradioApp()) {        
           console.log("[DEBUG] gradioApp() loaded. Initializing setDescriptions and addHintButton...");
           setDescriptions();
           clearInterval(interval);
@@ -172,7 +163,7 @@ class ArgHandler:
       }, 1000); // Retry every 1 second
     }
 
-    onUiLoaded(function () {
+    onUiLoaded(function () {        
       if (!hintsSet) {
         console.log("[DEBUG] UI loaded. Starting waitForGradioApp...");
         waitForGradioApp();

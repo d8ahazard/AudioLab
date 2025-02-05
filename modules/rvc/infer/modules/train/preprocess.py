@@ -53,56 +53,101 @@ class PreProcess:
         os.makedirs(self.wavs16k_dir, exist_ok=True)
 
     def norm_write(self, tmp_audio, idx0, idx1):
-        # Ensure tmp_audio has finite values
-
-        tmp_max = np.abs(tmp_audio).max()
-        if tmp_max > 2.5:
-            print("%s-%s-%s-filtered" % (idx0, idx1, tmp_max))
+        # Construct paths using os.path.join
+        gt_wav_path = os.path.join(self.gt_wavs_dir, f"{idx0}_{idx1}.wav")
+        wavs16k_path = os.path.join(self.wavs16k_dir, f"{idx0}_{idx1}.wav")
+        if os.path.exists(gt_wav_path) and os.path.exists(wavs16k_path):
+            print(f"Skipping {idx0}-{idx1} as files already exist.")
             return
 
-        tmp_audio = (tmp_audio / tmp_max * (self.max * self.alpha)) + (
-                1 - self.alpha
-        ) * tmp_audio
-        wavfile.write(
-            "%s/%s_%s.wav" % (self.gt_wavs_dir, idx0, idx1),
-            self.sr,
-            tmp_audio.astype(np.float32),
-        )
-        tmp_audio = librosa.resample(
-            tmp_audio, orig_sr=self.sr, target_sr=16000
-        )
-        wavfile.write(
-            "%s/%s_%s.wav" % (self.wavs16k_dir, idx0, idx1),
-            16000,
-            tmp_audio.astype(np.float32),
-        )
+        try:
+            tmp_max = np.abs(tmp_audio).max()
+            if tmp_max > 2.5:
+                print(f"{idx0}-{idx1}-{tmp_max}-filtered")
+                return
 
-    def pipeline(self, path, idx0):
+            tmp_audio = (tmp_audio / tmp_max * (self.max * self.alpha)) + (
+                    1 - self.alpha
+            ) * tmp_audio
+
+            # # Debug: Check if normalization introduced issues
+            # if not np.isfinite(tmp_audio).all():
+            #     print(f"Error: Audio buffer contains NaN or infinite values AFTER normalization. Skipping {idx0}-{idx1}.")
+            #     return
+            #
+            # Ensure finite values before writing/resampling
+            tmp_audio = np.nan_to_num(tmp_audio, nan=0.0, posinf=0.0, neginf=0.0)
+
+            wavfile.write(gt_wav_path, self.sr, tmp_audio.astype(np.float32))
+
+            # Resample audio safely
+            tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)
+
+            wavfile.write(wavs16k_path, 16000, tmp_audio.astype(np.float32))
+        except Exception as e:
+            # Delete files if resampling fails
+            if os.path.exists(gt_wav_path):
+                os.remove(gt_wav_path)
+            if os.path.exists(wavs16k_path):
+                os.remove(wavs16k_path)
+            print(f"Librosa resampling failed for {idx0}-{idx1}, skipping. | Error: {e}")
+            return
+
+        print(f"Successfully processed {idx0}-{idx1}")
+
+    def pipeline(self, path, idx0, callback: Callable = None):
         try:
             audio = load_audio(path, self.sr)
             audio = signal.lfilter(self.bh, self.ah, audio)
 
+            slices = list(self.slicer.slice(audio))  # Convert to list to get total steps
+            total_steps = sum(
+                max(1, int(len(audio) / (self.sr * (self.per - self.overlap)))) for audio in slices
+            )  # Count total norm_write calls
+
             idx1 = 0
-            for audio in self.slicer.slice(audio):
+            processed_steps = 0  # Track how many norm_write calls we've made
+
+            for audio in slices:
                 i = 0
-                while 1:
+                while True:
                     start = int(self.sr * (self.per - self.overlap) * i)
                     i += 1
                     if len(audio[start:]) > self.tail * self.sr:
                         tmp_audio = audio[start: start + int(self.per * self.sr)]
+
+                        # Call the callback before norm_write
+                        if callback:
+                            progress = processed_steps / total_steps
+                            callback(progress, f"Processing chunk {idx1}", total_steps)
+
                         self.norm_write(tmp_audio, idx0, idx1)
                         idx1 += 1
+                        processed_steps += 1
+
                     else:
                         tmp_audio = audio[start:]
                         idx1 += 1
                         break
-                self.norm_write(tmp_audio, idx0, idx1)
-        except:
-            println("%s\t-> %s" % (path, traceback.format_exc()))
 
-    def pipeline_mp(self, infos):
+                # Call the callback before the last norm_write in this slice
+                if callback:
+                    progress = processed_steps / total_steps
+                    callback(progress, f"Processing chunk {idx1}", total_steps)
+
+                self.norm_write(tmp_audio, idx0, idx1)
+                processed_steps += 1
+
+            # Ensure final progress callback at 100%
+            if callback:
+                callback(1.0, "Processing complete", total_steps)
+
+        except Exception:
+            print(f"{path}\t-> {traceback.format_exc()}")
+
+    def pipeline_mp(self, infos, callback: Callable = None):
         for path, idx0 in infos:
-            self.pipeline(path, idx0)
+            self.pipeline(path, idx0, callback)
 
     def pipeline_mp_inp_dir(self, inp_root: Path, n_p=8, callback: Callable = None):
         noparallel = n_p <= 1
@@ -110,20 +155,20 @@ class PreProcess:
             inp_root = Path(inp_root)
         try:
             infos = [
-                ("%s/%s" % (inp_root, name), idx)
+                (os.path.join(inp_root, name), idx)
                 for idx, name in enumerate(sorted(list(os.listdir(inp_root))))
             ]
             if noparallel:
                 for i in range(n_p):
                     if callback is not None:
                         callback(i / n_p, "Processing %s" % i, n_p)
-                    self.pipeline_mp(infos[i::n_p])
+                    self.pipeline_mp(infos[i::n_p], callback)
             else:
 
                 ps = []
                 for i in range(n_p):
                     p = multiprocessing.Process(
-                        target=self.pipeline_mp, args=(infos[i::n_p],)
+                        target=self.pipeline_mp, args=(infos[i::n_p], callback,)
                     )
                     ps.append(p)
                     p.start()
