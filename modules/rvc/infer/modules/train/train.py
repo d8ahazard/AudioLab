@@ -9,6 +9,7 @@ import torch.multiprocessing as mp
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from modules.rvc.infer.lib.infer_pack import commons
 from modules.rvc.infer.lib.train import utils
@@ -28,19 +29,12 @@ from modules.rvc.infer.lib.train.losses import (
 from modules.rvc.infer.lib.train.mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from modules.rvc.infer.lib.train.process_ckpt import savee
 
-# TODO: Fix this eventually
-# from torch.utils.tensorboard import SummaryWriter
-
 try:
-    # noinspection PyUnresolvedReferences
-    import intel_extension_for_pytorch as ipex  # pylint: disable=import-error, unused-import
-
+    import intel_extension_for_pytorch as ipex
     if torch.xpu.is_available():
         from modules.rvc.infer.modules.ipex import ipex_init
         from modules.rvc.infer.modules.ipex.gradscaler import gradscaler_init
-        # noinspection PyUnresolvedReferences
         from torch.xpu.amp import autocast
-
         GradScaler = gradscaler_init()
         ipex_init()
     else:
@@ -69,16 +63,13 @@ class EpochRecorder:
 
 def train_main(hps, progress: gr.Progress):
     os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
-    # n_gpus = len(hps.gpus.split("-"))
     global global_step
     global_step = 0
 
     n_gpus = torch.cuda.device_count()
-
     if not torch.cuda.is_available() and torch.backends.mps.is_available():
         n_gpus = 1
     if n_gpus < 1:
-        # patch to unblock people without gpus. there is probably a better way.
         print("NO GPU DETECTED: falling back to CPU - this may take a while")
         n_gpus = 1
     os.environ["MASTER_ADDR"] = "localhost"
@@ -101,9 +92,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     if hps.version == "v1":
         from modules.rvc.infer.lib.infer_pack.models import MultiPeriodDiscriminator
         from modules.rvc.infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid as RVC_Model_f0
-        from modules.rvc.infer.lib.infer_pack.models import (
-            SynthesizerTrnMs256NSFsid_nono as RVC_Model_nof0,
-        )
+        from modules.rvc.infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid_nono as RVC_Model_nof0
     else:
         from modules.rvc.infer.lib.infer_pack.models import (
             SynthesizerTrnMs768NSFsid as RVC_Model_f0,
@@ -113,17 +102,10 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
 
     global global_step
     if rank == 0:
-        # logger = utils.get_logger(hps.model_dir)
         logger.info(hps)
-        # utils.check_git_hash(hps.model_dir)
-        # writer = SummaryWriter(log_dir=hps.model_dir)
-        # writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
 
-    # noinspection PyArgumentList
     dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
     torch.manual_seed(hps.train.seed)
-    # if torch.cuda.is_available():
-    # torch.cuda.set_device(rank)
 
     if hps.if_f0 == 1:
         train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
@@ -132,7 +114,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size * n_gpus,
-        [100, 200, 300, 400, 500, 600, 700, 800, 900],  # 16s
+        [100, 200, 300, 400, 500, 600, 700, 800, 900],
         num_replicas=n_gpus,
         rank=rank,
         shuffle=True,
@@ -184,8 +166,6 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    # net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-    # net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         pass
     elif torch.cuda.is_available():
@@ -205,32 +185,16 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
             if rank == 0:
                 logger.info(f"Loading (initial) pretrainedG {hps.pretrainG}.")
             if hasattr(net_g, "module"):
-                logger.info(
-                    net_g.module.load_state_dict(
-                        torch.load(hps.pretrainG, map_location="cpu")["model"]
-                    )
-                )
+                logger.info(net_g.module.load_state_dict(torch.load(hps.pretrainG, map_location="cpu")["model"]))
             else:
-                logger.info(
-                    net_g.load_state_dict(
-                        torch.load(hps.pretrainG, map_location="cpu")["model"]
-                    )
-                )
+                logger.info(net_g.load_state_dict(torch.load(hps.pretrainG, map_location="cpu")["model"]))
         if hps.pretrainD != "":
             if rank == 0:
                 logger.info(f"Loading (initial) pretrainedD {hps.pretrainD}.")
             if hasattr(net_d, "module"):
-                logger.info(
-                    net_d.module.load_state_dict(
-                        torch.load(hps.pretrainD, map_location="cpu")["model"]
-                    )
-                )
+                logger.info(net_d.module.load_state_dict(torch.load(hps.pretrainD, map_location="cpu")["model"]))
             else:
-                logger.info(
-                    net_d.load_state_dict(
-                        torch.load(hps.pretrainD, map_location="cpu")["model"]
-                    )
-                )
+                logger.info(net_d.load_state_dict(torch.load(hps.pretrainD, map_location="cpu")["model"]))
     else:
         logger.info(f"Loading checkpoint weights from {d_path} and {g_path}.")
         _, _, _, epoch_str = utils.load_checkpoint(d_path, net_d, optim_d)
@@ -247,7 +211,6 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     )
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
-
     cache = []
     for epoch in range(epoch_str, hps.train.epochs + 1):
         if rank == 0:
@@ -281,15 +244,18 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
         scheduler_g.step()
         scheduler_d.step()
 
-        if epoch >= hps.train.epochs:  # Ensure termination
+        # if global_step >= hps.train.total_steps:
+        #     if rank == 0:
+        #         logger.info("Global step limit reached. Stopping training.")
+        #     break
+
+        if epoch >= hps.train.epochs:
             if rank == 0:
                 logger.info(f"Training completed at epoch {epoch}.")
             break
 
 
-def train_and_evaluate(
-        rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache
-):
+def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache):
     net_g, net_d = nets
     optim_g, optim_d = optims
     train_loader, eval_loader = loaders
@@ -302,112 +268,82 @@ def train_and_evaluate(
     net_g.train()
     net_d.train()
 
-    # Prepare data iterator
+    # Prepare data iterator (with caching and TQDM)
     if hps.if_cache_data_in_gpu:
-        # Use Cache
-        data_iterator = cache
         if not cache:
-            # Make new cache
-            for batch_idx, info in enumerate(train_loader):
-                # Unpack
-                if hps.if_f0 == 1:
-                    (
-                        phone,
-                        phone_lengths,
-                        pitch,
-                        pitch_f,
-                        spec,
-                        spec_lengths,
-                        wave,
-                        wave_lengths,
-                        sid,
-                    ) = info
-                else:
-                    (
-                        phone,
-                        phone_lengths,
-                        spec,
-                        spec_lengths,
-                        wave,
-                        wave_lengths,
-                        sid,
-                    ) = info
-                    pitch = None
-                    pitch_f = None
-                # Load on CUDA
-                if torch.cuda.is_available() and pitch is not None:
-                    phone = phone.cuda(rank, non_blocking=True)
-                    phone_lengths = phone_lengths.cuda(rank, non_blocking=True)
+            if rank == 0:
+                for batch_idx, info in tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch} (caching)"):
                     if hps.if_f0 == 1:
-                        pitch = pitch.cuda(rank, non_blocking=True)
-                        pitch_f = pitch_f.cuda(rank, non_blocking=True)
-                    sid = sid.cuda(rank, non_blocking=True)
-                    spec = spec.cuda(rank, non_blocking=True)
-                    spec_lengths = spec_lengths.cuda(rank, non_blocking=True)
-                    wave = wave.cuda(rank, non_blocking=True)
-                    wave_lengths = wave_lengths.cuda(rank, non_blocking=True)
-                # Cache on list
-                if hps.if_f0 == 1:
-                    cache.append(
-                        (
-                            batch_idx,
-                            (
-                                phone,
-                                phone_lengths,
-                                pitch,
-                                pitch_f,
-                                spec,
-                                spec_lengths,
-                                wave,
-                                wave_lengths,
-                                sid,
-                            ),
-                        )
-                    )
-                else:
-                    cache.append(
-                        (
-                            batch_idx,
-                            (
-                                phone,
-                                phone_lengths,
-                                spec,
-                                spec_lengths,
-                                wave,
-                                wave_lengths,
-                                sid,
-                            ),
-                        )
-                    )
+                        (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid) = info
+                    else:
+                        (phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid) = info
+                        pitch = None
+                        pitch_f = None
+                    if torch.cuda.is_available():
+                        phone = phone.cuda(rank, non_blocking=True)
+                        phone_lengths = phone_lengths.cuda(rank, non_blocking=True)
+                        if hps.if_f0 == 1:
+                            pitch = pitch.cuda(rank, non_blocking=True)
+                            pitch_f = pitch_f.cuda(rank, non_blocking=True)
+                        sid = sid.cuda(rank, non_blocking=True)
+                        spec = spec.cuda(rank, non_blocking=True)
+                        spec_lengths = spec_lengths.cuda(rank, non_blocking=True)
+                        wave = wave.cuda(rank, non_blocking=True)
+                        wave_lengths = wave_lengths.cuda(rank, non_blocking=True)
+                    if hps.if_f0 == 1:
+                        cache.append((batch_idx, (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid)))
+                    else:
+                        cache.append((batch_idx, (phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid)))
+            else:
+                for batch_idx, info in enumerate(train_loader):
+                    if hps.if_f0 == 1:
+                        (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid) = info
+                    else:
+                        (phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid) = info
+                        pitch = None
+                        pitch_f = None
+                    if torch.cuda.is_available():
+                        phone = phone.cuda(rank, non_blocking=True)
+                        phone_lengths = phone_lengths.cuda(rank, non_blocking=True)
+                        if hps.if_f0 == 1:
+                            pitch = pitch.cuda(rank, non_blocking=True)
+                            pitch_f = pitch_f.cuda(rank, non_blocking=True)
+                        sid = sid.cuda(rank, non_blocking=True)
+                        spec = spec.cuda(rank, non_blocking=True)
+                        spec_lengths = spec_lengths.cuda(rank, non_blocking=True)
+                        wave = wave.cuda(rank, non_blocking=True)
+                        wave_lengths = wave_lengths.cuda(rank, non_blocking=True)
+                    if hps.if_f0 == 1:
+                        cache.append((batch_idx, (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid)))
+                    else:
+                        cache.append((batch_idx, (phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid)))
         else:
-            # Load shuffled cache
             shuffle(cache)
+        if rank == 0:
+            data_iterator = tqdm(cache, total=len(cache), desc=f"Epoch {epoch}")
+        else:
+            data_iterator = cache
     else:
-        # Loader
-        data_iterator = enumerate(train_loader)
+        if rank == 0:
+            data_iterator = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch}")
+        else:
+            data_iterator = enumerate(train_loader)
 
-    # Run steps
     epoch_recorder = EpochRecorder()
     for batch_idx, info in data_iterator:
-        # Data
+        # Check global step limit
+        # if global_step >= hps.train.total_steps:
+        #     if rank == 0:
+        #         data_iterator.close()
+        #     break
+
         if hps.if_f0 == 1:
-            (
-                phone,
-                phone_lengths,
-                pitch,
-                pitch_f,
-                spec,
-                spec_lengths,
-                wave,
-                wave_lengths,
-                sid,
-            ) = info
+            (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid) = info
         else:
             phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
             pitch = None
             pitch_f = None
-        # Load on CUDA
-        if (hps.if_cache_data_in_gpu == False) and torch.cuda.is_available():
+        if (not hps.if_cache_data_in_gpu) and torch.cuda.is_available():
             phone = phone.cuda(rank, non_blocking=True)
             phone_lengths = phone_lengths.cuda(rank, non_blocking=True)
             if hps.if_f0 == 1 and pitch is not None:
@@ -417,26 +353,16 @@ def train_and_evaluate(
             spec = spec.cuda(rank, non_blocking=True)
             spec_lengths = spec_lengths.cuda(rank, non_blocking=True)
             wave = wave.cuda(rank, non_blocking=True)
-            # wave_lengths = wave_lengths.cuda(rank, non_blocking=True)
 
-        # Calculate
         with autocast(enabled=hps.train.fp16_run):
             if hps.if_f0 == 1:
-                (
-                    y_hat,
-                    ids_slice,
-                    x_mask,
-                    z_mask,
-                    (z, z_p, m_p, logs_p, m_q, logs_q),
-                ) = net_g(phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, sid)
+                (y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q)) = net_g(
+                    phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, sid
+                )
             else:
-                (
-                    y_hat,
-                    ids_slice,
-                    x_mask,
-                    z_mask,
-                    (z, z_p, m_p, logs_p, m_q, logs_q),
-                ) = net_g(phone, phone_lengths, spec, spec_lengths, sid)
+                (y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q)) = net_g(
+                    phone, phone_lengths, spec, spec_lengths, sid
+                )
             mel = spec_to_mel_torch(
                 spec,
                 hps.data.filter_length,
@@ -463,14 +389,11 @@ def train_and_evaluate(
                 y_hat_mel = y_hat_mel.half()
             wave = commons.slice_segments(
                 wave, ids_slice * hps.data.hop_length, hps.train.segment_size
-            )  # slice
+            )
 
-            # Discriminator
             y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())
             with autocast(enabled=False):
-                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
-                    y_d_hat_r, y_d_hat_g
-                )
+                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
         optim_d.zero_grad()
         scaler.scale(loss_disc).backward()
         scaler.unscale_(optim_d)
@@ -478,7 +401,6 @@ def train_and_evaluate(
         scaler.step(optim_d)
 
         with autocast(enabled=hps.train.fp16_run):
-            # Generator
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
             with autocast(enabled=False):
                 loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
@@ -493,69 +415,15 @@ def train_and_evaluate(
         scaler.step(optim_g)
         scaler.update()
 
-        if rank == 0:
-            if global_step % hps.train.log_interval == 0:
-                lr = optim_g.param_groups[0]["lr"]
-                logger.info(
-                    "Train Epoch: {} [{:.0f}%]".format(
-                        epoch, 100.0 * batch_idx / len(train_loader)
-                    )
-                )
-                # Amor For Tensorboard display
-                if loss_mel > 75:
-                    loss_mel = 75
-                if loss_kl > 9:
-                    loss_kl = 9
+        if rank == 0 and global_step % hps.train.log_interval == 0:
+            lr = optim_g.param_groups[0]["lr"]
+            logger.info("Train Epoch: {} [{:.0f}%]".format(epoch, 100.0 * batch_idx / len(train_loader)))
+            logger.info([global_step, lr])
+            logger.info(f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}, loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}")
 
-                logger.info([global_step, lr])
-                logger.info(
-                    f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f},loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
-                )
-                # scalar_dict = {
-                #     "loss/g/total": loss_gen_all,
-                #     "loss/d/total": loss_disc,
-                #     "learning_rate": lr,
-                #     "grad_norm_d": grad_norm_d,
-                #     "grad_norm_g": grad_norm_g,
-                # }
-                # scalar_dict.update(
-                #     {
-                #         "loss/g/fm": loss_fm,
-                #         "loss/g/mel": loss_mel,
-                #         "loss/g/kl": loss_kl,
-                #     }
-                # )
-                # 
-                # scalar_dict.update(
-                #     {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
-                # )
-                # scalar_dict.update(
-                #     {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
-                # )
-                # scalar_dict.update(
-                #     {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
-                # )
-                # image_dict = {
-                #     "slice/mel_org": utils.plot_spectrogram_to_numpy(
-                #         y_mel[0].data.cpu().numpy()
-                #     ),
-                #     "slice/mel_gen": utils.plot_spectrogram_to_numpy(
-                #         y_hat_mel[0].data.cpu().numpy()
-                #     ),
-                #     "all/mel": utils.plot_spectrogram_to_numpy(
-                #         mel[0].data.cpu().numpy()
-                #     ),
-                # }
-                # utils.summarize(
-                #     writer=writer,
-                #     global_step=global_step,
-                #     images=image_dict,
-                #     scalars=scalar_dict,
-                # )
         global_step += 1
-    # /Run steps
 
-    if epoch % hps.save_every_epoch == 0 and rank == 0:
+    if rank == 0 and (epoch % hps.save_every_epoch == 0):
         if hps.if_latest == 0:
             utils.save_checkpoint(
                 net_g,
@@ -608,21 +476,11 @@ def train_and_evaluate(
                 )
             )
 
-    if rank == 0:
-        logger.info("====> Epoch: {} {}".format(epoch, epoch_recorder.record()))
-    if epoch >= hps.total_epoch and rank == 0:
+    if epoch >= hps.train.epochs and rank == 0:
         logger.info("Training is done. The program is closed.")
-
         if hasattr(net_g, "module"):
             ckpt = net_g.module.state_dict()
         else:
             ckpt = net_g.state_dict()
-        logger.info(
-            "saving final ckpt:%s"
-            % (
-                savee(
-                    ckpt, hps.sample_rate, hps.if_f0, hps.name, epoch, hps.version, hps
-                )
-            )
-        )
+        logger.info("saving final ckpt:%s" % (savee(ckpt, hps.sample_rate, hps.if_f0, hps.name, epoch, hps.version, hps)))
         return

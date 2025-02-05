@@ -285,7 +285,7 @@ def click_train(
         cache_dataset_to_gpu,
         save_weights_each_ckpt,
         model_version,
-        progress=gr.Progress(),
+        progress=gr.Progress(track_tqdm=True),
 ):
     config = Config()
     exp_dir = os.path.join(output_path, "voices", voice_name)
@@ -411,6 +411,7 @@ def click_train(
     hparams.version = model_version
     hparams.gpus = more_gpu_ids if more_gpu_ids else "0"
     hparams.train.batch_size = train_batch_size
+    hparams.train.epoch = total_epochs
     hparams.sample_rate = sample_rate
     hparams.if_f0 = 1 if use_pitch_guidance else 0
     hparams.if_latest = 1 if save_latest_only == "Yes" else 0
@@ -543,7 +544,7 @@ def train1key(
         save_weights_every,
         project_version,
         gpus_rmvpe,
-        progress=gr.Progress()
+        progress=gr.Progress(track_tqdm=True)
 ):
     infos = []
     resuming_training = False
@@ -800,10 +801,10 @@ def render():
                     )
                     save_epoch_frequency = gr.Slider(
                         minimum=1,
-                        maximum=50,
+                        maximum=100,
                         step=1,
                         label="Save Checkpoint Frequency (Epochs)",
-                        value=5,
+                        value=25,
                         interactive=True,
                         elem_classes="hintitem", elem_id="rvc_save_epoch_frequency"
                     )
@@ -968,5 +969,4 @@ def register_descriptions(arg_handler: ArgHandler):
         "output_info": "Displays logs and training progress information.",
     }
     for elem_id, description in descriptions.items():
-        print(f"Registering description for RVC_{elem_id}: {description}")
         arg_handler.register_description("rvc", elem_id, description)

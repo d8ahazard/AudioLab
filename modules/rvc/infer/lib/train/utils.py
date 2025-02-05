@@ -116,19 +116,22 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
             iteration, checkpoint_path
         )
     )
-    if hasattr(model, "module"):
-        state_dict = model.module.state_dict()
-    else:
-        state_dict = model.state_dict()
-    torch.save(
-        {
-            "model": state_dict,
-            "iteration": iteration,
-            "optimizer": optimizer.state_dict(),
-            "learning_rate": learning_rate,
-        },
-        checkpoint_path,
-    )
+    try:
+        if hasattr(model, "module"):
+            state_dict = model.module.state_dict()
+        else:
+            state_dict = model.state_dict()
+        torch.save(
+            {
+                "model": state_dict,
+                "iteration": iteration,
+                "optimizer": optimizer.state_dict(),
+                "learning_rate": learning_rate,
+            },
+            checkpoint_path,
+        )
+    except Exception as e:
+        logger.error("Failed to save checkpoint: %s", e)
 
 
 def save_checkpoint_d(combd, sbd, optimizer, learning_rate, iteration, checkpoint_path):
@@ -137,24 +140,27 @@ def save_checkpoint_d(combd, sbd, optimizer, learning_rate, iteration, checkpoin
             iteration, checkpoint_path
         )
     )
-    if hasattr(combd, "module"):
-        state_dict_combd = combd.module.state_dict()
-    else:
-        state_dict_combd = combd.state_dict()
-    if hasattr(sbd, "module"):
-        state_dict_sbd = sbd.module.state_dict()
-    else:
-        state_dict_sbd = sbd.state_dict()
-    torch.save(
-        {
-            "combd": state_dict_combd,
-            "sbd": state_dict_sbd,
-            "iteration": iteration,
-            "optimizer": optimizer.state_dict(),
-            "learning_rate": learning_rate,
-        },
-        checkpoint_path,
-    )
+    try:
+        if hasattr(combd, "module"):
+            state_dict_combd = combd.module.state_dict()
+        else:
+            state_dict_combd = combd.state_dict()
+        if hasattr(sbd, "module"):
+            state_dict_sbd = sbd.module.state_dict()
+        else:
+            state_dict_sbd = sbd.state_dict()
+        torch.save(
+            {
+                "combd": state_dict_combd,
+                "sbd": state_dict_sbd,
+                "iteration": iteration,
+                "optimizer": optimizer.state_dict(),
+                "learning_rate": learning_rate,
+            },
+            checkpoint_path,
+        )
+    except Exception as e:
+        logger.error("Failed to save checkpoint: %s", e)
 
 
 def summarize(

@@ -33,7 +33,6 @@ class ArgHandler:
 
         # Get initial value (if available)
         element_value = getattr(gradio_element, "value", None)
-        logger.info(f"Registered {wrapper_name}.{elem_name} -> {element_value}")
         self.args[wrapper_name][elem_name] = element_value
         self.elements[wrapper_name][elem_name] = gradio_element
 

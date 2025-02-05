@@ -209,7 +209,6 @@ class BaseWrapper:
             # Create a gradio button as well, to trigger the refresh
             refresh_button = gr.Button(value=f"Refresh {key}")
             getattr(refresh_button, "click")(fn=value.refresh, outputs=[elem])
-            print(f"Registering refresh button for {key}")
             return elem, refresh_button
         return elem
 

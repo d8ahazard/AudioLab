@@ -204,5 +204,4 @@ def register_descriptions(arg_handler: ArgHandler):
         "seed": "Use -1 for random, or specify a seed for reproducibility."
     }
     for elem_id, description in descriptions.items():
-        print(f"Registering description for yue_{elem_id}: {description}")
         arg_handler.register_description("yue", elem_id, description)

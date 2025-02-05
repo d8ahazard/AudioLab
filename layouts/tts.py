@@ -139,5 +139,4 @@ def register_descriptions(arg_handler: ArgHandler):
         "infer_output_audio": "The synthesized speech output will be displayed here as an audio file."
     }
     for elem_id, description in descriptions.items():
-        print(f"Registering description for TTS_{elem_id}: {description}")
         arg_handler.register_description("tts", elem_id, description)
