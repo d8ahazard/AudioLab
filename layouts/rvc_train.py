@@ -338,7 +338,7 @@ def click_train(
     mutes_dir = os.path.join(app_path, "modules", "rvc")
 
     mute_wav_path = os.path.join(mutes_dir, "logs", "mute", "0_gt_wavs")
-    mute_feature_path = os.path.join(mutes_dir, "logs", "mute", "3_feature")
+    mute_feature_path = os.path.join(mutes_dir, "logs", "mute", f"3_feature{fea_dim}")
     mute_f0_path = os.path.join(mutes_dir, "logs", "mute", "2a_f0")
     mute_f0nsf_path = os.path.join(mutes_dir, "logs", "mute", "2b-f0nsf")
 
@@ -349,7 +349,7 @@ def click_train(
             opt.append(
                 "|".join([
                     os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
-                    os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
+                    os.path.join(mute_feature_path, "mute.npy"),
                     os.path.join(mute_f0_path, "mute.wav.npy"),
                     os.path.join(mute_f0nsf_path, "mute.wav.npy"),
                     str(speaker_index)
