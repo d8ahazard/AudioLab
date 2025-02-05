@@ -116,7 +116,7 @@ class PreProcess:
             if noparallel:
                 for i in range(n_p):
                     if callback is not None:
-                        callback(i / len(n_p), "Processing %s" % i, n_p)
+                        callback(i / n_p, "Processing %s" % i, n_p)
                     self.pipeline_mp(infos[i::n_p])
             else:
 
@@ -129,7 +129,7 @@ class PreProcess:
                     p.start()
                 for i in range(n_p):
                     if callback is not None:
-                        callback(i / len(n_p), "Processed %s" % i, n_p)
+                        callback(i / n_p, "Processed %s" % i, n_p)
                     ps[i].join()
         except:
             println("Fail. %s" % traceback.format_exc())

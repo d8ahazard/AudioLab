@@ -37,7 +37,7 @@ now_dir = os.getcwd()
 sys.path.append(now_dir)
 
 config = Config()
-F0GPUVisible = config.dml == False
+F0GPUVisible = config.dml is False
 
 vc = VC(config)
 rvc_path = os.path.join(model_path, "rvc")
@@ -503,7 +503,6 @@ def train_index(exp_dir, model_version):
         infos.append(f"Failed to link index to external location: {outside_index_root}")
 
     yield "\n".join(infos)
-
 
 
 def train1key(

@@ -10,7 +10,6 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from audio_separator.separator import Separator
 
 from handlers.config import app_path
 
@@ -63,6 +62,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
     """
 
     def __init__(self, options: Dict):
+        from audio_separator.separator import Separator
+
         self.options = options
         self.device = torch.device("cuda:0") if torch.cuda.is_available() and not options.get("cpu", False) \
                                              else torch.device("cpu")

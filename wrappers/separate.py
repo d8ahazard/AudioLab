@@ -11,7 +11,7 @@ import soundfile as sf
 
 from handlers.config import model_path, output_path
 from handlers.reverb import extract_reverb
-from modules.audio_separator.audio_separator import separate_music
+from modules.separator.stem_separator import separate_music
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 import logging
