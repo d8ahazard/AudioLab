@@ -285,7 +285,7 @@ def click_train(
         cache_dataset_to_gpu,
         save_weights_each_ckpt,
         model_version,
-        progress=gr.Progress(track_tqdm=True),
+        progress=gr.Progress(),
 ):
     config = Config()
     exp_dir = os.path.join(output_path, "voices", voice_name)
@@ -420,7 +420,8 @@ def click_train(
     return "Training complete."
 
 
-def train_index(exp_dir, model_version):
+def train_index(project_name, model_version):
+    exp_dir = os.path.join(output_path, "voices", project_name)
     os.makedirs(exp_dir, exist_ok=True)
 
     feature_dir = os.path.join(exp_dir, "3_feature256") if model_version == "v1" else os.path.join(exp_dir,
@@ -533,7 +534,7 @@ def train1key(
         save_weights_every,
         project_version,
         gpus_rmvpe,
-        progress=gr.Progress(track_tqdm=True)
+        progress=gr.Progress()
 ):
     infos = []
     resuming_training = False
@@ -913,18 +914,20 @@ def render():
                 )
 
             def update_time_info(input_files):
+                yield gr.update(value=f"Calculating length of {len(input_files)} input files...")
                 total_length = 0
                 if not input_files:
-                    return gr.update(value="")
+                    yield gr.update(value="")
                 for f in input_files:
                     try:
                         audio = AudioSegment.from_file(f)
                         total_length += len(audio) / 1000
+                        yield gr.update(value=f"Total length: {total_length / 60:.2f} minutes. \nRecommended is 30-60 minutes.")
                     except Exception as e:
                         logger.error(f"Error processing file {f}: {e}")
                 total_length /= 60
                 info_value = f"Total length of input files: {total_length:.2f} minutes.\nRecommended is 30-60 minutes."
-                return gr.update(value=info_value)
+                yield gr.update(value=info_value)
 
             input_files.change(
                 fn=update_time_info,

@@ -59,7 +59,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
     def __init__(self, options: Dict, callback: Callable = None):
         from audio_separator.separator import Separator
-
+        self.callback = callback
         self.options = options
         self.device = torch.device("cuda:0") if torch.cuda.is_available() and not options.get("cpu", False) \
             else torch.device("cpu")

@@ -203,9 +203,6 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     start_time = datetime.now()
     settings = arg_handler.get_args()
 
-    def progress_callback(step, desc=None, total=None):
-        progress(step, desc, total)
-
     progress(0, f"Processing with {len(processors)} processors...")
     outputs = []
     all_outputs = []
@@ -227,7 +224,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
             logger.info("---------------------------------------------------------------------")
         else:
             logger.info(f"No settings found for {processor_title}.")
-        outputs = tgt_processor.process_audio(inputs, progress_callback, **processor_settings)
+        outputs = tgt_processor.process_audio(inputs, progress, **processor_settings)
         for output in outputs:
             all_outputs.extend(output.last_outputs)
         inputs = outputs
