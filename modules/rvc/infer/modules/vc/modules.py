@@ -63,7 +63,13 @@ class VC:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 self.if_f0 = self.cpt.get("f0", 1)
-                self.version = self.cpt.get("version", "v2")
+                self.version = self.cpt.get("version", None)
+                if not self.version:
+                    # ckpt.config[14] will start with 24, 20 if v2, 16,16, if v1
+                    sval = self.cpt["config"][14][0]
+                    self.version = "v2" if sval == 24 else "v1"
+                    logger.info(f"Version: {sval}, {self.version}")
+
                 if self.version == "v1":
                     if self.if_f0 == 1:
                         self.net_g = SynthesizerTrnMs256NSFsid(
