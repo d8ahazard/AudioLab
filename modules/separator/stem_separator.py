@@ -186,7 +186,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["instrumental_list"].append(istem)
                 results[base_name]["v_weights"].append(v_wt)
                 results[base_name]["i_weights"].append(i_wt)
-                self._advance_progress(f"Ensemble model {model_name} done for {base_name}")
+                model_base = os.path.splitext(model_name)[0]
+                self._advance_progress(f"Ensemble model {model_base} done for {base_name}")
         for base_name, res in results.items():
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
             res["instrumental"] = self._blend_tracks(res["instrumental_list"], res["i_weights"])
@@ -488,6 +489,8 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     saving_steps = 1
     steps_per_file = ensemble_steps + multi_stem_steps + alt_bass_steps + drum_steps + ww_steps + saving_steps
     model.total_steps = steps_per_file * len(files_data)
+    if model.callback is not None:
+        model.callback(0, "Starting Ensemble separation...", model.total_steps)
     results = model._ensemble_separate_all(files_data)
     if not model.vocals_only:
         # Apply background vocal splitting if enabled
