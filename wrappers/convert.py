@@ -38,7 +38,7 @@ class Convert(BaseWrapper):
             output_folder = os.path.join(project.project_dir)
             os.makedirs(output_folder, exist_ok=True)
             for idx, input_file in enumerate(non_mp3_inputs):
-                if callback:
+                if callback is not None:
                     pct_done = int((idx + 1) / len(non_mp3_inputs) * 100)
                     callback(pct_done, f"Converting {os.path.basename(input_file)}")
                 file_name, ext = os.path.splitext(os.path.basename(input_file))
