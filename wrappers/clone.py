@@ -189,7 +189,7 @@ class Clone(BaseWrapper):
             project_name = os.path.basename(project.project_dir)
 
             def project_callback(step, message, steps=total_steps):
-                if callback:
+                if callback is not None:
                     callback(step, f"({project_name}) {message}", steps)
 
             last_outputs = project.last_outputs

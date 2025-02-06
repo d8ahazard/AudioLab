@@ -172,6 +172,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             ("Kim_Vocal_2.onnx", 6.9, 14.9),
             ("Kim_Vocal_1.onnx", 6.8, 14.9),
         ]
+        model_idx = 1
         for model_name, v_wt, i_wt in models_with_weights:
             self.separator.load_model(model_name)
             for file in files_data:
@@ -186,8 +187,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["instrumental_list"].append(istem)
                 results[base_name]["v_weights"].append(v_wt)
                 results[base_name]["i_weights"].append(i_wt)
-                model_base = os.path.splitext(model_name)[0]
-                self._advance_progress(f"Ensemble model {model_base} done for {base_name}")
+                self._advance_progress(f"Ensemble {model_idx}/{len(models_with_weights)} done for {base_name}")
+                model_idx += 1
         for base_name, res in results.items():
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
             res["instrumental"] = self._blend_tracks(res["instrumental_list"], res["i_weights"])
@@ -331,7 +332,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
             sr = res["sr"]
             for stem_key, label in stem_names.items():
                 if stem_key in res and res[stem_key] is not None:
-                    output_name = f"{base_name}_{label}.wav"
+                    # Use '__' as a delimiter to ensure robust splitting later
+                    output_name = f"{base_name}__{label}.wav"
                     output_path = os.path.join(output_folder, output_name)
                     sf.write(output_path, res[stem_key].T, sr, subtype="FLOAT")
                     output_files.append(output_path)
@@ -403,14 +405,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
         tmp_file = write_temp_wav(vocals_array, sr, self.options["output_folder"])
         self.separator.load_model("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
         out_files = self.separator.separate(tmp_file)
-        out_files_full = [os.path.join(self.options["output_folder"], f) for f in out_files]
-        renamed_files = [self._rename_bgvocal(f) for f in out_files_full]
+        out_files = [os.path.join(self.options["output_folder"], f) for f in out_files]
+
         arrays = []
-        for f in renamed_files:
+        for f in out_files:
             arr, _ = librosa.load(f, sr=sr, mono=False)
             arrays.append(arr)
-        if len(renamed_files) == 2:
-            if "(BG_Vocals)" in renamed_files[0]:
+        if len(out_files) == 2:
+            if "(Instrumental)" in out_files[0]:
                 bg = arrays[0]
                 main = arrays[1]
             else:
@@ -492,24 +494,23 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     if model.callback is not None:
         model.callback(0, "Starting Ensemble separation...", model.total_steps)
     results = model._ensemble_separate_all(files_data)
+    # Always apply background vocal splitting if enabled
+    if model.separate_bg_vocals:
+        for base_name, res in results.items():
+            if "vocals" in res and res["vocals"] is not None:
+                main_vocals, bg_vocals = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name)
+                res["vocals"] = main_vocals
+                res["bg_vocals"] = bg_vocals
+    # Always apply transformation chain to vocals and instrumental stems if any transform is set
+    transform_options = [model.reverb_removal, model.echo_removal, model.delay_removal, model.crowd_removal, model.noise_removal]
+    if any(opt != "Nothing" for opt in transform_options):
+        for base_name, res in results.items():
+            for stem_label in ["vocals", "instrumental"]:
+                if stem_label in res and res[stem_label] is not None:
+                    res[stem_label] = model._apply_transform_chain(
+                        res[stem_label], res["sr"], base_name, stem_label, options["output_folder"]
+                    )
     if not model.vocals_only:
-        # Apply background vocal splitting if enabled
-        if model.separate_bg_vocals:
-            for base_name, res in results.items():
-                if "vocals" in res:
-                    main_vocals, bg_vocals = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name)
-                    res["vocals"] = main_vocals
-                    res["bg_vocals"] = bg_vocals
-        # Apply transformation chain to vocals and instrumental stems if any transform is set
-        transform_options = [model.reverb_removal, model.echo_removal, model.delay_removal, model.crowd_removal,
-                             model.noise_removal]
-        if any(opt != "Nothing" for opt in transform_options):
-            for base_name, res in results.items():
-                for stem_label in ["vocals", "instrumental"]:
-                    if stem_label in res and res[stem_label] is not None:
-                        res[stem_label] = model._apply_transform_chain(
-                            res[stem_label], res["sr"], base_name, stem_label, options["output_folder"]
-                        )
         model._multistem_separation_all(results)
         if model.alt_bass_model:
             model._alt_bass_separation_all(results)
@@ -546,7 +547,7 @@ def separate_music(input_audio: List[str], output_folder: str, callback: Callabl
         "input_audio": input_audio,
         "output_folder": output_folder,
         "cpu": kwargs.get("cpu", False),
-        "vocals_only": kwargs.get("vocals_only", False),
+        "vocals_only": kwargs.get("vocals_only", True),
         "use_VOCFT": kwargs.get("use_VOCFT", False),
         "separate_drums": kwargs.get("separate_drums", False),
         "separate_woodwinds": kwargs.get("separate_woodwinds", False),

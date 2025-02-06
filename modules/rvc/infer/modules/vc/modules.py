@@ -154,7 +154,7 @@ class VC:
             rms_mix_rate,
             protect,
             reverb_param_path=None,
-            do_noise_removal=False,
+            do_noise_removal=True,
             callback=None,
     ):
         """
@@ -182,8 +182,10 @@ class VC:
                 return_sr=True
             )
 
-            if callback:
-                callback(self.global_step / self.total_steps, f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}", self.total_steps)
+            if callback is not None:
+                callback(self.global_step / self.total_steps,
+                         f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}",
+                         self.total_steps)
             logger.info(f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}")
 
             # Normalize if necessary
@@ -193,7 +195,8 @@ class VC:
             # (B) Handle Stereo -> Mono conversion (Mid-Side Encoding)
             # ----------------------------------------------------------------
             if audio_float.ndim == 2 and audio_float.shape[1] == 2:
-                callback(self.global_step / self.total_steps, "Converting stereo to mono (Mid-Side Encoding)", self.total_steps)
+                callback(self.global_step / self.total_steps, "Converting stereo to mono (Mid-Side Encoding)",
+                         self.total_steps)
                 logger.info("Converting stereo to mono (Mid-Side Encoding)")
                 mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
             else:
@@ -226,7 +229,7 @@ class VC:
                 self.hubert_model = load_hubert(self.config)
 
             logger.info("Running pipeline...")
-            if callback:
+            if callback is not None:
                 callback(self.global_step / self.total_steps, "Running pipeline...", self.total_steps)
             audio_opt_16k = self.pipeline.pipeline(
                 self.hubert_model, self.net_g, sid, mono_for_pipeline, input_audio_path, times,
@@ -250,8 +253,9 @@ class VC:
             # (F) Reconstruct Stereo if applicable (Mid-Side Decoding)
             # ----------------------------------------------------------------
             if side_og is not None:
-                if callback:
-                    callback(self.global_step / self.total_steps, "Reconstructing stereo (Mid-Side Decoding)", self.total_steps)
+                if callback is not None:
+                    callback(self.global_step / self.total_steps, "Reconstructing stereo (Mid-Side Decoding)",
+                             self.total_steps)
                 logger.info("Reconstructing stereo (Mid-Side Decoding)")
                 new_len = len(audio_opt_float)
                 if new_len != orig_len:
@@ -270,12 +274,19 @@ class VC:
             # (G) Apply Noise Removal (if enabled)
             # ----------------------------------------------------------------
             if do_noise_removal:
-                if callback:
+                if callback is not None:
                     callback(self.global_step / self.total_steps, "Applying noise removal...", self.total_steps)
                 logger.info("Applying noise removal...")
                 from handlers.noise_removal import restore_silence
-                if final_float.shape[1] == 1:
-                    final_float = restore_silence(mono_og, final_float[:, 0]).reshape(-1, 1)
+                # Process each channel independently to ensure proper shape
+                if final_float.ndim == 1 or final_float.shape[1] == 1:
+                    final_float = restore_silence(mono_og, final_float.flatten()).reshape(-1, 1)
+                else:
+                    channels = []
+                    for ch in range(final_float.shape[1]):
+                        proc_channel = restore_silence(mono_og, final_float[:, ch])
+                        channels.append(proc_channel.reshape(-1, 1))
+                    final_float = np.concatenate(channels, axis=1)
 
             # ----------------------------------------------------------------
             # (I) Final Amplitude Scaling & Clipping
@@ -322,7 +333,7 @@ class VC:
             if self.pipeline is None:
                 self.get_vc(model)
             for path in paths:
-                if callback:
+                if callback is not None:
                     callback(self.global_step / self.total_steps, f"Processing {path}", self.total_steps)
                 info, opt = self.vc_single(
                     model,

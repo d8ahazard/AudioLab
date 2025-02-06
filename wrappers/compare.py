@@ -54,7 +54,7 @@ class Compare:
 
             if len(inputs) >= 2:
                 msg = f"Expected exactly 2 unique audio files, got {len(inputs)}."
-                if callback:
+                if callback is not None:
                     callback(0, msg, 1)
                 return []
 
@@ -67,7 +67,7 @@ class Compare:
 
             total_steps = 5
             current_step = 0
-            if callback:
+            if callback is not None:
                 callback(0, "Starting audio comparison with spectrogram difference", total_steps)
 
             sample_rate = 44100
@@ -85,7 +85,7 @@ class Compare:
                 waveforms.append(resampled)
 
                 current_step += 1
-                if callback:
+                if callback is not None:
                     callback(current_step, f"Loaded/resampled {os.path.basename(file)}", total_steps)
 
             # 2) Align to min length
@@ -102,7 +102,7 @@ class Compare:
             differences = np.abs(waveforms[0] - waveforms[1])
 
             current_step += 1
-            if callback:
+            if callback is not None:
                 callback(current_step, "Calculated differences", total_steps)
 
             # --- SPECTROGRAM DIFFERENCE ---
@@ -158,7 +158,7 @@ class Compare:
             plt.close()
 
             current_step += 1
-            if callback:
+            if callback is not None:
                 callback(current_step, f"Saved visualization to {output_file}", total_steps)
             project.add_output("comparison", output_file)
             pj_outputs.append(project)
