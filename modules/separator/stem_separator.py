@@ -4,7 +4,7 @@ import os
 import subprocess
 import uuid
 import warnings
-from typing import List, Dict
+from typing import List, Dict, Callable
 
 import librosa
 import numpy as np
@@ -55,13 +55,10 @@ def write_temp_wav(mix_np: np.ndarray, sr: int, out_dir: str) -> str:
 
 class EnsembleDemucsMDXMusicSeparationModel:
     """
-    A multi-model ensemble-based separation approach. Leaves all intermediate files.
-    If separate_drums=True, also does advanced multi-piece drum separation.
-    If separate_woodwinds=True, we try to separate woodwinds from the 'other' track.
-    If alt_bass_model=True, we override the normal demucs bass with an alternate model.
+    A multi-model ensemble-based separation approach. This version processes all input
+    files with each model before moving on to the next stage.
     """
-
-    def __init__(self, options: Dict):
+    def __init__(self, options: Dict, callback: Callable = None):
         from audio_separator.separator import Separator
 
         self.options = options
@@ -98,11 +95,11 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.weight_vocft = float(options.get("weight_VOCFT", 1.0))
         self.weight_rof = float(options.get("weight_VitLarge", 5.0))
 
-        # Overlaps for advanced separation (not specifically used below, but kept for reference)
+        # Overlap values for advanced separation (retained for reference)
         self.overlap_large = options.get("overlap_large", 0.6)
         self.overlap_small = options.get("overlap_small", 0.5)
 
-        # Progress
+        # Progress tracking
         self.global_step = 0
         self.total_steps = 0
         self.callback = options.get("callback", None)
@@ -110,37 +107,67 @@ class EnsembleDemucsMDXMusicSeparationModel:
     def _advance_progress(self, desc: str):
         """
         Increments self.global_step by 1 and calls the callback if defined.
-        callback signature: callback(current_step, description, total_steps).
+        Callback signature: callback(current_progress, description, total_steps).
         """
         self.global_step += 1
         if self.callback is not None:
-            self.callback(self.global_step/self.total_steps, desc, self.total_steps)
+            self.callback(self.global_step / self.total_steps, desc, self.total_steps)
+        logger.info(f"[{self.global_step}/{self.total_steps}] {desc}")
 
-    def separate_music_file(self, base_name, mixed_sound_array, sample_rate, callback=None):
+    def _blend_tracks(self, tracks, weights):
         """
-        Performs full separation. If vocals_only=True => get (Vocals, Instrumental).
-        Otherwise => multi-stem (drums, bass, guitar, piano, other), plus optional expansions.
+        Blends a list of tracks given corresponding weights.
         """
-        stems, sr_dict = self._ensemble_separate(base_name, mixed_sound_array, sample_rate)
-        output_files = self._save_stems(base_name, stems, sr_dict, self.options["output_folder"])
-        return output_files
+        max_length = max(t.shape[-1] for t in tracks)
+        combined = np.zeros((tracks[0].shape[0], max_length), dtype=np.float32)
+        total_weight = sum(weights)
+        for idx, t in enumerate(tracks):
+            combined[:, :t.shape[-1]] += t
+        combined = combined / total_weight
+        peak = np.max(np.abs(combined))
+        if peak > 0:
+            combined /= peak
+        return combined
 
-    def _ensemble_separate(self, base_name, mix_np, sr):
+    def _separate_as_arrays_current(self, mix_np, sr, desc=None):
         """
-        1) Ensemble-blend multiple vocal/instrumental models => best Vocals + Instrumental
-        2) If user wants >2 stems, run 6-stem Demucs => (drums,bass,guitar,piano,other)
-           with optional alt_bass_model, separate_drums, separate_woodwinds.
-        3) Return stems dict + sr_dict.
+        Runs separation for the currently loaded model and returns results as arrays.
+        (Assumes the model has already been loaded.)
         """
-        # Make sure shape => (channels, samples)
-        if mix_np.ndim == 1:
-            mix_np = np.stack([mix_np, mix_np], axis=0)
-        elif (mix_np.shape[0] != 2) and (mix_np.shape[1] == 2):
-            mix_np = mix_np.T
+        tmp_wav = write_temp_wav(mix_np, sr, self.options["output_folder"])
+        if desc:
+            logger.debug(desc)
+        output_partial = self.separator.separate(tmp_wav)
+        output_files = [os.path.join(self.separator.output_dir, f) for f in output_partial]
+        stems = {}
+        for file in output_files:
+            arr, _ = librosa.load(file, sr=sr, mono=False)
+            if arr.ndim == 1:
+                arr = np.stack([arr, arr], axis=0)
+            flow = file.lower()
+            if "(vocals)" in flow:
+                stems["vocals"] = arr
+            elif "(instrumental)" in flow:
+                stems["instrumental"] = arr
+            # Other keys are not used in ensemble stage.
+        return stems
 
-        # -------------------------------------------------
-        # Step 1: Ensemble for Vocals + Instrumental
-        # -------------------------------------------------
+    def _ensemble_separate_all(self, files_data: List[Dict]) -> Dict[str, Dict]:
+        """
+        Performs ensemble separation (vocals + instrumental) on all files.
+        Returns a dict keyed by base_name with the blended results.
+        """
+        results = {}
+        for file in files_data:
+            base_name = file["base_name"]
+            results[base_name] = {
+                "mix_np": file["mix_np"],
+                "sr": file["sr"],
+                "vocals_list": [],
+                "instrumental_list": [],
+                "v_weights": [],
+                "i_weights": []
+            }
         models_with_weights = [
             ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),
             ("MDX23C-8KFFT-InstVoc_HQ.ckpt", 7.2, 14.9),
@@ -148,85 +175,74 @@ class EnsembleDemucsMDXMusicSeparationModel:
             ("Kim_Vocal_2.onnx", 6.9, 14.9),
             ("Kim_Vocal_1.onnx", 6.8, 14.9),
         ]
-
-        all_vocals, all_instrumentals = [], []
-        vocal_weights, instrumental_weights = [], []
         for model_name, v_wt, i_wt in models_with_weights:
-            desc = f"[Ensemble] {base_name} => {model_name}"
-            separated = self._separate_as_arrays(base_name, mix_np, sr, model_name, desc)
-            vstem = separated.get("vocals", np.zeros_like(mix_np))
-            istem = separated.get("instrumental", np.zeros_like(mix_np))
-            all_vocals.append(vstem * v_wt)
-            all_instrumentals.append(istem * i_wt)
-            vocal_weights.append(v_wt)
-            instrumental_weights.append(i_wt)
-            self._advance_progress(f"Ensemble model {model_name} done")
+            self.separator.load_model(model_name)
+            for file in files_data:
+                base_name = file["base_name"]
+                mix_np = file["mix_np"]
+                sr = file["sr"]
+                desc = f"[Ensemble] {base_name} => {model_name}"
+                separated = self._separate_as_arrays_current(mix_np, sr, desc)
+                vstem = separated.get("vocals", np.zeros_like(mix_np))
+                istem = separated.get("instrumental", np.zeros_like(mix_np))
+                results[base_name]["vocals_list"].append(vstem)
+                results[base_name]["instrumental_list"].append(istem)
+                results[base_name]["v_weights"].append(v_wt)
+                results[base_name]["i_weights"].append(i_wt)
+                self._advance_progress(f"Ensemble model {model_name} done for {base_name}")
+        # Blend the ensemble results for each file.
+        for base_name, res in results.items():
+            res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
+            res["instrumental"] = self._blend_tracks(res["instrumental_list"], res["i_weights"])
+        return results
 
-        def _blend_tracks(tracks, weights):
-            max_length = max(t.shape[-1] for t in tracks)
-            combined = np.zeros((tracks[0].shape[0], max_length), dtype=np.float32)
-            total_weight = sum(weights)
-            for idx, t in enumerate(tracks):
-                combined[:, :t.shape[-1]] += t / total_weight
-            # normalize
-            peak = np.max(np.abs(combined))
-            if peak > 0:
-                combined /= peak
-            return combined
-
-        vocals = _blend_tracks(all_vocals, vocal_weights)
-        instruments = _blend_tracks(all_instrumentals, instrumental_weights)
-        stems = {"vocals": vocals, "instrumental": instruments}
-        sr_dict = {"vocals": sr, "instrumental": sr}
-
-        # If we only want 2-stem, done
-        if self.vocals_only:
-            return stems, sr_dict
-
-        # -------------------------------------------------
-        # Step 2: Multi-stem separation on "instrumental"
-        # -------------------------------------------------
-        self._advance_progress("Performing 6-stem separation")
-        tmp_instru_wav = write_temp_wav(instruments, sr, self.options["output_folder"])
+    def _multistem_separation_all(self, results: Dict[str, Dict]):
+        """
+        Runs 6-stem separation (drums, bass, guitar, piano, other) on the instrumental track for all files.
+        """
         self.separator.load_model("htdemucs_6s.yaml")
-        demucs_partial = self.separator.separate(tmp_instru_wav)
-        demucs_files = [os.path.join(self.separator.output_dir, f) for f in demucs_partial]
+        for base_name, res in results.items():
+            sr = res["sr"]
+            inst = res["instrumental"]
+            tmp_instru_wav = write_temp_wav(inst, sr, self.options["output_folder"])
+            demucs_partial = self.separator.separate(tmp_instru_wav)
+            demucs_files = [os.path.join(self.separator.output_dir, f) for f in demucs_partial]
 
-        stems["drums"] = np.zeros_like(instruments)
-        stems["bass"] = np.zeros_like(instruments)
-        stems["guitar"] = np.zeros_like(instruments)
-        stems["piano"] = np.zeros_like(instruments)
-        stems["other"] = np.zeros_like(instruments)
-        sr_dict["drums"] = sr
-        sr_dict["bass"] = sr
-        sr_dict["guitar"] = sr
-        sr_dict["piano"] = sr
-        sr_dict["other"] = sr
+            # Initialize multi-stem keys.
+            res["drums"] = np.zeros_like(inst)
+            res["bass"] = np.zeros_like(inst)
+            res["guitar"] = np.zeros_like(inst)
+            res["piano"] = np.zeros_like(inst)
+            res["other"] = np.zeros_like(inst)
 
-        for f in demucs_files:
-            lowf = os.path.basename(f).lower()
-            arr, _ = librosa.load(f, sr=sr, mono=False)
-            if arr.ndim == 1:
-                arr = np.stack([arr, arr], axis=0)
-            if "(drums)" in lowf:
-                stems["drums"] = arr
-            elif "(bass)" in lowf:
-                stems["bass"] = arr
-            elif "(guitar)" in lowf:
-                stems["guitar"] = arr
-            elif "(piano)" in lowf:
-                stems["piano"] = arr
-            elif "(other)" in lowf:
-                stems["other"] = arr
+            for f in demucs_files:
+                lowf = os.path.basename(f).lower()
+                arr, _ = librosa.load(f, sr=sr, mono=False)
+                if arr.ndim == 1:
+                    arr = np.stack([arr, arr], axis=0)
+                if "(drums)" in lowf:
+                    res["drums"] = arr
+                elif "(bass)" in lowf:
+                    res["bass"] = arr
+                elif "(guitar)" in lowf:
+                    res["guitar"] = arr
+                elif "(piano)" in lowf:
+                    res["piano"] = arr
+                elif "(other)" in lowf:
+                    res["other"] = arr
+            self._advance_progress(f"6-stem separation done for {base_name}")
 
-        # -------------------------------------------------
-        # Step 2.1: Alt Bass Model
-        # -------------------------------------------------
-        if self.alt_bass_model:
-            self._advance_progress("Alt Bass model separation")
-            self.separator.load_model("kuielab_a_bass.onnx")
+    def _alt_bass_separation_all(self, results: Dict[str, Dict]):
+        """
+        Applies an alternate bass separation model on all files to override the bass stem.
+        """
+        self.separator.load_model("kuielab_a_bass.onnx")
+        for base_name, res in results.items():
+            sr = res["sr"]
+            inst = res["instrumental"]
+            tmp_instru_wav = write_temp_wav(inst, sr, self.options["output_folder"])
             alt_bass_out = self.separator.separate(tmp_instru_wav)
-            alt_bass_files = [os.path.join(self.separator.output_dir, b) for b in alt_bass_out]
+            alt_bass_files = [os.path.join(self.separator.output_dir, f) for f in alt_bass_out]
             for bfile in alt_bass_files:
                 if not os.path.exists(bfile):
                     continue
@@ -235,61 +251,58 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 if arrb.ndim == 1:
                     arrb = np.stack([arrb, arrb], axis=0)
                 if "(bass)" in blow:
-                    stems["bass"] = arrb  # override demucs bass
+                    res["bass"] = arrb  # override the previous bass
+            self._advance_progress(f"Alt Bass separation done for {base_name}")
 
-        # -------------------------------------------------
-        # Step 2.2: Advanced drum separation
-        # -------------------------------------------------
-        if self.separate_drums:
-            self._advance_progress("Advanced drum separation")
-            tmp_drums_wav = write_temp_wav(stems["drums"], sr, self.options["output_folder"])
-            self.separator.load_model("MDX23C-DrumSep-aufr33-jarredou.ckpt")
+    def _advanced_drum_separation_all(self, results: Dict[str, Dict]):
+        """
+        Runs advanced drum separation on the drums stem for all files.
+        """
+        self.separator.load_model("MDX23C-DrumSep-aufr33-jarredou.ckpt")
+        for base_name, res in results.items():
+            sr = res["sr"]
+            drums = res.get("drums", np.zeros_like(res["instrumental"]))
+            tmp_drums_wav = write_temp_wav(drums, sr, self.options["output_folder"])
             drum_parts = self.separator.separate(tmp_drums_wav)
-            drum_part_files = [os.path.join(self.separator.output_dir, d) for d in drum_parts]
-
-            drums_other = np.copy(stems["drums"])
+            drum_part_files = [os.path.join(self.separator.output_dir, f) for f in drum_parts]
+            drums_other = np.copy(drums)
+            # Initialize extra drum parts
+            for key in ["drums_kick", "drums_snare", "drums_toms", "drums_hh", "drums_ride", "drums_crash"]:
+                res[key] = None
             for dpf in drum_part_files:
                 dplow = os.path.basename(dpf).lower()
                 arrp, _ = librosa.load(dpf, sr=sr, mono=False)
                 if arrp.ndim == 1:
                     arrp = np.stack([arrp, arrp], axis=0)
-                # Subtract from the "drums_other"
                 if arrp.shape[-1] <= drums_other.shape[-1]:
                     drums_other[:, :arrp.shape[-1]] -= arrp
-
                 if "(kick)" in dplow:
-                    stems["drums_kick"] = arrp
-                    sr_dict["drums_kick"] = sr
+                    res["drums_kick"] = arrp
                 elif "(snare)" in dplow:
-                    stems["drums_snare"] = arrp
-                    sr_dict["drums_snare"] = sr
+                    res["drums_snare"] = arrp
                 elif "(toms)" in dplow:
-                    stems["drums_toms"] = arrp
-                    sr_dict["drums_toms"] = sr
+                    res["drums_toms"] = arrp
                 elif "(hh)" in dplow:
-                    stems["drums_hh"] = arrp
-                    sr_dict["drums_hh"] = sr
+                    res["drums_hh"] = arrp
                 elif "(ride)" in dplow:
-                    stems["drums_ride"] = arrp
-                    sr_dict["drums_ride"] = sr
+                    res["drums_ride"] = arrp
                 elif "(crash)" in dplow:
-                    stems["drums_crash"] = arrp
-                    sr_dict["drums_crash"] = sr
+                    res["drums_crash"] = arrp
+            res["drums_other"] = drums_other
+            self._advance_progress(f"Advanced drum separation done for {base_name}")
 
-            stems["drums_other"] = drums_other
-            sr_dict["drums_other"] = sr
-
-        # -------------------------------------------------
-        # Step 2.3: Woodwinds separation
-        # -------------------------------------------------
-        if self.separate_woodwinds:
-            self._advance_progress("Woodwinds separation")
-            tmp_other_wav = write_temp_wav(stems["other"], sr, self.options["output_folder"])
-            self.separator.load_model("17_HP-Wind_Inst-UVR.pth")
+    def _woodwinds_separation_all(self, results: Dict[str, Dict]):
+        """
+        Separates woodwinds from the 'other' stem on all files.
+        """
+        self.separator.load_model("17_HP-Wind_Inst-UVR.pth")
+        for base_name, res in results.items():
+            sr = res["sr"]
+            other = res.get("other", np.zeros_like(res["instrumental"]))
+            tmp_other_wav = write_temp_wav(other, sr, self.options["output_folder"])
             ww_parts = self.separator.separate(tmp_other_wav)
-            ww_part_files = [os.path.join(self.separator.output_dir, w) for w in ww_parts]
-
-            new_woodwinds = np.zeros_like(stems["other"])
+            ww_part_files = [os.path.join(self.separator.output_dir, f) for f in ww_parts]
+            new_woodwinds = np.zeros_like(other)
             for wfile in ww_part_files:
                 if not os.path.exists(wfile):
                     continue
@@ -299,19 +312,17 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     arrw = np.stack([arrw, arrw], axis=0)
                 if "(woodwinds)" in wflow:
                     new_woodwinds = arrw
-
-            leftover_other = np.copy(stems["other"])
+            leftover_other = np.copy(other)
             if new_woodwinds.shape[-1] <= leftover_other.shape[-1]:
                 leftover_other[:, :new_woodwinds.shape[-1]] -= new_woodwinds
-            stems["woodwinds"] = new_woodwinds
-            sr_dict["woodwinds"] = sr
-            stems["other"] = leftover_other
-            sr_dict["other"] = sr
+            res["woodwinds"] = new_woodwinds
+            res["other"] = leftover_other
+            self._advance_progress(f"Woodwinds separation done for {base_name}")
 
-        return stems, sr_dict
-
-    def _save_stems(self, base_name, stems, sr_dict, output_folder):
-        """ Saves final stems and then deletes any temp_ files. """
+    def _save_all_stems(self, results: Dict[str, Dict]) -> List[str]:
+        """
+        Saves all final stems to disk for every file and cleans up temporary files.
+        """
         self._advance_progress("Saving final stems")
         output_files = []
         stem_names = {
@@ -331,62 +342,28 @@ class EnsembleDemucsMDXMusicSeparationModel:
             "drums_crash": "(Drums_Crash)",
             "drums_other": "(Drums_Other)"
         }
-
-        for stem_name, stem_data in stems.items():
-            output_name = f"{base_name}_{stem_names.get(stem_name, stem_name)}.wav"
-            output_path = os.path.join(output_folder, output_name)
-            sf.write(output_path, stem_data.T, sr_dict[stem_name], subtype="FLOAT")
-            output_files.append(output_path)
-
-        # Remove any tmp_ files
+        output_folder = self.options["output_folder"]
+        for base_name, res in results.items():
+            sr = res["sr"]
+            for stem_key, label in stem_names.items():
+                if stem_key in res and res[stem_key] is not None:
+                    output_name = f"{base_name}_{label}.wav"
+                    output_path = os.path.join(output_folder, output_name)
+                    sf.write(output_path, res[stem_key].T, sr, subtype="FLOAT")
+                    output_files.append(output_path)
+            self._advance_progress(f"Stems saved for {base_name}")
+        # Clean up any temporary files.
         for temp_file in os.listdir(output_folder):
             if temp_file.startswith("tmp_"):
                 os.remove(os.path.join(output_folder, temp_file))
-
         return output_files
-
-    def _separate_as_arrays(self, base_name, mix_np, sr, model_name, desc=None):
-        """ Runs separation for a single model and returns results as arrays. """
-        tmp_wav = write_temp_wav(mix_np, sr, self.options["output_folder"])
-        self.separator.load_model(model_name)
-
-        # Optional description you can log or pass along
-        if desc:
-            logger.debug(desc)
-
-        output_partial = self.separator.separate(tmp_wav)
-        output_files = [os.path.join(self.separator.output_dir, f) for f in output_partial]
-
-        stems = {}
-        for file in output_files:
-            arr, _ = librosa.load(file, sr=sr, mono=False)
-            if arr.ndim == 1:
-                arr = np.stack([arr, arr], axis=0)
-            flow = file.lower()
-            if "(vocals)" in flow:
-                stems["vocals"] = arr
-            elif "(instrumental)" in flow:
-                stems["instrumental"] = arr
-            elif "(drums)" in flow:
-                stems["drums"] = arr
-            elif "(bass)" in flow:
-                stems["bass"] = arr
-            elif "(woodwinds)" in flow:
-                stems["woodwinds"] = arr
-            elif "(piano)" in flow:
-                stems["piano"] = arr
-            elif "(guitar)" in flow:
-                stems["guitar"] = arr
-            elif "(other)" in flow:
-                stems["other"] = arr
-        return stems
 
 
 ################################################################################
 #                    TOP-LEVEL PREDICTION + OUTPUT ROUTINE
 ################################################################################
 
-def separate_music(input_audio: List[str], output_folder: str, **kwargs) -> List[str]:
+def separate_music(input_audio: List[str], output_folder: str, callback: Callable = None, **kwargs) -> List[str]:
     """
     Wrapper for calling the separation model.
     Example usage:
@@ -414,56 +391,55 @@ def separate_music(input_audio: List[str], output_folder: str, **kwargs) -> List
         "alt_bass_model": kwargs.get("alt_bass_model", False),
         "weight_InstVoc": kwargs.get("weight_InstVoc", 8.0),
         "weight_VOCFT": kwargs.get("weight_VOCFT", 1.0),
-        "weight_VitLarge": kwargs.get("weight_VitLarge", 5.0),
-        "callback": kwargs.get("callback", None),
+        "weight_VitLarge": kwargs.get("weight_VitLarge", 5.0)
     }
-    return predict_with_model(options)
+    return predict_with_model(options, callback)
 
 
-def predict_with_model(options: Dict) -> List[str]:
-    """ Runs the ensemble separation on each file and writes final stems to disk. """
-    model = EnsembleDemucsMDXMusicSeparationModel(options)
+def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
+    """
+    Loads all input files, runs the ensemble separation and then (if requested)
+    additional multi-stem, alt bass, advanced drum, and woodwinds separation on
+    all files. Finally, writes all final stems to disk.
+    """
     input_files = options["input_audio"]
-
-    # ----------------------------------------------------
-    # Calculate the total steps for each file
-    # ----------------------------------------------------
-    # 1) Ensemble vocals: len(models_with_weights) => 5
-    ensemble_steps = 5
-    # 2) 6-stem separation => 1 if not vocals_only
-    multi_stem_steps = 1 if not model.vocals_only else 0
-    # 3) alt bass => 1 if alt_bass_model + not vocals_only
-    alt_bass_steps = 1 if (model.alt_bass_model and not model.vocals_only) else 0
-    # 4) separate drums => 1 if separate_drums + not vocals_only
-    drum_steps = 1 if (model.separate_drums and not model.vocals_only) else 0
-    # 5) separate woodwinds => 1 if separate_woodwinds + not vocals_only
-    ww_steps = 1 if (model.separate_woodwinds and not model.vocals_only) else 0
-    # 6) final saving => 1
-    saving_steps = 1
-
-    steps_per_file = (
-        ensemble_steps + multi_stem_steps
-        + alt_bass_steps + drum_steps
-        + ww_steps + saving_steps
-    )
-    total_steps = steps_per_file * len(input_files)
-    model.total_steps = total_steps
-
-    # ----------------------------------------------------
-    # Process each file
-    # ----------------------------------------------------
-    output_files = []
+    files_data = []
+    # Load all input files first.
     for ip in input_files:
         if not os.path.isfile(ip):
-            # Advance some step so callback doesn't freeze?
-            if model.callback:
-                model.callback(model.global_step, f"Missing file: {ip}", model.total_steps)
             continue
-
-        loaded, sr = librosa.load(ensure_wav(ip), sr=44100, mono=False)
-        model.separator.output_dir = options["output_folder"]
+        wav_path = ensure_wav(ip)
+        loaded, sr = librosa.load(wav_path, sr=44100, mono=False)
         base_name = os.path.splitext(os.path.basename(ip))[0]
-        stems = model.separate_music_file(base_name, loaded, sr)
-        output_files.extend(stems)
+        files_data.append({"base_name": base_name, "mix_np": loaded, "sr": sr})
+    if not files_data:
+        return []
 
+    model = EnsembleDemucsMDXMusicSeparationModel(options, callback)
+    # Calculate total progress steps.
+    ensemble_steps = 5
+    multi_stem_steps = 1 if not model.vocals_only else 0
+    alt_bass_steps = 1 if (model.alt_bass_model and not model.vocals_only) else 0
+    drum_steps = 1 if (model.separate_drums and not model.vocals_only) else 0
+    ww_steps = 1 if (model.separate_woodwinds and not model.vocals_only) else 0
+    saving_steps = 1
+    steps_per_file = ensemble_steps + multi_stem_steps + alt_bass_steps + drum_steps + ww_steps + saving_steps
+    model.total_steps = steps_per_file * len(files_data)
+    # Stage 1: Ensemble separation across all files.
+    results = model._ensemble_separate_all(files_data)
+    if not model.vocals_only:
+        # Stage 2: Multi-stem separation on the instrumental track.
+        model._multistem_separation_all(results)
+        # Stage 3: Alt Bass separation.
+        if model.alt_bass_model:
+            model._alt_bass_separation_all(results)
+        # Stage 4: Advanced drum separation.
+        if model.separate_drums:
+            model._advanced_drum_separation_all(results)
+        # Stage 5: Woodwinds separation.
+        if model.separate_woodwinds:
+            model._woodwinds_separation_all(results)
+
+    # Stage 6: Save all stems.
+    output_files = model._save_all_stems(results)
     return output_files

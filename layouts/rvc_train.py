@@ -157,7 +157,7 @@ def get_pretrained_models(path_str, f0_str, sr2):
     )
 
 
-def separate_vocal(audio_files: List[str], progress=gr.Progress(track_tqdm=True)) -> List[str]:
+def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
     progress(0, f"Separating vocals from {len(audio_files)} audio files...")
     separator = Separate()
     args = {
@@ -411,7 +411,7 @@ def click_train(
     hparams.version = model_version
     hparams.gpus = more_gpu_ids if more_gpu_ids else "0"
     hparams.train.batch_size = train_batch_size
-    hparams.train.epoch = total_epochs
+    hparams.train.epochs = total_epochs
     hparams.sample_rate = sample_rate
     hparams.if_f0 = 1 if use_pitch_guidance else 0
     hparams.if_latest = 1 if save_latest_only == "Yes" else 0

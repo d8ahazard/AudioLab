@@ -293,10 +293,10 @@ class Separate(BaseWrapper):
                     vocals_only=not separate_stems,
                     use_VOCFT=True,
                     output_format="FLOAT",
-                    callback=callback,
                     separate_drums=separate_drums,
                     separate_woodwinds=separate_woodwinds,
-                    alt_bass_model=alt_bass_model
+                    alt_bass_model=alt_bass_model,
+                    callback=callback,
                 )
                 all_generated.extend(separated_stems)
 
