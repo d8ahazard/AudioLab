@@ -100,11 +100,11 @@ def extract_f0_features_rmvpe(n_part, i_part, i_gpu, exp_dir, is_half_infer):
         os.makedirs(opt_root2, exist_ok=True)
 
         for name in sorted(os.listdir(inp_root)):
-            inp_path = f"{inp_root}/{name}"
+            inp_path = os.path.join(inp_root, name)
             if "spec" in inp_path:
                 continue
-            opt_path1 = f"{opt_root1}/{name}"
-            opt_path2 = f"{opt_root2}/{name}"
+            opt_path1 = os.path.join(opt_root1, name)
+            opt_path2 = os.path.join(opt_root2, name)
             paths.append([inp_path, opt_path1, opt_path2])
 
         try:

@@ -294,46 +294,45 @@ def click_train(
     feature_dir = os.path.join(exp_dir, "3_feature256" if model_version == "v1" else "3_feature768")
     f0_dir = os.path.join(exp_dir, "2a_f0")
     f0nsf_dir = os.path.join(exp_dir, "2b-f0nsf")
+
+    def get_basenames(directory: str) -> set:
+        """Return a set of file basenames (up to the first dot) from a directory."""
+        return {filename.split('.')[0] for filename in os.listdir(directory)}
+
+    def fix_escapes(entries: List[str]) -> List[str]:
+        """Fix backslashes in file paths."""
+        return [entry.replace("\\", "\\\\") for entry in entries]
+
+    def build_entry(name: str, use_pitch_guidance: bool, gt_wavs_dir: str, feature_dir: str,
+                    f0_dir: str, f0nsf_dir: str, speaker_index: int) -> str:
+        """Build a single entry string based on the provided file name."""
+        if use_pitch_guidance:
+            wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
+            feature_path = os.path.join(feature_dir, f"{name}.npy")
+            f0_path = os.path.join(f0_dir, f"{name}.wav.npy")
+            f0nsf_path = os.path.join(f0nsf_dir, f"{name}.wav.npy")
+            return f"{wav_path}|{feature_path}|{f0_path}|{f0nsf_path}|{speaker_index}"
+        else:
+            wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
+            feature_path = os.path.join(feature_dir, f"{name}.npy")
+            return f"{wav_path}|{feature_path}|{speaker_index}"
+
+    # Get the intersection of base names from the required directories
     if use_pitch_guidance:
-        names = (
-                set([name.split(".")[0] for name in os.listdir(gt_wavs_dir)])
-                & set([name.split(".")[0] for name in os.listdir(feature_dir)])
-                & set([name.split(".")[0] for name in os.listdir(f0_dir)])
-                & set([name.split(".")[0] for name in os.listdir(f0nsf_dir)])
+        f_names = (
+                get_basenames(gt_wavs_dir) &
+                get_basenames(feature_dir) &
+                get_basenames(f0_dir) &
+                get_basenames(f0nsf_dir)
         )
     else:
-        names = set([name.split(".")[0] for name in os.listdir(gt_wavs_dir)]) & set(
-            [name.split(".")[0] for name in os.listdir(feature_dir)]
-        )
-    opt = []
+        f_names = get_basenames(gt_wavs_dir) & get_basenames(feature_dir)
 
-    for name in names:
-        if use_pitch_guidance:
-            opt.append(
-                "%s/%s.wav|%s/%s.npy|%s/%s.wav.npy|%s/%s.wav.npy|%s"
-                % (
-                    gt_wavs_dir.replace("\\", "\\\\"),
-                    name,
-                    feature_dir.replace("\\", "\\\\"),
-                    name,
-                    f0_dir.replace("\\", "\\\\"),
-                    name,
-                    f0nsf_dir.replace("\\", "\\\\"),
-                    name,
-                    speaker_index,
-                )
-            )
-        else:
-            opt.append(
-                "%s/%s.wav|%s/%s.npy|%s"
-                % (
-                    gt_wavs_dir.replace("\\", "\\\\"),
-                    name,
-                    feature_dir.replace("\\", "\\\\"),
-                    name,
-                    speaker_index,
-                )
-            )
+    # Build the list of entries for each file name
+    opt = [build_entry(f_name, use_pitch_guidance, gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, speaker_index)
+           for f_name in f_names]
+
+    # Determine feature dimension and mute paths
     fea_dim = 256 if model_version == "v1" else 768
     mutes_dir = os.path.join(app_path, "modules", "rvc")
 
@@ -342,35 +341,29 @@ def click_train(
     mute_f0_path = os.path.join(mutes_dir, "logs", "mute", "2a_f0")
     mute_f0nsf_path = os.path.join(mutes_dir, "logs", "mute", "2b-f0nsf")
 
-    opt = []
-
-    if use_pitch_guidance:
-        for _ in range(2):
-            opt.append(
-                "|".join([
-                    os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
-                    os.path.join(mute_feature_path, "mute.npy"),
-                    os.path.join(mute_f0_path, "mute.wav.npy"),
-                    os.path.join(mute_f0nsf_path, "mute.wav.npy"),
-                    str(speaker_index)
-                ])
-            )
-    else:
-        for _ in range(2):
-            opt.append(
-                "|".join([
-                    os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
-                    os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
-                    str(speaker_index)
-                ])
-            )
+    # Append mute entries twice to the list
+    for _ in range(2):
+        if use_pitch_guidance:
+            mute_entry = "|".join([
+                os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
+                os.path.join(mute_feature_path, "mute.npy"),
+                os.path.join(mute_f0_path, "mute.wav.npy"),
+                os.path.join(mute_f0nsf_path, "mute.wav.npy"),
+                str(speaker_index)
+            ])
+        else:
+            mute_entry = "|".join([
+                os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
+                os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
+                str(speaker_index)
+            ])
+        opt.append(mute_entry)
 
     shuffle(opt)
+    opt = fix_escapes(opt)
     with open(os.path.join(exp_dir, "filelist.txt"), "w") as f:
         f.write("\n".join(opt))
     logger.debug("Write filelist done")
-    # 生成config#无需生成config
-    # cmd = python_cmd + " train_nsf_sim_cache_sid_load_pretrain.py -e mi-test -sr 40k -f0 1 -bs 4 -g 0 -te 10 -se 5 -pg pretrained/f0G40k.pth -pd pretrained/f0D40k.pth -l 1 -c 0"
     logger.info("Use gpus: %s", str(more_gpu_ids))
     # If resume_training is True, last_epoch should be the last epoch number.
     if resume_training:
@@ -414,7 +407,7 @@ def click_train(
     hparams.train.epochs = total_epochs
     hparams.sample_rate = sample_rate
     hparams.if_f0 = 1 if use_pitch_guidance else 0
-    hparams.if_latest = 1 if save_latest_only == "Yes" else 0
+    hparams.if_latest = 1 if save_latest_only else 0
     hparams.save_every_weights = 1 if save_weights_each_ckpt == "Yes" else 0
     hparams.if_cache_data_in_gpu = 1 if cache_dataset_to_gpu == "Yes" else 0
     hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
@@ -510,12 +503,8 @@ def train_index(exp_dir, model_version):
 
     try:
         # Copy the file to os.path.join(model_path, "trained", f{voice_name}._index)
+        print(f"Copying index to {index_root}")
         shutil.copy(added_index_path, os.path.join(index_root, f"{os.path.basename(exp_dir)}.index"))
-        # external_link = os.link if platform.system() == "Windows" else os.symlink
-        # external_index_path = os.path.join(
-        #     outside_index_root, f"{os.path.basename(exp_dir)}_IVF{n_ivf}_Flat_nprobe_{index_ivf.nprobe}_{model_version}.index"
-        # )
-        # external_link(added_index_path, external_index_path)
         infos.append(f"Linked index to external location: {outside_index_root}")
     except Exception:
         infos.append(f"Failed to link index to external location: {outside_index_root}")
@@ -568,6 +557,7 @@ def train1key(
 
     def get_info_str(strr):
         infos.append(strr)
+        logger.info(strr)
         return "\n".join(infos)
 
     exp_dir = os.path.join(output_path, "voices", project_name)
@@ -591,7 +581,7 @@ def train1key(
         if separate_vocals:
             vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
             yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
-        non_wav_vocal_files = [f for f in vocal_files if not f.endswith(".wav")]
+
         for index, f in enumerate(vocal_files):
             progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
             try:
@@ -633,9 +623,8 @@ def train1key(
         yield get_info_str("Step1: Data already preprocessed.")
         yield get_info_str("Step2: Pitch features already extracted.")
 
-    # step3a:训练模型
     progress(0.5, "Training model.")
-    yield get_info_str("Step3a: Training model.")
+    yield get_info_str("Step3: Training model.")
     click_train(
         project_name,
         resuming_training,
@@ -656,11 +645,14 @@ def train1key(
     )
 
     index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
-    if not resuming_training or not os.path.exists(index_file):
+    if not os.path.exists(index_file):
         progress(0.75, "Building index")
-        yield get_info_str("Training complete, now building index.")
+        yield get_info_str("Step4: Training complete, now building index.")
         [get_info_str(_) for _ in train_index(project_name, project_version)]
-        yield get_info_str("Processing complete.!")
+    else:
+        yield get_info_str("Step4: Index already exists.")
+
+    yield get_info_str("Processing complete!")
 
 
 def list_voice_projects():
@@ -810,8 +802,8 @@ def render():
                     )
                     save_latest_only = gr.Radio(
                         label="Save Only Latest Checkpoint",
-                        choices=["Yes", "No"],
-                        value="No",
+                        choices=[True, False],
+                        value=True,
                         interactive=True,
                         elem_classes="hintitem", elem_id="rvc_save_latest_only"
                     )

@@ -46,7 +46,7 @@ def savee(ckpt, sr, if_f0, name, epoch, version, hps):
         torch.save(opt, out_file)
         return "Success."
     except Exception as e:
-        logger.error(f"Error in savee: {e}")
+        logger.error(f"Error saving final ckpt: {e}")
         traceback.print_exc()
         return traceback.format_exc()
 

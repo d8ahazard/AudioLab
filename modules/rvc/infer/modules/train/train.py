@@ -213,34 +213,19 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     scaler = GradScaler(enabled=hps.train.fp16_run)
     cache = []
     for epoch in range(epoch_str, hps.train.epochs + 1):
-        if rank == 0:
-            train_and_evaluate(
-                rank,
-                epoch,
-                hps,
-                [net_g, net_d],
-                [optim_g, optim_d],
-                [scheduler_g, scheduler_d],
-                scaler,
-                [train_loader, None],
-                logger,
-                None,
-                cache,
-            )
-        else:
-            train_and_evaluate(
-                rank,
-                epoch,
-                hps,
-                [net_g, net_d],
-                [optim_g, optim_d],
-                [scheduler_g, scheduler_d],
-                scaler,
-                [train_loader, None],
-                None,
-                None,
-                cache,
-            )
+        train_and_evaluate(
+            rank,
+            epoch,
+            hps,
+            [net_g, net_d],
+            [optim_g, optim_d],
+            [scheduler_g, scheduler_d],
+            scaler,
+            [train_loader, None],
+            logger,
+            None,
+            cache,
+        )
         scheduler_g.step()
         scheduler_d.step()
 
