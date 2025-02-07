@@ -32,7 +32,6 @@ if [[ -f requirements.txt ]]; then
         echo "Installing $package..."
         if ! python3 -m pip install "$package"; then
             echo "Error installing $package from requirements.txt" >&2
-            exit 1
         fi
     done < requirements.txt
 else
