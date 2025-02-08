@@ -187,8 +187,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["instrumental_list"].append(istem)
                 results[base_name]["v_weights"].append(v_wt)
                 results[base_name]["i_weights"].append(i_wt)
-                self._advance_progress(f"Ensemble {model_idx}/{len(models_with_weights)} done for {base_name}")
-                model_idx += 1
+                self._advance_progress(f"Ensemble {model_idx}/{len(models_with_weights)} done for \n {base_name}")
+            model_idx += 1
         for base_name, res in results.items():
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
             res["instrumental"] = self._blend_tracks(res["instrumental_list"], res["i_weights"])
