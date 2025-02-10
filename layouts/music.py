@@ -156,7 +156,8 @@ def render(arg_handler: ArgHandler):
                     )
                 OUTPUT_MIX = gr.Audio(
                     label="Final Mix",
-                    elem_classes="hintitem", elem_id="yue_output_mix", key="yue_output_mix"
+                    elem_classes="hintitem", elem_id="yue_output_mix", key="yue_output_mix",
+                    type="filepath"
                 )
                 output_vocal = gr.Audio(
                     label="Vocal Output",

@@ -180,8 +180,12 @@ def download_file(url):
 
 
 def update_preview(output: str) -> Tuple[gr.update, gr.update]:
-    show_audio = is_audio(output)
-    show_image = not show_audio
+    if not output:
+        show_audio = False
+        show_image = False
+    else:
+        show_audio = is_audio(output)
+        show_image = not show_audio
     return (gr.update(visible=show_audio, value=output if show_audio else None),
             gr.update(visible=show_image, value=output if show_image else None))
 

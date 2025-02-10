@@ -1,3 +1,5 @@
+import os
+import zipfile
 from typing import Any, List, Dict
 
 import librosa
@@ -28,6 +30,24 @@ def detect_bpm(audio_path: str, start_time: float = 0, end_time: float = None):
         print(f"Error detecting BPM for {audio_path}: {e}")
 
     return bpm, beat_times
+
+
+def zip_folder(folder_path: str):
+    """
+    Optional helper to zip a folder.
+    """
+
+    def zipdir(path, ziph):
+        # ziph is zipfile handle
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                ziph.write(os.path.join(root, file))
+
+    folder_base = os.path.basename(folder_path)
+    zipf = zipfile.ZipFile(f"{folder_base}.zip", "w", zipfile.ZIP_DEFLATED)
+    zipdir(folder_path, zipf)
+    zipf.close()
+    return f"{folder_base}.zip"
 
 
 class Export(BaseWrapper):
@@ -75,12 +95,17 @@ class Export(BaseWrapper):
                     if found_bpm > 0:
                         bpm = found_bpm
                     break
-
+            out_zip = None
             if project_format == "Ableton":
                 als_path = create_ableton_project(project_file, bpm)
+                out_zip = zip_folder(als_path)
                 print(f"Saved Ableton project to: {als_path}")
             elif project_format == "Reaper":
                 reaper_path = create_reaper_project(project_file, bpm)
+                out_zip = zip_folder(reaper_path)
                 print(f"Saved Reaper project to: {reaper_path}")
+            last_outputs = project_file.last_outputs
+            project_file.add_output("export", out_zip)
+            project_file.last_outputs = last_outputs
 
         return inputs

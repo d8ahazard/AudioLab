@@ -9,6 +9,7 @@ from handlers.config import output_path
 
 logger = logging.getLogger(__name__)
 
+
 class TTSHandler:
     def __init__(self, language="en"):
         self.language = language
@@ -33,7 +34,7 @@ class TTSHandler:
         try:
             self.model_data = self.tts_models.get(lang, {}).get(
                 model_name.split("/")[0], {}).get(model_name.split("/")[1], {}
-            )
+                                                  )
         except:
             self.model_data = {}
         logger.info(f"Fetched metadata for model: {full_model_path}, data: {self.model_data}")
@@ -85,4 +86,10 @@ class TTSHandler:
             speakers = getattr(self.tts, "speakers", None)
             if speakers:
                 return speakers
+            else:
+                try:
+                    speakers = list(self.tts.synthesizer.tts_model.speaker_manager.name_to_id)
+                    return speakers
+                except Exception as e:
+                    logger.error(f"Error fetching speakers: {e}")
         return []

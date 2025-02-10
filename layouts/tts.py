@@ -13,6 +13,7 @@ OUTPUT_AUDIO: gr.Audio = None
 def render_tts():
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
     tts_handler = TTSHandler()
+    tts_handler.load_model("multilingual/multi-dataset/xtts_v2")
 
     def update_tts_model(language):
         tts_handler.language = language
@@ -97,7 +98,8 @@ def render_tts():
                     )
                 OUTPUT_AUDIO = gr.Audio(
                     label="Output Audio",
-                    elem_classes="hintitem", elem_id="tts_infer_output_audio", key="tts_infer_output_audio"
+                    elem_classes="hintitem", elem_id="tts_infer_output_audio", key="tts_infer_output_audio",
+                    type="filepath"
                 )
 
         tts_language.change(update_tts_model, inputs=tts_language, outputs=tts_model)
@@ -114,6 +116,8 @@ def render_tts():
 def send_to_process(file_to_send, existing_inputs):
     if not file_to_send or not os.path.exists(file_to_send):
         return gr.update()
+    if not existing_inputs:
+        existing_inputs = []
     if file_to_send in existing_inputs:
         return gr.update()
     existing_inputs.append(file_to_send)

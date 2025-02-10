@@ -191,22 +191,24 @@ class Separate(BaseWrapper):
 
         # Second pass: Process all projects needing separation together.
         if to_separate:
-            # Create a temporary combined output folder.
-            temp_out_dir = os.path.join(os.path.dirname(to_separate[0][0].project_dir), "combined_separation_temp")
-            os.makedirs(temp_out_dir, exist_ok=True)
 
             # Gather input files and map them by base name.
             input_files = []
+            input_dict = {}
             project_map = {}  # base_name -> (project, current_config)
             for proj, config in to_separate:
+                stem_dir = os.path.join(proj.project_dir, "stems")
+                os.makedirs(stem_dir, exist_ok=True)
+                if stem_dir not in input_dict:
+                    input_dict[stem_dir] = []
+                input_dict[stem_dir].append(proj.src_file)
                 input_files.append(proj.src_file)
                 base_name = os.path.basename(proj.project_dir)
                 project_map[base_name] = (proj, config)
 
             # Call separate_music once for all input files.
             combined_stems = separate_music(
-                input_audio=input_files,
-                output_folder=temp_out_dir,
+                input_dict=input_dict,
                 callback=callback,
                 **filtered_kwargs
             )

@@ -65,8 +65,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             else torch.device("cpu")
         self.separator = Separator(
             log_level=logging.ERROR,
-            model_file_dir=os.path.join(app_path, "models", "audio_separator"),
-            output_dir=options["output_folder"]
+            model_file_dir=os.path.join(app_path, "models", "audio_separator")
         )
         # Download all required models
         self.model_list = [
@@ -133,13 +132,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
             combined /= peak
         return combined
 
-    def _separate_as_arrays_current(self, mix_np, sr, desc=None):
+    def _separate_as_arrays_current(self, mix_np, sr, desc=None, output_folder: str = None):
         """ Runs separation for the current model and returns results as arrays. """
-        tmp_wav = write_temp_wav(mix_np, sr, self.options["output_folder"])
+        tmp_wav = write_temp_wav(mix_np, sr, output_folder)
         if desc:
             logger.debug(desc)
+        self.separator.output_dir = output_folder
         output_partial = self.separator.separate(tmp_wav)
-        output_files = [os.path.join(self.separator.output_dir, f) for f in output_partial]
+        output_files = [os.path.join(output_folder, f) for f in output_partial]
         stems = {}
         for file in output_files:
             arr, _ = librosa.load(file, sr=sr, mono=False)
@@ -163,7 +163,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 "vocals_list": [],
                 "instrumental_list": [],
                 "v_weights": [],
-                "i_weights": []
+                "i_weights": [],
+                "output_folder": file["output_folder"]
             }
         models_with_weights = [
             ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),
@@ -179,8 +180,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 base_name = file["base_name"]
                 mix_np = file["mix_np"]
                 sr = file["sr"]
+                self.separator.output_dir = file["output_folder"]
+
                 desc = f"[Ensemble] {base_name} => {model_name}"
-                separated = self._separate_as_arrays_current(mix_np, sr, desc)
+                separated = self._separate_as_arrays_current(mix_np, sr, desc, file["output_folder"])
                 vstem = separated.get("vocals", np.zeros_like(mix_np))
                 istem = separated.get("instrumental", np.zeros_like(mix_np))
                 results[base_name]["vocals_list"].append(vstem)
@@ -400,12 +403,13 @@ class EnsembleDemucsMDXMusicSeparationModel:
             os.rename(filepath, final_path)
         return final_path
 
-    def _apply_bg_vocal_splitting(self, vocals_array, sr, base_name):
+    def _apply_bg_vocal_splitting(self, vocals_array, sr, base_name, output_folder):
         """ Applies background vocal splitting to the vocals array. """
-        tmp_file = write_temp_wav(vocals_array, sr, self.options["output_folder"])
+        tmp_file = write_temp_wav(vocals_array, sr, output_folder)
         self.separator.load_model("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
+        self.separator.output_dir = output_folder
         out_files = self.separator.separate(tmp_file)
-        out_files = [os.path.join(self.options["output_folder"], f) for f in out_files]
+        out_files = [os.path.join(output_folder, f) for f in out_files]
 
         arrays = []
         for f in out_files:
@@ -421,7 +425,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             return main, bg
         return vocals_array, None
 
-    def _apply_transform_chain(self, stem_array, sr, base_name, stem_label, project_dir) -> np.ndarray:
+    def _apply_transform_chain(self, stem_array, sr, base_name, stem_label, output_folder) -> np.ndarray:
         """ Applies a series of transformations (reverb, echo, etc.) to a stem array. """
         transformations = [
             ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", self.reverb_removal),
@@ -435,9 +439,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
             simulated_name = f"({stem_label})"
             if self._should_apply_transform(simulated_name, transform_flag):
                 self.separator.load_model(model_file)
+                self.separator.output_dir = output_folder
                 tmp_file = write_temp_wav(current_array, sr, self.options["output_folder"])
                 out_files = self.separator.separate(tmp_file)
-                out_files_full = [os.path.join(self.options["output_folder"], f) for f in out_files]
+                out_files_full = [os.path.join(output_folder, f) for f in out_files]
                 chosen_file = None
                 if len(out_files_full) == 2:
                     if out_label.replace(" ", "").lower() in out_files_full[0].replace(" ", "").lower():
@@ -449,7 +454,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     chosen_file = self._rename_file(base_name, chosen_file)
                     if out_label == "No Reverb" and stem_label.lower() == "vocals" and self.store_reverb_ir and alt_file:
                         try:
-                            out_ir = os.path.join(project_dir, "impulse_response.ir")
+                            out_ir = os.path.join(output_folder, "impulse_response.ir")
                             logger.info(f"Extracting reverb IR from {os.path.basename(alt_file)}")
                             extract_reverb(chosen_file, alt_file, out_ir)
                         except Exception as e:
@@ -471,15 +476,16 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
 def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     """ Loads input files, runs ensemble and additional processing, then saves stems. """
-    input_files = options["input_audio"]
+    input_dict = options["input_dict"]
     files_data = []
-    for ip in input_files:
-        if not os.path.isfile(ip):
-            continue
-        wav_path = ensure_wav(ip)
-        loaded, sr = librosa.load(wav_path, sr=44100, mono=False)
-        base_name = os.path.splitext(os.path.basename(ip))[0]
-        files_data.append({"base_name": base_name, "mix_np": loaded, "sr": sr})
+    for out_folder, input_files in input_dict.items():
+        for ip in input_files:
+            if not os.path.isfile(ip):
+                continue
+            wav_path = ensure_wav(ip)
+            loaded, sr = librosa.load(wav_path, sr=44100, mono=False)
+            base_name = os.path.splitext(os.path.basename(ip))[0]
+            files_data.append({"base_name": base_name, "mix_np": loaded, "sr": sr, "output_folder": out_folder})
     if not files_data:
         return []
     model = EnsembleDemucsMDXMusicSeparationModel(options, callback)
@@ -498,7 +504,7 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     if model.separate_bg_vocals:
         for base_name, res in results.items():
             if "vocals" in res and res["vocals"] is not None:
-                main_vocals, bg_vocals = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name)
+                main_vocals, bg_vocals = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name, res["output_folder"])
                 res["vocals"] = main_vocals
                 res["bg_vocals"] = bg_vocals
     # Always apply transformation chain to vocals and instrumental stems if any transform is set
@@ -508,7 +514,7 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
             for stem_label in ["vocals", "instrumental"]:
                 if stem_label in res and res[stem_label] is not None:
                     res[stem_label] = model._apply_transform_chain(
-                        res[stem_label], res["sr"], base_name, stem_label, options["output_folder"]
+                        res[stem_label], res["sr"], base_name, stem_label, res["output_folder"]
                     )
     if not model.vocals_only:
         model._multistem_separation_all(results)
@@ -522,7 +528,7 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     return output_files
 
 
-def separate_music(input_audio: List[str], output_folder: str, callback: Callable = None, **kwargs) -> List[str]:
+def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, **kwargs) -> List[str]:
     """
     Wrapper for calling the separation model.
     Example:
@@ -542,10 +548,8 @@ def separate_music(input_audio: List[str], output_folder: str, callback: Callabl
             noise_removal="Nothing"
         )
     """
-    os.makedirs(output_folder, exist_ok=True)
     options = {
-        "input_audio": input_audio,
-        "output_folder": output_folder,
+        "input_dict": input_dict,
         "cpu": kwargs.get("cpu", False),
         "vocals_only": kwargs.get("vocals_only", True),
         "use_VOCFT": kwargs.get("use_VOCFT", False),

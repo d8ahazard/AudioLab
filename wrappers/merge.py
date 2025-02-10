@@ -53,11 +53,11 @@ class Merge(BaseWrapper):
             output_folder = os.path.join(project.project_dir, "merged")
             os.makedirs(output_folder, exist_ok=True)
 
-            inputs, _ = self.filter_inputs(project, "audio")
+            inputs, new_inputs = self.filter_inputs(project, "audio")
 
             ir_file = os.path.join(project.project_dir, "impulse_response.ir")
 
-            new_inputs = []
+            #new_inputs = []
             for stem_path in inputs:
                 logger.info(f"Processing stem: {os.path.basename(stem_path)}")
                 if "(Main Vocals)" in stem_path:
