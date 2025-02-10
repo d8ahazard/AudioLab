@@ -129,7 +129,7 @@ class VC:
         self.pipeline = Pipeline(self.tgt_sr, self.config)
         n_spk = self.cpt["config"][-3]
         index = {"value": get_index_path_from_model(person), "__type__": "update"}
-        logger.info("Select index: " + index["value"])
+        logger.info(f"Select index: {index}")
         self.index = index["value"]
         return (
             (

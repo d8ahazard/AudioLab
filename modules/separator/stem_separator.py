@@ -17,6 +17,10 @@ from handlers.reverb import extract_reverb
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 
+# Monkey-patch soundfile to add SoundFileRuntimeError if missing.
+if not hasattr(sf, "SoundFileRuntimeError"):
+    sf.SoundFileRuntimeError = RuntimeError
+
 
 ################################################################################
 #                        HELPER UTILITY FUNCTIONS
@@ -137,7 +141,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
         tmp_wav = write_temp_wav(mix_np, sr, output_folder)
         if desc:
             logger.debug(desc)
-        self.separator.output_dir = output_folder
         output_partial = self.separator.separate(tmp_wav)
         output_files = [os.path.join(output_folder, f) for f in output_partial]
         stems = {}
@@ -150,6 +153,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 stems["vocals"] = arr
             elif "(instrumental)" in flow:
                 stems["instrumental"] = arr
+        # Delete tmp_wav
+        if os.path.exists(tmp_wav):
+            os.remove(tmp_wav)
         return stems
 
     def _ensemble_separate_all(self, files_data: List[Dict]) -> Dict[str, Dict]:
@@ -181,9 +187,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 mix_np = file["mix_np"]
                 sr = file["sr"]
                 self.separator.output_dir = file["output_folder"]
-
+                self.separator.model_instance.output_dir = file["output_folder"]
                 desc = f"[Ensemble] {base_name} => {model_name}"
-                separated = self._separate_as_arrays_current(mix_np, sr, desc, file["output_folder"])
+                separated = self._separate_as_arrays_current(mix_np, sr, desc, output_folder=file["output_folder"])
                 vstem = separated.get("vocals", np.zeros_like(mix_np))
                 istem = separated.get("instrumental", np.zeros_like(mix_np))
                 results[base_name]["vocals_list"].append(vstem)
@@ -203,7 +209,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
         for base_name, res in results.items():
             sr = res["sr"]
             inst = res["instrumental"]
-            tmp_instru_wav = write_temp_wav(inst, sr, self.options["output_folder"])
+            self.separator.output_dir = res["output_folder"]
+            self.separator.model_instance.output_dir = res["output_folder"]
+
+            tmp_instru_wav = write_temp_wav(inst, sr, res["output_folder"])
             demucs_partial = self.separator.separate(tmp_instru_wav)
             demucs_files = [os.path.join(self.separator.output_dir, f) for f in demucs_partial]
             res["drums"] = np.zeros_like(inst)
@@ -226,6 +235,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     res["piano"] = arr
                 elif "(other)" in lowf:
                     res["other"] = arr
+            # Delete tmp_instru_wav
+            if os.path.exists(tmp_instru_wav):
+                os.remove(tmp_instru_wav)
             self._advance_progress(f"6-stem separation done for {base_name}")
 
     def _alt_bass_separation_all(self, results: Dict[str, Dict]):
@@ -234,7 +246,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
         for base_name, res in results.items():
             sr = res["sr"]
             inst = res["instrumental"]
-            tmp_instru_wav = write_temp_wav(inst, sr, self.options["output_folder"])
+            self.separator.output_dir = res["output_folder"]
+            self.separator.model_instance.output_dir = res["output_folder"]
+            tmp_instru_wav = write_temp_wav(inst, sr, res["output_folder"])
             alt_bass_out = self.separator.separate(tmp_instru_wav)
             alt_bass_files = [os.path.join(self.separator.output_dir, f) for f in alt_bass_out]
             for bfile in alt_bass_files:
@@ -246,6 +260,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     arrb = np.stack([arrb, arrb], axis=0)
                 if "(bass)" in blow:
                     res["bass"] = arrb
+            if os.path.exists(tmp_instru_wav):
+                os.remove(tmp_instru_wav)
             self._advance_progress(f"Alt Bass separation done for {base_name}")
 
     def _advanced_drum_separation_all(self, results: Dict[str, Dict]):
@@ -254,7 +270,11 @@ class EnsembleDemucsMDXMusicSeparationModel:
         for base_name, res in results.items():
             sr = res["sr"]
             drums = res.get("drums", np.zeros_like(res["instrumental"]))
-            tmp_drums_wav = write_temp_wav(drums, sr, self.options["output_folder"])
+            tmp_drums_wav = write_temp_wav(drums, sr, res["output_folder"])
+            output_folder = res["output_folder"]
+            self.separator.output_dir = output_folder
+            self.separator.model_instance.output_dir = output_folder
+
             drum_parts = self.separator.separate(tmp_drums_wav)
             drum_part_files = [os.path.join(self.separator.output_dir, f) for f in drum_parts]
             drums_other = np.copy(drums)
@@ -288,7 +308,11 @@ class EnsembleDemucsMDXMusicSeparationModel:
         for base_name, res in results.items():
             sr = res["sr"]
             other = res.get("other", np.zeros_like(res["instrumental"]))
-            tmp_other_wav = write_temp_wav(other, sr, self.options["output_folder"])
+            tmp_other_wav = write_temp_wav(other, sr, res["output_folder"])
+            output_folder = res["output_folder"]
+            self.separator.output_dir = output_folder
+            self.separator.model_instance.output_dir = output_folder
+
             ww_parts = self.separator.separate(tmp_other_wav)
             ww_part_files = [os.path.join(self.separator.output_dir, f) for f in ww_parts]
             new_woodwinds = np.zeros_like(other)
@@ -330,9 +354,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
             "drums_crash": "(Drums_Crash)",
             "drums_other": "(Drums_Other)"
         }
-        output_folder = self.options["output_folder"]
         for base_name, res in results.items():
             sr = res["sr"]
+            output_folder = res["output_folder"]
             for stem_key, label in stem_names.items():
                 if stem_key in res and res[stem_key] is not None:
                     # Use '__' as a delimiter to ensure robust splitting later
@@ -341,9 +365,11 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     sf.write(output_path, res[stem_key].T, sr, subtype="FLOAT")
                     output_files.append(output_path)
             self._advance_progress(f"Stems saved for {base_name}")
-        for temp_file in os.listdir(output_folder):
-            if temp_file.startswith("tmp_"):
-                os.remove(os.path.join(output_folder, temp_file))
+        for base_name, res in results.items():
+            output_folder = res["output_folder"]
+            for temp_file in os.listdir(output_folder):
+                if temp_file.startswith("tmp_"):
+                    os.remove(os.path.join(output_folder, temp_file))
         return output_files
 
     @staticmethod
@@ -408,6 +434,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         tmp_file = write_temp_wav(vocals_array, sr, output_folder)
         self.separator.load_model("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
         self.separator.output_dir = output_folder
+        self.separator.model_instance.output_dir = output_folder
         out_files = self.separator.separate(tmp_file)
         out_files = [os.path.join(output_folder, f) for f in out_files]
 
@@ -440,7 +467,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
             if self._should_apply_transform(simulated_name, transform_flag):
                 self.separator.load_model(model_file)
                 self.separator.output_dir = output_folder
-                tmp_file = write_temp_wav(current_array, sr, self.options["output_folder"])
+                self.separator.model_instance.output_dir = output_folder
+                tmp_file = write_temp_wav(current_array, sr, output_folder)
                 out_files = self.separator.separate(tmp_file)
                 out_files_full = [os.path.join(output_folder, f) for f in out_files]
                 chosen_file = None
