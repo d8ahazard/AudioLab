@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import threading
 from typing import Any, List, Dict
 import logging
@@ -200,6 +201,14 @@ class Separate(BaseWrapper):
             for proj, config in to_separate:
                 stem_dir = os.path.join(proj.project_dir, "stems")
                 os.makedirs(stem_dir, exist_ok=True)
+                if "(TTS)_" in proj.src_file:
+                    # Copy proj.src_file to stem_dir and append (Vocals) to the name
+                    base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
+                    new_name = f"{base_name}(Vocals){ext}"
+                    new_path = os.path.join(stem_dir, new_name)
+                    if not os.path.exists(new_path):
+                        shutil.copyfile(proj.src_file, new_path)
+                    continue
                 if stem_dir not in input_dict:
                     input_dict[stem_dir] = []
                 input_dict[stem_dir].append(proj.src_file)
@@ -226,6 +235,17 @@ class Separate(BaseWrapper):
 
             # For each project, move its outputs to its own stems folder and update cache.
             for base, (proj, config) in project_map.items():
+                if "(TTS)_" in proj.src_file:
+                    stem_dir = os.path.join(proj.project_dir, "stems")
+                    base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
+                    new_name = f"{base_name}(Vocals){ext}"
+                    new_path = os.path.join(stem_dir, new_name)
+                    project_stems = [new_path]
+                    proj.add_output("stems", project_stems)
+                    final_projects.append(proj)
+                    logger.info(f"Skipping separation for TTS project {proj.src_file}")
+                    continue
+
                 if base not in separation_results:
                     logger.warning(f"No separation results found for project {proj.src_file}")
                     continue

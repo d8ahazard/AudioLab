@@ -43,7 +43,7 @@ class TTSHandler:
         output_dir = os.path.join(output_path, "tts")
         # Use timestamp to make the filename unique
         file_stamp = str(int(time.time()))
-        output_file = os.path.join(output_dir, f"{file_stamp}.wav")
+        output_file = os.path.join(output_dir, f"(TTS)_{file_stamp}.wav")
         os.makedirs(output_dir, exist_ok=True)
         full_model_path = "tts_models/" + model_name
         self.load_model(model_name)
