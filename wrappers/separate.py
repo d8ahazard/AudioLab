@@ -5,6 +5,7 @@ import threading
 from typing import Any, List, Dict
 import logging
 
+from handlers.config import output_path
 from modules.separator.stem_separator import separate_music
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
@@ -216,8 +217,11 @@ class Separate(BaseWrapper):
             # Sort the outputs by base name. Using '__' as delimiter.
             separation_results = {}  # base_name -> list of stem files
             for stem in combined_stems:
-                filename = os.path.basename(stem)
-                base = filename.split("__")[0]
+                folder_parts = os.path.dirname(stem).split(os.path.sep)
+                output_folder_parts = os.path.join(output_path, "process").split(os.path.sep)
+                # Remove output_folder_parts from folder_parts
+                folder_parts = [part for part in folder_parts if part not in output_folder_parts]
+                base = folder_parts[0]
                 separation_results.setdefault(base, []).append(stem)
 
             # For each project, move its outputs to its own stems folder and update cache.
@@ -225,22 +229,10 @@ class Separate(BaseWrapper):
                 if base not in separation_results:
                     logger.warning(f"No separation results found for project {proj.src_file}")
                     continue
-                out_dir = os.path.join(proj.project_dir, "stems")
-                os.makedirs(out_dir, exist_ok=True)
-                project_stems = []
-                for stem in separation_results[base]:
-                    new_path = os.path.join(out_dir, os.path.basename(stem))
-                    try:
-                        if os.path.exists(new_path):
-                            os.remove(new_path)
-                        os.rename(stem, new_path)
-                    except Exception as e:
-                        logger.warning(f"Error moving {stem} to {new_path}: {e}")
-                        new_path = stem  # fallback if move fails
-                    project_stems.append(new_path)
+                project_stems = separation_results[base]
                 proj.add_output("stems", project_stems)
                 final_projects.append(proj)
-                # Write cache.
+                out_dir = os.path.join(proj.project_dir, "stems")
                 cache_file = os.path.join(out_dir, "separation_info.json")
                 cache_info = {"config": config, "stems": []}
                 for p in project_stems:
@@ -251,12 +243,6 @@ class Separate(BaseWrapper):
                         json.dump(cache_info, f, indent=2)
                 except Exception as e:
                     logger.warning(f"Error writing cache file {cache_file}: {e}")
-
-            # Optionally remove the temporary directory if empty.
-            try:
-                os.rmdir(temp_out_dir)
-            except Exception:
-                pass
 
         # Optionally delete extra stems if requested.
         if filtered_kwargs.get("delete_extra_stems", True):

@@ -53,14 +53,14 @@ class Merge(BaseWrapper):
             output_folder = os.path.join(project.project_dir, "merged")
             os.makedirs(output_folder, exist_ok=True)
 
-            inputs, new_inputs = self.filter_inputs(project, "audio")
+            inputs, _ = self.filter_inputs(project, "audio")
 
-            ir_file = os.path.join(project.project_dir, "impulse_response.ir")
+            ir_file = os.path.join(project.project_dir, "stems", "impulse_response.ir")
 
-            #new_inputs = []
+            new_inputs = []
             for stem_path in inputs:
                 logger.info(f"Processing stem: {os.path.basename(stem_path)}")
-                if "(Main Vocals)" in stem_path:
+                if "(Vocals)" in stem_path and "(BG_Vocals)" not in stem_path:
                     if os.path.exists(ir_file):
                         logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
                         stem_name, ext = os.path.splitext(os.path.basename(stem_path))
