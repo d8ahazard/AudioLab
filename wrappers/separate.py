@@ -72,7 +72,7 @@ class Separate(BaseWrapper):
         ),
         # Removal toggles
         "reverb_removal": TypedInput(
-            default="Nothing",
+            default="Main Vocals",
             description="Apply reverb removal.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
@@ -200,7 +200,8 @@ class Separate(BaseWrapper):
             project_map = {}  # base_name -> (project, current_config)
             for proj, config in to_separate:
                 input_files.append(proj.src_file)
-                project_map[proj.base_name] = (proj, config)
+                base_name = os.path.basename(proj.project_dir)
+                project_map[base_name] = (proj, config)
 
             # Call separate_music once for all input files.
             combined_stems = separate_music(
@@ -228,6 +229,8 @@ class Separate(BaseWrapper):
                 for stem in separation_results[base]:
                     new_path = os.path.join(out_dir, os.path.basename(stem))
                     try:
+                        if os.path.exists(new_path):
+                            os.remove(new_path)
                         os.rename(stem, new_path)
                     except Exception as e:
                         logger.warning(f"Error moving {stem} to {new_path}: {e}")

@@ -35,6 +35,7 @@ class VC:
         self.if_f0 = None
         self.version = None
         self.hubert_model = None
+        self.index = None
 
         self.config = config
         self.global_step = 0
@@ -129,7 +130,7 @@ class VC:
         n_spk = self.cpt["config"][-3]
         index = {"value": get_index_path_from_model(person), "__type__": "update"}
         logger.info("Select index: " + index["value"])
-
+        self.index = index["value"]
         return (
             (
                 {"visible": True, "maximum": n_spk, "__type__": "update"},
@@ -219,8 +220,7 @@ class VC:
             # (D) Run the pipeline at 16k
             # ----------------------------------------------------------------
             times = [0, 0, 0]
-            file_index = model.replace("_final.pth", ".index")
-            file_index = os.path.join(model_path, "trained", file_index)
+            file_index = self.index
 
             if self.pipeline is None:
                 self.get_vc(model)

@@ -5,7 +5,7 @@ class AudioTrack:
     def __init__(
             self,
             track_id,
-            warp_start_id,
+            next_pointee_id,
             effective_name,
             clip_name,
             color=7,
@@ -26,6 +26,7 @@ class AudioTrack:
         Automatically assigns unique sub-IDs for automation so tracks won't collide.
 
         :param track_id: The integer ID for <AudioTrack Id="..."> (must be unique).
+        :param next_pointee_id: The starting pointee ID to be used and incremented for every new pointee.
         :param effective_name: The track name (e.g., "1-MyTrack").
         :param clip_name: The name that appears on the clip itself.
         :param color: Ableton color index.
@@ -38,9 +39,8 @@ class AudioTrack:
         :param default_duration: Number of audio frames (for some versions of Live).
         :param default_sample_rate: Sample rate of the file (e.g. 44100).
         """
-
         self.track_id = track_id
-        self.warp_start_id = warp_start_id
+        self.next_pointee_id = next_pointee_id
         self.effective_name = effective_name
         self.clip_name = clip_name
         self.color = color
@@ -53,9 +53,14 @@ class AudioTrack:
         self.default_duration = default_duration
         self.default_sample_rate = default_sample_rate
 
-        # We'll define a base for automation IDs so each track has unique sub-IDs
-        # Example: if track_id=15, base_automation_id=1500, so no collisions with track_id=14 => 1400
+        # We'll define a base for automation IDs so each track has unique sub-IDs.
+        # Example: if track_id=15, base_automation_id=1500, so no collisions with track_id=14 => 1400.
         self.base_automation_id = track_id * 100
+
+    def get_next_pointee_id(self):
+        current_id = self.next_pointee_id
+        self.next_pointee_id += 1
+        return current_id
 
     def to_element(self):
         audio_track_elem = ET.Element("AudioTrack", {"Id": str(self.track_id)})
@@ -162,8 +167,8 @@ class AudioTrack:
         on_elem = ET.SubElement(mixer_elem, "On")
         ET.SubElement(on_elem, "LomId", {"Value": "0"})
         ET.SubElement(on_elem, "Manual", {"Value": "true"})
-        # Example AutomationTarget: each track uses base_automation_id + offset
-        # For "On," let's do offset=0
+        # Example AutomationTarget: each track uses base_automation_id + offset.
+        # For "On," let's do offset=0.
         on_auto_target_id = self.base_automation_id + 0
         at_on = ET.SubElement(on_elem, "AutomationTarget", {"Id": str(on_auto_target_id)})
         ET.SubElement(at_on, "LockEnvelope", {"Value": "0"})
@@ -174,8 +179,8 @@ class AudioTrack:
         ET.SubElement(mixer_elem, "ModulationSourceCount", {"Value": "0"})
         ET.SubElement(mixer_elem, "ParametersListWrapper", {"LomId": "0"})
 
-        # For "Pointee," offset=1
-        pointee_id = self.base_automation_id + 1
+        # For "Pointee," using the next available pointee ID
+        pointee_id = self.get_next_pointee_id()
         ET.SubElement(mixer_elem, "Pointee", {"Id": str(pointee_id)})
 
         ET.SubElement(mixer_elem, "LastSelectedTimeableIndex", {"Value": "0"})
@@ -194,15 +199,15 @@ class AudioTrack:
         sends_elem = ET.SubElement(mixer_elem, "Sends")
 
         # TrackSendHolder Id=0 (Send A)
-        # We'll define offsets for each automation / modulation target
-        # For example: offset=2,3 => 2 for automation, 3 for modulation
+        # We'll define offsets for each automation / modulation target.
+        # For example: offset=2,3 => 2 for automation, 3 for modulation.
         # Then offset=4,5 for the second send, etc.
         sendA_auto_id = self.base_automation_id + 2
         sendA_mod_id = self.base_automation_id + 3
         tshA = ET.SubElement(sends_elem, "TrackSendHolder", {"Id": "0"})
         sendA_elem = ET.SubElement(tshA, "Send")
         ET.SubElement(sendA_elem, "LomId", {"Value": "0"})
-        ET.SubElement(sendA_elem, "Manual", {"Value": "0.0003162277571"})  # same as your snippet
+        ET.SubElement(sendA_elem, "Manual", {"Value": "0.0003162277571"})
         midi_range_A = ET.SubElement(sendA_elem, "MidiControllerRange")
         ET.SubElement(midi_range_A, "Min", {"Value": "0.0003162277571"})
         ET.SubElement(midi_range_A, "Max", {"Value": "1"})
@@ -332,8 +337,8 @@ class AudioTrack:
         ET.SubElement(main_seq_elem, "ModulationSourceCount", {"Value": "0"})
         ET.SubElement(main_seq_elem, "ParametersListWrapper", {"LomId": "0"})
 
-        # offset=17
-        main_seq_pointee_id = self.base_automation_id + 17
+        # Use next available pointee ID for MainSequencer
+        main_seq_pointee_id = self.get_next_pointee_id()
         ET.SubElement(main_seq_elem, "Pointee", {"Id": str(main_seq_pointee_id)})
 
         ET.SubElement(main_seq_elem, "LastSelectedTimeableIndex", {"Value": "0"})
@@ -364,7 +369,7 @@ class AudioTrack:
         arranger_automation_elem = ET.SubElement(sample_elem, "ArrangerAutomation")
         events_elem = ET.SubElement(arranger_automation_elem, "Events")
 
-        # For the main AudioClip, we can set Id="0" or omit it. We'll keep "Id=0" for consistency
+        # For the main AudioClip, we can set Id="0" or omit it. We'll keep "Id=0" for consistency.
         audio_clip_elem = ET.SubElement(events_elem, "AudioClip", {
             "Id": "0",
             "Time": str(self.clip_start),
@@ -376,7 +381,7 @@ class AudioTrack:
 
         loop_elem = ET.SubElement(audio_clip_elem, "Loop")
         ET.SubElement(loop_elem, "LoopStart", {"Value": "0"})
-        ET.SubElement(loop_elem, "LoopEnd", {"Value": "111.375"})
+        ET.SubElement(loop_elem, "LoopEnd", {"Value": str(self.clip_end)})
         ET.SubElement(loop_elem, "StartRelative", {"Value": "0"})
         ET.SubElement(loop_elem, "LoopOn", {"Value": "false"})
         ET.SubElement(loop_elem, "OutMarker", {"Value": "131.232"})
@@ -499,9 +504,10 @@ class AudioTrack:
 
         # WarpMarkers
         warp_markers_elem = ET.SubElement(audio_clip_elem, "WarpMarkers")
-        ET.SubElement(warp_markers_elem, "WarpMarker", {"SecTime": "0", "BeatTime": "0", "Id": f"{self.warp_start_id}"})
-        ET.SubElement(warp_markers_elem, "WarpMarker",
-                      {"SecTime": "0.015625", "BeatTime": "0.03125", "Id": f"{self.warp_start_id + 1}"})
+        warp_marker_id1 = self.get_next_pointee_id()
+        warp_marker_id2 = self.get_next_pointee_id()
+        ET.SubElement(warp_markers_elem, "WarpMarker", {"SecTime": "0", "BeatTime": "0", "Id": str(warp_marker_id1)})
+        ET.SubElement(warp_markers_elem, "WarpMarker", {"SecTime": "0.015625", "BeatTime": "0.03125", "Id": str(warp_marker_id2)})
 
         ET.SubElement(audio_clip_elem, "SavedWarpMarkersForStretched")
         ET.SubElement(audio_clip_elem, "MarkersGenerated", {"Value": "true"})
@@ -524,8 +530,8 @@ class AudioTrack:
 
         ET.SubElement(freeze_seq_elem, "ModulationSourceCount", {"Value": "0"})
         ET.SubElement(freeze_seq_elem, "ParametersListWrapper", {"LomId": "0"})
-        main_seq_pointee_id = self.base_automation_id + 18
-        ET.SubElement(freeze_seq_elem, "Pointee", {"Id": str(main_seq_pointee_id)})
+        freeze_seq_pointee_id = self.get_next_pointee_id()
+        ET.SubElement(freeze_seq_elem, "Pointee", {"Id": str(freeze_seq_pointee_id)})
         ET.SubElement(freeze_seq_elem, "LastSelectedTimeableIndex", {"Value": "0"})
         ET.SubElement(freeze_seq_elem, "LastSelectedClipEnvelopeIndex", {"Value": "0"})
         lsr2 = ET.SubElement(freeze_seq_elem, "LastPresetRef")

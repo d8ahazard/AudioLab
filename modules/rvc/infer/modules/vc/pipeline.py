@@ -25,6 +25,65 @@ bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 input_audio_path2wav = {}
 
 
+def check_faiss_index_file(file_path):
+    """
+    Checks whether the given file appears to be a raw FAISS index file or a ZIP archive.
+
+    Parameters:
+        file_path (str): Path to the file to check.
+
+    Returns:
+        bool: True if the file appears to be a valid FAISS index (non-ZIP), False otherwise.
+    """
+    import os
+
+    if not os.path.exists(file_path):
+        print(f"File does not exist: {file_path}")
+        return False
+
+    with open(file_path, "rb") as f:
+        header = f.read(4)
+    if header == b"PK\x03\x04":
+        print("The file appears to be a ZIP archive. Please unzip it to obtain the FAISS index file.")
+        return False
+    else:
+        print("The file appears to be a valid FAISS index file (based on header check).")
+        return True
+
+
+def extract_index_from_zip(zip_path, extract_to):
+    """
+    Extracts files from a ZIP archive and returns the path to the first extracted file.
+
+    Parameters:
+        zip_path (str): Path to the ZIP archive.
+        extract_to (str): Directory where the contents should be extracted.
+
+    Returns:
+        str: Path to the extracted index file.
+
+    Raises:
+        ValueError: If the file is not a valid ZIP archive or if extraction yields no files.
+    """
+    import os
+    import zipfile
+
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError(f"{zip_path} is not a valid ZIP file.")
+
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extract_to)
+
+    extracted_files = [f for f in os.listdir(extract_to) if os.path.isfile(os.path.join(extract_to, f))]
+    if not extracted_files:
+        raise ValueError("No files were extracted from the ZIP archive.")
+
+    # Assumes that the first extracted file is the FAISS index file
+    extracted_file_path = os.path.join(extract_to, extracted_files[0])
+    print(f"Extracted file: {extracted_file_path}")
+    return extracted_file_path
+
+
 @lru_cache
 def cache_harvest_f0(input_audio_path, fs, f0max, f0min, frame_period):
     audio = input_audio_path2wav[input_audio_path]
@@ -296,6 +355,8 @@ class Pipeline(object):
     ):
         if file_index != "" and os.path.exists(file_index) and index_rate != 0:
             try:
+                if not check_faiss_index_file(file_index):
+                    file_index = extract_index_from_zip(file_index, model_path)
                 index = faiss.read_index(file_index)
                 big_npy = index.reconstruct_n(0, index.ntotal)
             except:

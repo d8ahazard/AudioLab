@@ -6,10 +6,14 @@ from handlers.config import model_path
 
 
 def get_index_path_from_model(sid):
-    index_file = sid.replace("_final.pth", "_index.index")
-    if os.path.exists(index_file):
-        return index_file
-    return ""
+    sid_base = os.path.basename(sid)
+    sid_base = sid_base.replace(".pth", "")
+    sid_base = sid_base.replace("_final", "")
+    # Find file that contains sid_base and .index
+    for file in os.listdir(os.path.join(model_path, "trained")):
+        if sid_base in file and ".index" in file:
+            return file
+    return None
 
 
 def load_hubert(config):

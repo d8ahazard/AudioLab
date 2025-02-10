@@ -351,9 +351,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
         if setting == "All":
             return True
         if setting == "All Vocals":
-            return "Vocals)" in stem_name
+            return "vocals)" in stem_name.lower()
         if setting == "Main Vocals":
-            return "Vocals)" in stem_name and "(BG_Vocals)" not in stem_name
+            return "vocals)" in stem_name and "(bg_vocals)" not in stem_name.lower()
         return False
 
     @staticmethod
@@ -424,7 +424,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
     def _apply_transform_chain(self, stem_array, sr, base_name, stem_label, project_dir) -> np.ndarray:
         """ Applies a series of transformations (reverb, echo, etc.) to a stem array. """
         transformations = [
-            ("deverb_bs_roformer_8_384dim_10depth.ckpt", "No Reverb", self.reverb_removal),
+            ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", self.reverb_removal),
             (self.delay_removal_model, "No Echo", self.echo_removal),
             (self.delay_removal_model, "No Delay", self.delay_removal),
             (self.crowd_removal_model, "No Crowd", self.crowd_removal),

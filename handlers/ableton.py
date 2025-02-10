@@ -9,6 +9,7 @@ from handlers.config import output_path, app_path
 from util.audio_track import AudioTrack
 from util.data_classes import ProjectFiles
 
+
 def create_ableton_project(project: ProjectFiles, bpm: int = None):
     project_name = os.path.basename(project.project_dir)
     stems = project.last_outputs
@@ -88,6 +89,18 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
     clip_end = clip_start + track_length_secs
 
     # -------------------------------------------------------------------------
+    # Prepare global next pointee ID from <NextPointeeId> element or use a default
+    # -------------------------------------------------------------------------
+    next_pointee_node = live_set_elem.find("NextPointeeId")
+    if next_pointee_node is not None:
+        try:
+            global_next_pointee_id = int(next_pointee_node.get("Value", "0"))
+        except ValueError:
+            global_next_pointee_id = 1000
+    else:
+        global_next_pointee_id = 1000
+
+    # -------------------------------------------------------------------------
     # 5) BUILD & APPEND NEW AUDIO TRACKS
     # -------------------------------------------------------------------------
     for idx, stem_path in enumerate(stems):
@@ -100,7 +113,6 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
             crc_val = binascii.crc32(f.read()) & 0xFFFFFFFF
 
         track_id = next_id
-        warp_start_id = track_id + 100
         next_id += 1
 
         color_val = idx
@@ -108,9 +120,10 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
         effective_name = f"{idx + 1}-{track_basename_no_ext}"
         clip_name = track_basename_no_ext
 
+        # Pass the current global_next_pointee_id to the AudioTrack instance
         audio_track_obj = AudioTrack(
             track_id=track_id,
-            warp_start_id=warp_start_id,
+            next_pointee_id=global_next_pointee_id,
             effective_name=effective_name,
             clip_name=clip_name,
             color=color_val,
@@ -125,6 +138,8 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
         )
 
         track_elem = audio_track_obj.to_element()
+        # Update the global next pointee ID for subsequent tracks
+        global_next_pointee_id = audio_track_obj.next_pointee_id
         tracks_elem.append(track_elem)
 
     # Append the previously stored <ReturnTrack> elements at the end
@@ -132,7 +147,7 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
         tracks_elem.append(rt)
 
     # -------------------------------------------------------------------------
-    # 6) BUMP <NextPointeeId> TO AVOID “invalid pointee ID”
+    # 6) UPDATE <NextPointeeId> TO AVOID “invalid pointee ID”
     # -------------------------------------------------------------------------
     # Gather all numeric IDs in the entire <LiveSet>
     def gather_all_ids(elem, all_ids):
@@ -150,19 +165,14 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
     gather_all_ids(live_set_elem, all_ids)
     max_id_used = max(all_ids) if all_ids else 10
 
-    # Ensure <NextPointeeId Value="..."/> is >= max_id_used + 1
+    # Ensure <NextPointeeId Value="..."/> is at least the larger of our global next pointee ID
+    # and (max existing ID + 1)
+    new_next_pointee_val = max(global_next_pointee_id, max_id_used + 1)
     next_pointee_node = live_set_elem.find("NextPointeeId")
     if next_pointee_node is not None:
-        old_val_str = next_pointee_node.get("Value", "0")
-        try:
-            old_val_num = int(old_val_str)
-        except ValueError:
-            old_val_num = 0
-        new_val = max(old_val_num, max_id_used + 1)
-        next_pointee_node.set("Value", str(new_val))
+        next_pointee_node.set("Value", str(new_next_pointee_val))
     else:
-        new_val = max_id_used + 1
-        ET.SubElement(live_set_elem, "NextPointeeId", {"Value": str(new_val)})
+        ET.SubElement(live_set_elem, "NextPointeeId", {"Value": str(new_next_pointee_val)})
 
     # -------------------------------------------------------------------------
     # 7) PRETTY-PRINT & GZIP THE RESULTING XML AS .als
@@ -180,6 +190,27 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
         shutil.copyfileobj(f_in, f_out)
 
     os.remove(temp_xml_path)
+
+    # Copy res/Ableton Project Info folder into project
+    info_folder = os.path.join(app_path, "res", "Ableton Project Info")
+    shutil.copytree(info_folder, os.path.join(als_project_dir, "Ableton Project Info"), dirs_exist_ok=True)
+    desktop_ini_path = os.path.join(als_project_dir, "desktop.ini")
+
+    if os.name == 'nt' and not os.path.exists(desktop_ini_path):
+        try:
+            with open(desktop_ini_path, "w") as f:
+                f.write(
+                    "[.ShellClassInfo]\n"
+                    "ConfirmFileOp=0\n"
+                    "NoSharing=0\n"
+                    "IconResource=Ableton Project Info\\AProject.ico,0\n"
+                )
+            # Set desktop.ini file attributes to hidden and system
+            os.system(f'attrib +h +s "{desktop_ini_path}"')
+            # Mark the folder as a system folder so Windows uses the desktop.ini settings
+            os.system(f'attrib +s "{als_project_dir}"')
+        except:
+            pass
 
     print(f"Created Ableton project: {als_file_path}")
     return als_project_dir
