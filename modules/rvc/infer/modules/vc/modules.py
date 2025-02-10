@@ -273,20 +273,20 @@ class VC:
             # ----------------------------------------------------------------
             # (G) Apply Noise Removal (if enabled)
             # ----------------------------------------------------------------
-            if do_noise_removal:
-                if callback is not None:
-                    callback(self.global_step / self.total_steps, "Applying noise removal...", self.total_steps)
-                logger.info("Applying noise removal...")
-                from handlers.noise_removal import restore_silence
-                # Process each channel independently to ensure proper shape
-                if final_float.ndim == 1 or final_float.shape[1] == 1:
-                    final_float = restore_silence(mono_og, final_float.flatten()).reshape(-1, 1)
-                else:
-                    channels = []
-                    for ch in range(final_float.shape[1]):
-                        proc_channel = restore_silence(mono_og, final_float[:, ch])
-                        channels.append(proc_channel.reshape(-1, 1))
-                    final_float = np.concatenate(channels, axis=1)
+            # if do_noise_removal:
+            #     if callback is not None:
+            #         callback(self.global_step / self.total_steps, "Applying noise removal...", self.total_steps)
+            #     logger.info("Applying noise removal...")
+            #     from handlers.noise_removal import restore_silence
+            #     # Process each channel independently to ensure proper shape
+            #     if final_float.ndim == 1 or final_float.shape[1] == 1:
+            #         final_float = restore_silence(mono_og, final_float.flatten()).reshape(-1, 1)
+            #     else:
+            #         channels = []
+            #         for ch in range(final_float.shape[1]):
+            #             proc_channel = restore_silence(mono_og, final_float[:, ch])
+            #             channels.append(proc_channel.reshape(-1, 1))
+            #         final_float = np.concatenate(channels, axis=1)
 
             # ----------------------------------------------------------------
             # (I) Final Amplitude Scaling & Clipping

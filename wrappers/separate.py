@@ -201,7 +201,7 @@ class Separate(BaseWrapper):
             for proj, config in to_separate:
                 stem_dir = os.path.join(proj.project_dir, "stems")
                 os.makedirs(stem_dir, exist_ok=True)
-                if "(TTS)_" in proj.src_file:
+                if proj.src_file.startswith("TTS_"):
                     # Copy proj.src_file to stem_dir and append (Vocals) to the name
                     base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
                     new_name = f"{base_name}(Vocals){ext}"
@@ -235,7 +235,7 @@ class Separate(BaseWrapper):
 
             # For each project, move its outputs to its own stems folder and update cache.
             for base, (proj, config) in project_map.items():
-                if "(TTS)_" in proj.src_file:
+                if proj.src_file.startswith("TTS_"):
                     stem_dir = os.path.join(proj.project_dir, "stems")
                     base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
                     new_name = f"{base_name}(Vocals){ext}"
