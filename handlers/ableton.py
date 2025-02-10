@@ -15,7 +15,7 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
     stems = project.last_outputs
 
     # Prepare the Ableton project directory: /ableton/<project_name>/
-    als_project_dir = os.path.join(output_path, "ableton", project_name)
+    als_project_dir = os.path.join(project.project_dir, "export", "ableton", project_name)
     os.makedirs(als_project_dir, exist_ok=True)
 
     # Where we'll copy stems:

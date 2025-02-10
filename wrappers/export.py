@@ -35,19 +35,25 @@ def detect_bpm(audio_path: str, start_time: float = 0, end_time: float = None):
 def zip_folder(folder_path: str):
     """
     Optional helper to zip a folder.
+    The resulting zip archive will have the project folder (i.e. the base folder)
+    as the top-level directory in the archive.
     """
 
     def zipdir(path, ziph):
-        # ziph is zipfile handle
+        base_folder = os.path.basename(path)
         for root, dirs, files in os.walk(path):
             for file in files:
-                ziph.write(os.path.join(root, file))
+                abs_file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_file_path, start=path)
+                arcname = os.path.join(base_folder, rel_path)
+                ziph.write(abs_file_path, arcname)
 
     folder_base = os.path.basename(folder_path)
-    zipf = zipfile.ZipFile(f"{folder_base}.zip", "w", zipfile.ZIP_DEFLATED)
+    out_zip = os.path.join(os.path.dirname(folder_path), f"{folder_base}.zip")
+    zipf = zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED)
     zipdir(folder_path, zipf)
     zipf.close()
-    return f"{folder_base}.zip"
+    return out_zip
 
 
 class Export(BaseWrapper):
@@ -106,6 +112,7 @@ class Export(BaseWrapper):
                 print(f"Saved Reaper project to: {reaper_path}")
             last_outputs = project_file.last_outputs
             project_file.add_output("export", out_zip)
+            last_outputs.append(out_zip)
             project_file.last_outputs = last_outputs
 
         return inputs

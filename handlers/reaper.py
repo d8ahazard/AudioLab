@@ -11,7 +11,7 @@ def create_reaper_project(project: ProjectFiles, bpm: int = None):
     stems = project.last_outputs
 
     # Prepare the Reaper project directory: /reaper/<project_name>/
-    reaper_project_dir = os.path.join(output_path, "reaper", project_name)
+    reaper_project_dir = os.path.join(project.project_dir, "export", "reaper", project_name)
     os.makedirs(reaper_project_dir, exist_ok=True)
 
     # Prepare the Media folder where audio files will be stored
