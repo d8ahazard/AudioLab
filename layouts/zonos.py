@@ -128,7 +128,7 @@ def send_to_process(file_to_send, existing_inputs):
 
 def listen():
     process_inputs = arg_handler.get_element("main", "process_inputs")
-    if process_inputs:
+    if process_inputs and SEND_TO_PROCESS_BUTTON:
         SEND_TO_PROCESS_BUTTON.click(fn=send_to_process, inputs=[OUTPUT_AUDIO, process_inputs], outputs=process_inputs)
 
 
