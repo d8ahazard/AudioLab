@@ -355,10 +355,13 @@ class Pipeline(object):
     ):
         # Helper function to print peak volume in dB
         def _print_peak_volume_db(signal, step_name):
-            # Add a tiny offset in case signal is completely silent to avoid log10(0)
-            peak = np.max(np.abs(signal)) + 1e-10
-            db_val = 20.0 * np.log10(peak)
-            logger.info(f"{step_name} peak volume: {db_val:.2f} dB")
+            try:
+                # Add a tiny offset in case signal is completely silent to avoid log10(0)
+                peak = np.max(np.abs(signal)) + 1e-10
+                db_val = 20.0 * np.log10(peak)
+                logger.info(f"{step_name} peak volume: {db_val:.2f} dB")
+            except Exception as e:
+                pass
 
         if file_index != "" and os.path.exists(file_index) and index_rate != 0:
             try:
@@ -506,7 +509,7 @@ class Pipeline(object):
             )
 
         final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
-        #_print_peak_volume_db(final_seg, "After vc final seg")
+        _print_peak_volume_db(final_seg, "After vc final seg")
 
         audio_opt.append(final_seg)
         audio_opt = np.concatenate(audio_opt)
