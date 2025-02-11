@@ -20,16 +20,16 @@ def download_model():
     model_dir = os.path.join(model_path, "zonos")
     os.makedirs(model_dir, exist_ok=True)
     # Download config.json and model.pth
-    config_file = hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=model_dir)
-    model_file = hf_hub_download(repo_id=repo_id, filename="model.safetensors", local_dir=model_dir)
+    _ = hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=model_dir)
+    _ = hf_hub_download(repo_id=repo_id, filename="model.safetensors", local_dir=model_dir)
     return model_dir
 
 
 def download_speaker_model():
     model_dir = os.path.join(model_path, "zonos")
-    spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+    _ = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
                                      filename="ResNet293_SimAM_ASP_base.pt", local_dir=model_dir)
-    lda_spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+    _ = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
                                          filename="ResNet293_SimAM_ASP_base_LDA-128.pt", local_dir=model_dir)
     return model_dir
 
@@ -63,9 +63,13 @@ def render_zonos():
             # Process each sentence
             for sentence in sentences:
                 if sentence:
+                    words = sentence.split()
+                    # Compute max_tokens dynamically based on word count.
+                    # Assuming 75 words ~ 30 seconds (~5160 tokens), so tokens_per_word ≈ 68.8.
+                    tokens_per_word = 68.8
+                    max_tokens = int(tokens_per_word * len(words))
                     cond_dict = make_cond_dict(text=sentence, speaker=speaker, language="en-us")
                     conditioning = zonos_model.prepare_conditioning(cond_dict)
-                    max_tokens = 86 * 30 * 2
                     codes = zonos_model.generate(conditioning, max_new_tokens=max_tokens)
                     wavs = zonos_model.autoencoder.decode(codes).cpu()
                     audio_segments.append(wavs[0])
