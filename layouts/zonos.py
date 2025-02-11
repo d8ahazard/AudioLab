@@ -56,31 +56,71 @@ def render_zonos():
             s_path = download_speaker_model()
             speaker = zonos_model.make_speaker_embedding(wav, sampling_rate, s_path)
 
-            # Split the input text into sentences (splitting on punctuation)
+            # Split input text into sentences using punctuation as delimiters
             sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-            audio_segments = []
 
-            # Process each sentence
+            # Group sentences into chunks that approach the max token limit.
+            # Here we assume a maximum of 86*30 tokens per chunk.
+            max_chunk_tokens = 86 * 30  # maximum tokens per chunk
+            tokens_per_word = 68.8  # assumed tokens per word (from previous calibration)
+            chunks = []
+            current_chunk = []
+            current_chunk_tokens = 0
+
             for sentence in sentences:
-                if sentence:
-                    words = sentence.split()
-                    # Compute max_tokens dynamically based on word count.
-                    # Assuming 75 words ~ 30 seconds (~5160 tokens), so tokens_per_word ≈ 68.8.
-                    tokens_per_word = 68.8
-                    max_tokens = int(tokens_per_word * len(words))
-                    cond_dict = make_cond_dict(text=sentence, speaker=speaker, language="en-us")
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                sentence_tokens = int(tokens_per_word * len(sentence.split()))
+                # If a single sentence exceeds the max, process it on its own.
+                if sentence_tokens >= max_chunk_tokens:
+                    if current_chunk:
+                        chunks.append(" ".join(current_chunk))
+                        current_chunk = []
+                        current_chunk_tokens = 0
+                    chunks.append(sentence)
+                else:
+                    if current_chunk_tokens + sentence_tokens <= max_chunk_tokens:
+                        current_chunk.append(sentence)
+                        current_chunk_tokens += sentence_tokens
+                    else:
+                        chunks.append(" ".join(current_chunk))
+                        current_chunk = [sentence]
+                        current_chunk_tokens = sentence_tokens
+            if current_chunk:
+                chunks.append(" ".join(current_chunk))
+
+            audio_segments = []
+            # Process each chunk, appending a silence pause between chunks.
+            for idx, chunk in enumerate(chunks):
+                if chunk:
+                    words = chunk.split()
+                    chunk_max_tokens = int(tokens_per_word * len(words))
+                    cond_dict = make_cond_dict(text=chunk, speaker=speaker, language="en-us")
                     conditioning = zonos_model.prepare_conditioning(cond_dict)
-                    codes = zonos_model.generate(conditioning, max_new_tokens=max_tokens)
+                    codes = zonos_model.generate(conditioning, max_new_tokens=chunk_max_tokens)
                     wavs = zonos_model.autoencoder.decode(codes).cpu()
                     audio_segments.append(wavs[0])
+                    # Insert a pause after this chunk unless it's the last one.
+                    if idx < len(chunks) - 1:
+                        # We want a final pause of 0.3s regardless of speed.
+                        # Since the entire audio will later be sped up by `speed`,
+                        # we insert silence of duration (0.3 * speed) seconds.
+                        base_pause = 0.3  # desired final pause in seconds
+                        pause_duration = base_pause * speed  # inserted duration in seconds
+                        sr = zonos_model.autoencoder.sampling_rate
+                        num_pause_samples = int(sr * pause_duration)
+                        # Create silence with the same number of channels as the generated audio.
+                        silence = torch.zeros(wavs[0].shape[0], num_pause_samples)
+                        audio_segments.append(silence)
 
             if not audio_segments:
-                return "Error: No valid sentences found in input text."
+                return "Error: No valid text chunks to process."
 
             # Concatenate all audio segments along the time dimension (dim=1)
             combined_audio = torch.cat(audio_segments, dim=1)
 
-            # If speed is not default, adjust the audio speed using sox effects.
+            # Apply speed adjustment if needed; this will scale both the speech and the inserted pauses.
             if speed != 1.0:
                 effects = [
                     ["speed", str(speed)],
