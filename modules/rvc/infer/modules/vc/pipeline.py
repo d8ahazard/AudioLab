@@ -353,6 +353,13 @@ class Pipeline(object):
             protect,
             f0_file,
     ):
+        # Helper function to print peak volume in dB
+        def _print_peak_volume_db(signal, step_name):
+            # Add a tiny offset in case signal is completely silent to avoid log10(0)
+            peak = np.max(np.abs(signal)) + 1e-10
+            db_val = 20.0 * np.log10(peak)
+            logger.info(f"{step_name} peak volume: {db_val:.2f} dB")
+
         if file_index != "" and os.path.exists(file_index) and index_rate != 0:
             try:
                 if not check_faiss_index_file(file_index):
@@ -364,8 +371,13 @@ class Pipeline(object):
                 index = big_npy = None
         else:
             index = big_npy = None
+
         og_audio = audio
+
+        # 1) First modification: filtfilt
         audio = signal.filtfilt(bh, ah, audio)
+        _print_peak_volume_db(audio, "After filtfilt")
+
         audio_pad = np.pad(audio, (self.window // 2, self.window // 2), mode="reflect")
         opt_ts = []
         if audio_pad.shape[0] > self.t_max:
@@ -397,6 +409,7 @@ class Pipeline(object):
                 inp_f0 = np.array(inp_f0, dtype="float32")
             except:
                 traceback.print_exc()
+
         sid_tensor = torch.tensor(sid, device=self.device).unsqueeze(0).long()
         pitch, pitchf = None, None
         if if_f0 == 1:
@@ -415,13 +428,15 @@ class Pipeline(object):
                 pitchf = pitchf.astype(np.float32)
             pitch = torch.tensor(pitch, device=self.device).unsqueeze(0).long()
             pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
+
         t2 = ttime()
         times[1] += t2 - t1
 
-        for t in opt_ts:
+        # 2) Process all segments except the final chunk
+        for idx, t in enumerate(opt_ts):
             t = t // self.window * self.window
             seg_base = audio_pad[s: t + self.t_pad2 + self.window]
-
+            _print_peak_volume_db(seg_base, f"Before vc seg chunk #{idx}")
             if if_f0 == 1:
                 seg = self.vc(
                     model,
@@ -437,7 +452,6 @@ class Pipeline(object):
                     version,
                     protect,
                 )
-                seg = seg[self.t_pad_tgt: -self.t_pad_tgt]
             else:
                 seg = self.vc(
                     model,
@@ -453,11 +467,13 @@ class Pipeline(object):
                     version,
                     protect,
                 )
-                seg = seg[self.t_pad_tgt: -self.t_pad_tgt]
+            seg = seg[self.t_pad_tgt: -self.t_pad_tgt]
+            _print_peak_volume_db(seg, f"After vc seg chunk #{idx}")
+
             audio_opt.append(seg)
             s = t
 
-        # Final chunk
+        # 3) Final chunk
         if if_f0 == 1:
             final_seg = self.vc(
                 model,
@@ -473,7 +489,6 @@ class Pipeline(object):
                 version,
                 protect,
             )
-            final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
         else:
             final_seg = self.vc(
                 model,
@@ -489,35 +504,49 @@ class Pipeline(object):
                 version,
                 protect,
             )
-            final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
+
+        final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
+        _print_peak_volume_db(final_seg, "After vc final seg")
 
         audio_opt.append(final_seg)
         audio_opt = np.concatenate(audio_opt)
+        _print_peak_volume_db(audio_opt, "After concatenating all segments")
+
+        # 4) Possibly change RMS
         if rms_mix_rate != 1:
             audio_opt = change_rms(audio, 16000, audio_opt, tgt_sr, rms_mix_rate)
+            _print_peak_volume_db(audio_opt, "After change_rms")
 
+        # 5) Restore silence if needed
         if len(audio_opt) != len(og_audio):
             og_audio_resampled = librosa.resample(
                 og_audio, orig_sr=self.sr, target_sr=(len(audio_opt) / len(og_audio)) * self.sr
             )
             logger.info(f"Resampled OG audio to match output length: {len(og_audio_resampled)}")
             audio_opt = restore_silence(og_audio_resampled, audio_opt)
+            _print_peak_volume_db(audio_opt, "After restore_silence (resampled OG)")
         else:
             audio_opt = restore_silence(og_audio, audio_opt)
+            _print_peak_volume_db(audio_opt, "After restore_silence")
 
+        # 6) Resample to final sample rate if needed
         if tgt_sr != resample_sr >= 16000:
             audio_opt = librosa.resample(audio_opt, orig_sr=tgt_sr, target_sr=resample_sr)
+            _print_peak_volume_db(audio_opt, "After final resample")
 
+        # 7) Convert to int16
         audio_max = np.abs(audio_opt).max() / 0.99
         max_int16 = 32768
         if audio_max > 1:
             logger.info("Warning: audio_max > 1")
             max_int16 /= audio_max
         audio_opt = (audio_opt * max_int16).astype(np.int16)
+        _print_peak_volume_db(audio_opt, "After float->int16 conversion")
 
         del pitch, pitchf, sid_tensor
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
         return audio_opt
 
     def pipeline(

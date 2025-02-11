@@ -193,7 +193,6 @@ class Separate(BaseWrapper):
 
         # Second pass: Process all projects needing separation together.
         if to_separate:
-
             # Gather input files and map them by base name.
             input_files = []
             input_dict = {}
@@ -201,13 +200,14 @@ class Separate(BaseWrapper):
             for proj, config in to_separate:
                 stem_dir = os.path.join(proj.project_dir, "stems")
                 os.makedirs(stem_dir, exist_ok=True)
-                if proj.src_file.startswith("TTS_"):
+                if os.path.basename(proj.src_file).startswith("TTS_"):
                     # Copy proj.src_file to stem_dir and append (Vocals) to the name
                     base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
                     new_name = f"{base_name}(Vocals){ext}"
                     new_path = os.path.join(stem_dir, new_name)
                     if not os.path.exists(new_path):
                         shutil.copyfile(proj.src_file, new_path)
+                    project_map[base_name] = (proj, config)
                     continue
                 if stem_dir not in input_dict:
                     input_dict[stem_dir] = []
@@ -235,7 +235,7 @@ class Separate(BaseWrapper):
 
             # For each project, move its outputs to its own stems folder and update cache.
             for base, (proj, config) in project_map.items():
-                if proj.src_file.startswith("TTS_"):
+                if os.path.basename(proj.src_file).startswith("TTS_"):
                     stem_dir = os.path.join(proj.project_dir, "stems")
                     base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
                     new_name = f"{base_name}(Vocals){ext}"

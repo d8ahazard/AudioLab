@@ -190,7 +190,7 @@ class VC:
             logger.info(f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}")
 
             # Normalize if necessary
-            audio_float /= max(1.0, np.abs(audio_float).max() / 0.95)
+            #audio_float /= max(1.0, np.abs(audio_float).max() / 0.95)
 
             # ----------------------------------------------------------------
             # (B) Handle Stereo -> Mono conversion (Mid-Side Encoding)

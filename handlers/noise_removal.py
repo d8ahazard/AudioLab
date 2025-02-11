@@ -21,10 +21,10 @@ def restore_silence(original_audio, processed, silence_threshold=0.001, frame_si
 
         if np.max(np.abs(og_frame)) < silence_threshold:
             new_opt[start:end] = 0.0
-        else:
-            og_rms = np.sqrt(np.mean(og_frame ** 2)) + 1e-8
-            proc_rms = np.sqrt(np.mean(proc_frame ** 2)) + 1e-8
-            scale = og_rms / proc_rms
-            new_opt[start:end] = proc_frame * scale
+        # else:
+        #     og_rms = np.sqrt(np.mean(og_frame ** 2)) + 1e-8
+        #     proc_rms = np.sqrt(np.mean(proc_frame ** 2)) + 1e-8
+        #     scale = og_rms / proc_rms
+        #     new_opt[start:end] = proc_frame * scale
 
     return new_opt

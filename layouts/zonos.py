@@ -133,14 +133,13 @@ def render_zonos():
 
                 if pre_text:
                     chunks_with_emotion.append((pre_text, current_emotion_str))
-
                 if bracket_emo in EMOTION_MAP:
                     current_emotion_str = bracket_emo
-
                 chunk_buffer = post_text
 
         flush_chunk(chunk_buffer, current_emotion_str)
 
+        # Optionally split each chunk by word-limit
         final_chunks = []
         chunk_word_limit = 75
         for txt, emo in chunks_with_emotion:
@@ -162,9 +161,12 @@ def render_zonos():
 
     def run_tts(language, emotion_choice, text, speaker_sample, speed, progress=gr.Progress(track_tqdm=True)):
         import time
-        import torchaudio
-        import torch
         import logging
+        import torch
+        import torchaudio
+        from pydub import AudioSegment, effects  # <-- for compression & normalization
+        import numpy as np
+
         from modules.zonos.conditioning import make_cond_dict
         from modules.zonos.model import Zonos
 
@@ -172,32 +174,30 @@ def render_zonos():
         global zonos_model, speaker_sample_file
 
         try:
+            # 1) Load Zonos model
             if not zonos_model:
                 z_path = download_model()
                 zonos_model = Zonos.from_pretrained(z_path, device="cuda")
 
+            # 2) Load speaker sample -> speaker embedding
             logger.info("Loading speaker sample...")
             wav, sampling_rate = torchaudio.load(speaker_sample)
             s_path = download_speaker_model()
-            logger.info("Computing speaker embedding...")
             speaker = zonos_model.make_speaker_embedding(wav, sampling_rate, s_path)
 
+            # 3) Parse text into chunks
             chunks = _parse_text_and_emotions(text, emotion_choice)
-            logger.info(f"Prepared {len(chunks)} chunk(s) after bracket parsing")
+            logger.info(f"Prepared {len(chunks)} chunk(s).")
 
-            max_new_tokens = 86 * 30
             sr = zonos_model.autoencoder.sampling_rate
-
+            max_new_tokens = 86 * 30
             audio_segments = []
-            ref_peak_amplitude = None
 
-            # Generate audio for each parsed chunk
+            # 4) Generate each chunk -> store as [samples]
             for idx, (chunk_text, chunk_emotion) in enumerate(chunks):
                 if not chunk_text:
-                    logger.warning("Skipping empty chunk!")
                     continue
-
-                logger.info(f"Generating chunk {idx+1}/{len(chunks)}: {chunk_text[:60]}...")
+                logger.info(f"Generating chunk {idx+1}/{len(chunks)}: {chunk_text[:60]}")
                 cond_dict = make_cond_dict(
                     text=chunk_text,
                     speaker=speaker,
@@ -207,62 +207,52 @@ def render_zonos():
                 conditioning = zonos_model.prepare_conditioning(cond_dict)
                 codes = zonos_model.generate(conditioning, max_new_tokens=max_new_tokens)
                 wavs = zonos_model.autoencoder.decode(codes).cpu()
-
                 if wavs.shape[-1] == 0:
-                    logger.warning("Zero-length chunk, skipping.")
                     continue
-
-                current_chunk = wavs[0]  # shape [time]
-                current_peak = current_chunk.abs().max().item()
-
-                if current_peak > 0:
-                    if ref_peak_amplitude is None:
-                        ref_peak_amplitude = current_peak
-                    else:
-                        scale_factor = ref_peak_amplitude / current_peak
-                        current_chunk *= scale_factor
-
-                audio_segments.append(current_chunk)
+                audio_segments.append(wavs[0])  # shape [samples]
 
             if not audio_segments:
-                return "Error: Could not generate audio from any chunks."
+                return "Error: No chunks generated."
 
-            # Concatenate all segments => shape [time]
+            # 5) Concatenate => final_audio [samples]
             final_audio = torch.cat(audio_segments, dim=-1)
 
-            # (A) Give VAD a 2D input => [channels=1, time]
-            final_audio = final_audio.unsqueeze(0)  # => [1, time]
+            # 6) (Optional) Apply VAD to remove large leading/trailing silence
+            # -> shape [1, time]
+            final_audio = final_audio.unsqueeze(0)
             final_audio = torchaudio.functional.vad(final_audio, sr)
-            # Some torchaudio versions return shape [batch, channels, time] (i.e. 3D).
-            # We'll force-squeeze any leading dimension if it happens:
+            # Some versions produce [batch, channels, time], forcibly squeeze
             while final_audio.dim() > 2:
                 final_audio = final_audio.squeeze(0)
-            # Now final_audio should be [1, time].
+            # => [1, time]
 
-            # (B) Optional final normalization to -1 dB
-            peak_val = final_audio.abs().max().item()
-            if peak_val > 0:
-                desired_linear = 10 ** (-1.0 / 20)  # -1 dB
-                scale = desired_linear / peak_val
-                if scale < 1.0:
-                    final_audio *= scale
+            # Convert to pydub AudioSegment => we can do cross‐platform compression & normalization
+            # final_audio is shape [1, samples], so .squeeze(0) => [samples]
+            samples = final_audio.squeeze(0).numpy()  # float32 or float64
+            # Convert from -1..1 float to 16-bit PCM
+            samples_int16 = (samples * 32767.0).astype(np.int16)
 
-            # (C) Speed transformations can also add dims => re-squeeze after
+            seg = AudioSegment(
+                samples_int16.tobytes(),
+                frame_rate=sr,
+                sample_width=2,   # 16-bit => 2 bytes
+                channels=1
+            )
+
+            # 7) Use pydub to compress + normalize
+            # compress_dynamic_range defaults to threshold=-20 dB, ratio=4:1, etc.
+            seg = effects.compress_dynamic_range(seg, threshold=-25.0, ratio=3.0, attack=5.0, release=50.0)
+            # Then normalize to 0 dBFS peak
+            seg = effects.normalize(seg)
+
+            # 8) Apply speed if requested (note: speedup also shifts pitch)
             if speed != 1.0:
-                effects = [
-                    ["speed", str(speed)],
-                    ["rate", str(sr)]
-                ]
-                final_audio, _ = torchaudio.sox_effects.apply_effects_tensor(final_audio, sr, effects)
-                # Potentially [1, time] or [batch, channel, time].
-                while final_audio.dim() > 2:
-                    final_audio = final_audio.squeeze(0)
-                # Ensure [1, time] again.
+                seg = effects.speedup(seg, playback_speed=float(speed))
 
-            # final_audio is [1, time], 2D => valid for torchaudio.save
+            # 9) Export final cross‐platform
             out_file = os.path.join(output_path, "zonos", f"ZONOS_{int(time.time())}.wav")
             os.makedirs(os.path.dirname(out_file), exist_ok=True)
-            torchaudio.save(out_file, final_audio, sr)
+            seg.export(out_file, format="wav")
 
             return gr.update(value=out_file)
 
@@ -270,6 +260,7 @@ def render_zonos():
             logger.exception("Error in run_tts:")
             return f"Error: {str(e)}"
 
+    # -- The rest of your gradio UI code remains unchanged --
     with gr.Blocks() as tts:
         gr.Markdown("## Zonos Text to Speech")
 
@@ -337,6 +328,7 @@ def render_zonos():
         )
 
     return tts
+
 
 
 def send_to_process(file_to_send, existing_inputs):
