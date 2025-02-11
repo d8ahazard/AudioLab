@@ -37,13 +37,13 @@ _symbol_to_id = {s: i for i, s in enumerate(symbols, start=len(SPECIAL_TOKEN_IDS
 
 class Conditioner(nn.Module):
     def __init__(
-        self,
-        output_dim: int,
-        name: str,
-        cond_dim: int | None = None,
-        projection: Literal["none", "linear", "mlp"] = "none",
-        uncond_type: Literal["learned", "none"] = "none",
-        **kwargs,
+            self,
+            output_dim: int,
+            name: str,
+            cond_dim: int | None = None,
+            projection: Literal["none", "linear", "mlp"] = "none",
+            uncond_type: Literal["learned", "none"] = "none",
+            **kwargs,
     ):
         super().__init__()
         self.name = name
@@ -142,8 +142,6 @@ def normalize_numbers(text: str) -> str:
 # --- Number normalization code end ---
 
 
-
-
 def _get_symbol_id(s: str) -> int:
     return _symbol_to_id.get(s, 1)
 
@@ -233,13 +231,13 @@ class EspeakPhonemeConditioner(Conditioner):
 
 class FourierConditioner(Conditioner):
     def __init__(
-        self,
-        output_dim: int,
-        input_dim: int = 1,
-        std: float = 1.0,
-        min_val: float = 0.0,
-        max_val: float = 1.0,
-        **kwargs,
+            self,
+            output_dim: int,
+            input_dim: int = 1,
+            std: float = 1.0,
+            min_val: float = 0.0,
+            max_val: float = 1.0,
+            **kwargs,
     ):
         assert output_dim % 2 == 0
         super().__init__(output_dim, **kwargs)
@@ -318,57 +316,57 @@ supported_language_codes = [
     'vi-vn-x-central', 'vi-vn-x-south', 'yue'
 ]
 
+
 def make_cond_dict(
-    text: str = "It would be nice to have time for testing, indeed.",
-    language: str = "en-us",
-    speaker: torch.Tensor | None = None,
-    emotion: torch.Tensor | None = None,
-    fmax: float = 22050.0,
-    pitch_std: float = 20.0,
-    speaking_rate: float = 15.0,
-    vqscore_8: torch.Tensor | None = None,
-    ctc_loss: float = 0.0,
-    dnsmos_ovrl: float = 4.0,
-    speaker_noised: bool = False,
-    unconditional_keys: Iterable[str] = {"vqscore_8", "dnsmos_ovrl"},
-    device: str = "cuda",
-    speaker_dim: int = 128,
+        text: str = "It would be nice to have time for testing, indeed.",
+        language: str = "en-us",
+        speaker: torch.Tensor | None = None,
+        emotion=None,
+        fmax: float = 22050.0,
+        pitch_std: float = 20.0,
+        speaking_rate: float = 15.0,
+        vqscore_8=None,
+        ctc_loss: float = 0.0,
+        dnsmos_ovrl: float = 4.0,
+        speaker_noised: bool = False,
+        unconditional_keys=None,
+        device: str = "cuda",
 ) -> dict:
     """
     A helper to build the 'cond_dict' that the model expects.
     By default, it will generate a random speaker embedding
     """
+    if unconditional_keys is None:
+        unconditional_keys = {"vqscore_8", "dnsmos_ovrl"}
+    if vqscore_8 is None:
+        vqscore_8 = [0.78] * 8
+    if emotion is None:
+        emotion = [0.3077, 0.0256, 0.0256, 0.0256, 0.0256, 0.0256, 0.2564, 0.3077]
     assert language.lower() in supported_language_codes, "Please pick a supported language"
 
     language_code_to_id = {lang: i for i, lang in enumerate(supported_language_codes)}
-
-    if speaker is None:
-        speaker = (3.0 * torch.randn((1, 1, speaker_dim), device=device)).unsqueeze(0).to(torch.bfloat16)
-
-    if emotion is None:
-        emotion = torch.tensor(
-            [[0.3077, 0.0256, 0.0256, 0.0256, 0.0256, 0.0256, 0.2564, 0.3077]],
-            device=device,
-        )
-
-    if vqscore_8 is None:
-        vqscore_8 = torch.tensor([0.78] * 8, device=device).view(1, 8)
 
     cond_dict = {
         "espeak": ([text], [language]),
         "speaker": speaker,
         "emotion": emotion,
-        "fmax": torch.tensor([[fmax]], device=device),
-        "pitch_std": torch.tensor([[pitch_std]], device=device),
-        "speaking_rate": torch.tensor([[speaking_rate]], device=device),
-        "language_id": torch.tensor([language_code_to_id[language]], device=device),
+        "fmax": fmax,
+        "pitch_std": pitch_std,
+        "speaking_rate": speaking_rate,
+        "language_id": language_code_to_id[language],
         "vqscore_8": vqscore_8,
-        "ctc_loss": torch.tensor([[ctc_loss]], device=device),
-        "dnsmos_ovrl": torch.tensor([[dnsmos_ovrl]], device=device),
-        "speaker_noised": torch.tensor([[int(speaker_noised)]], device=device),
+        "ctc_loss": ctc_loss,
+        "dnsmos_ovrl": dnsmos_ovrl,
+        "speaker_noised": int(speaker_noised),
     }
-    for k in cond_dict:
-        if k != "espeak" and k != "speaker":
-            cond_dict[k] = cond_dict[k].unsqueeze(0).unsqueeze(0)
+    for k in unconditional_keys:
+        cond_dict.pop(k, None)
+    for k, v in cond_dict.items():
+        if isinstance(v, (float, int, list)):
+            v = torch.tensor(v)
+        if isinstance(v, torch.Tensor):
+            cond_dict[k] = v.view(1, 1, -1).to(device)
+        if k == "emotion":
+            cond_dict[k] /= cond_dict[k].sum(dim=-1)
 
     return cond_dict

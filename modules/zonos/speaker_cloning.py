@@ -11,12 +11,12 @@ from huggingface_hub import hf_hub_download
 
 class logFbankCal(nn.Module):
     def __init__(
-            self,
-            sample_rate: int = 16_000,
-            n_fft: int = 512,
-            win_length: float = 0.025,
-            hop_length: float = 0.01,
-            n_mels: int = 80,
+        self,
+        sample_rate: int = 16_000,
+        n_fft: int = 512,
+        win_length: float = 0.025,
+        hop_length: float = 0.01,
+        n_mels: int = 80,
     ):
         super().__init__()
         self.fbankCal = torchaudio.transforms.MelSpectrogram(
@@ -197,13 +197,13 @@ def ResNet293(in_planes: int, **kwargs):
 
 class ResNet293_based(nn.Module):
     def __init__(
-            self,
-            in_planes: int = 64,
-            embd_dim: int = 256,
-            acoustic_dim: int = 80,
-            featCal=None,
-            dropout: float = 0,
-            **kwargs,
+        self,
+        in_planes: int = 64,
+        embd_dim: int = 256,
+        acoustic_dim: int = 80,
+        featCal=None,
+        dropout: float = 0,
+        **kwargs,
     ):
         super(ResNet293_based, self).__init__()
         self.featCal = featCal

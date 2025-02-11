@@ -1,12 +1,14 @@
 import json
 import os
+from typing import Callable
 
+import safetensors
 import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
 from mamba_ssm.utils.generation import InferenceParams
 from safetensors.torch import load_model
-from tqdm import trange
+from tqdm import trange, tqdm
 
 from modules.zonos.autoencoder import DACAutoencoder
 from modules.zonos.backbone import ZonosBackbone
@@ -54,12 +56,18 @@ class Zonos(nn.Module):
     @classmethod
     def from_local(cls, config_path: str, model_path: str, device: str = "cuda") -> "Zonos":
         config = ZonosConfig.from_dict(json.load(open(config_path)))
-        with torch.device(device):
-            model = cls(config)
-        load_model(model, model_path, device=device)
-        return model.bfloat16()
+        model = cls(config).to(device, torch.bfloat16)
+        model.autoencoder.dac.to(device)
 
-    def make_speaker_embedding(self, wav: torch.Tensor, sr: int, s_path: str) -> torch.Tensor:
+        sd = model.state_dict()
+        with safetensors.safe_open(model_path, framework="pt") as f:
+            for k in f.keys():
+                sd[k] = f.get_tensor(k)
+        model.load_state_dict(sd)
+
+        return model
+
+    def make_speaker_embedding(self, wav: torch.Tensor, sr: int, s_path) -> torch.Tensor:
         """Generate a speaker embedding from an audio clip."""
         if self.spk_clone_model is None:
             self.spk_clone_model = SpeakerEmbeddingLDA()
@@ -73,7 +81,7 @@ class Zonos(nn.Module):
         return torch.stack([head(hidden_states) for head in self.heads], dim=1)
 
     def _compute_logits(
-        self, hidden_states: torch.Tensor, inference_params: InferenceParams, cfg_scale: float
+            self, hidden_states: torch.Tensor, inference_params: InferenceParams, cfg_scale: float
     ) -> torch.Tensor:
         """
         Pass `hidden_states` into `backbone` and `multi_head`, applying
@@ -87,10 +95,10 @@ class Zonos(nn.Module):
         return logits
 
     def _decode_one_token(
-        self,
-        input_ids: torch.Tensor,
-        inference_params: InferenceParams,
-        cfg_scale: float,
+            self,
+            input_ids: torch.Tensor,
+            inference_params: InferenceParams,
+            cfg_scale: float,
     ) -> torch.Tensor:
         """
         Single-step decode. Prepares the hidden states, possibly replicates them
@@ -144,11 +152,11 @@ class Zonos(nn.Module):
         return self._cg_logits
 
     def _prefill(
-        self,
-        prefix_hidden_states: torch.Tensor,
-        input_ids: torch.Tensor,
-        inference_params: InferenceParams,
-        cfg_scale: float,
+            self,
+            prefix_hidden_states: torch.Tensor,
+            input_ids: torch.Tensor,
+            inference_params: InferenceParams,
+            cfg_scale: float,
     ) -> torch.Tensor:
         """
         "Prefill" mode: we already have `prefix_hidden_states`, and we want
@@ -178,30 +186,30 @@ class Zonos(nn.Module):
             ]
         )
 
-    def _disallow_cb_not_zero_eos(self, logits):
-        eos_bias = torch.zeros_like(logits)
-        eos_bias[:, 1:, self.eos_token_id] = -1e9
-        return logits + eos_bias
-
     @torch.inference_mode()
     def generate(
-        self,
-        prefix_conditioning: torch.Tensor,  # [bsz, cond_seq_len, d_model]
-        audio_prefix_codes: torch.Tensor | None = None,  # [bsz, 9, prefix_audio_seq_len]
-        max_new_tokens: int = 86 * 30,
-        cfg_scale: float = 2.0,
-        batch_size: int = 1,
-        sampling_params: dict = dict(min_p=0.1),
+            self,
+            prefix_conditioning: torch.Tensor,  # [bsz, cond_seq_len, d_model]
+            audio_prefix_codes: torch.Tensor | None = None,  # [bsz, 9, prefix_audio_seq_len]
+            max_new_tokens: int = 86 * 30,
+            cfg_scale: float = 2.0,
+            batch_size: int = 1,
+            sampling_params=None,
+            progress_bar: bool = True,
+            callback: Callable[[torch.Tensor, int, int], bool] | None = None,
     ):
+        if sampling_params is None:
+            sampling_params = dict(min_p=0.1)
         assert cfg_scale != 1, "TODO: add support for cfg_scale=1"
         prefix_audio_len = 0 if audio_prefix_codes is None else audio_prefix_codes.shape[2]
 
         unknown_token = -1
-        seq_len = prefix_conditioning.shape[1] + prefix_audio_len + max_new_tokens
+        audio_seq_len = prefix_audio_len + max_new_tokens
+        seq_len = prefix_conditioning.shape[1] + audio_seq_len
 
         inference_params = self.setup_cache(batch_size=batch_size * 2, max_seqlen=seq_len)
 
-        codes = torch.full((batch_size, 9, seq_len), unknown_token, device="cuda")
+        codes = torch.full((batch_size, 9, audio_seq_len), unknown_token, device="cuda")
         if audio_prefix_codes is not None:
             codes[..., :prefix_audio_len] = audio_prefix_codes
 
@@ -213,25 +221,53 @@ class Zonos(nn.Module):
         next_token = sample_from_logits(logits, **sampling_params)
 
         offset = delayed_prefix_audio_codes.shape[2]
-        frame = delayed_codes[..., offset : offset + 1]
+        frame = delayed_codes[..., offset: offset + 1]
         frame.masked_scatter_(frame == unknown_token, next_token)
 
         prefix_length = prefix_conditioning.shape[1] + prefix_audio_len + 1
         inference_params.seqlen_offset += prefix_length
         inference_params.lengths_per_sample[:] += prefix_length
 
-        for offset in trange(offset + 1, delayed_codes.shape[2]):
-            input_ids = delayed_codes[..., offset - 1 : offset]
-            logits = self._decode_one_token(input_ids, inference_params, cfg_scale)
-            logits = self._disallow_cb_not_zero_eos(logits)
-            next_token = sample_from_logits(logits, generated_tokens=delayed_codes[..., :offset], **sampling_params)
-            if offset > 8 and (next_token == self.eos_token_id).any():
-                break
+        logit_bias = torch.zeros_like(logits)
+        logit_bias[:, 1:, self.eos_token_id] = -torch.inf  # only allow codebook 0 to predict EOS
 
-            frame = delayed_codes[..., offset : offset + 1]
+        stopping = torch.zeros(batch_size, dtype=torch.bool, device="cuda")
+        max_steps = delayed_codes.shape[2] - offset
+        remaining_steps = torch.full((batch_size,), max_steps, device="cuda")
+        progress = tqdm(total=max_steps, desc="Generating", disable=not progress_bar)
+
+        step = 0
+        while torch.max(remaining_steps) > 0:
+            offset += 1
+            input_ids = delayed_codes[..., offset - 1: offset]
+            logits = self._decode_one_token(input_ids, inference_params, cfg_scale)
+
+            next_token = sample_from_logits(logits, generated_tokens=delayed_codes[..., :offset], **sampling_params)
+            eos_in_cb0 = next_token[:, 0] == self.eos_token_id
+
+            remaining_steps[eos_in_cb0[:, 0]] = torch.minimum(remaining_steps[eos_in_cb0[:, 0]], torch.tensor(9))
+            stopping |= eos_in_cb0[:, 0]
+
+            eos_codebook_idx = 9 - remaining_steps
+            eos_codebook_idx = torch.clamp(eos_codebook_idx, max=9 - 1)
+            for i in range(next_token.shape[0]):
+                if stopping[i]:
+                    idx = eos_codebook_idx[i].item()
+                    next_token[i, :idx] = self.masked_token_id
+                    next_token[i, idx] = self.eos_token_id
+
+            frame = delayed_codes[..., offset: offset + 1]
             frame.masked_scatter_(frame == unknown_token, next_token)
             inference_params.seqlen_offset += 1
             inference_params.lengths_per_sample[:] += 1
+
+            remaining_steps -= 1
+
+            progress.update()
+            step += 1
+
+            if callback is not None and not callback(frame, step, max_steps):
+                break
 
         out_codes = revert_delay_pattern(delayed_codes)
         out_codes.masked_fill_(out_codes >= 1024, 0)
