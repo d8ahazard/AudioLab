@@ -20,6 +20,7 @@ from handlers.config import model_path, output_path
 from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
 from layouts.music import render as render_music, register_descriptions as music_register_descriptions, listen as music_listen
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
+from layouts.zonos import render_zonos, register_descriptions as zonos_register_descriptions, listen as zonos_listen
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 import logging
@@ -272,6 +273,7 @@ if __name__ == '__main__':
     music_register_descriptions(arg_handler)
     tts_register_descriptions(arg_handler)
     rvc_register_descriptions(arg_handler)
+    zonos_register_descriptions(arg_handler)
 
     with open(project_root / 'css' / 'ui.css', 'r') as css_file:
         css = css_file.read()
@@ -285,6 +287,8 @@ if __name__ == '__main__':
 
     with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue") as ui:
         with gr.Tabs(selected="process"):
+            with gr.Tab(label='Zonos', id="zonos"):
+                render_zonos()
             with gr.Tab(label='TTS', id="tts"):
                 render_tts()
             with gr.Tab(label="Music", id="music"):
@@ -385,6 +389,7 @@ if __name__ == '__main__':
 
         tts_listen()
         music_listen()
+        zonos_listen()
     # Launch the UI with specified host and port
     favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
     ui.launch(server_name=server_name, server_port=server_port, favicon_path=favicon_path)

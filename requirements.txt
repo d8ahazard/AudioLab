@@ -13,10 +13,12 @@ ffmpeg_progress_yield
 ftfy>=6.3.1
 gradio>=5.1.0
 huggingface_hub>=0.27.1
+kanjize
 matchering>=2.0.6
 matplotlib>=3.10.0
 metrics
 ml_collections
+ninja
 numpy
 onnxruntime-gpu>=1.20.1
 onnxsim
@@ -34,6 +36,8 @@ reathon
 scipy>=1.15.0
 segmentation_models_pytorch>=0.3.4
 soundfile>=0.13.0
+sudachidict-full>=20241021
+sudachipy>=0.6.10
 timm>=0.9.7
 torchcrepe
 tqdm

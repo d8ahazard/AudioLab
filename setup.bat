@@ -13,9 +13,12 @@ python -m pip install --upgrade pip==24.0 || (
     exit /b 1
 )
 
+pip install ninja
+
 REM Install Torch and related libraries
 echo Installing PyTorch and related packages...
-python -m pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-gpu fairseq --extra-index-url %CUDA_URL% || (
+REM pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-cpu fairseq --extra-index-url https://download.pytorch.org/whl/cu121
+python -m pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-cpu fairseq --extra-index-url %CUDA_URL% || (
     echo Error installing PyTorch packages. Ensure CUDA version compatibility.
     exit /b 1
 )
@@ -69,11 +72,17 @@ git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git &&
     exit /b 1
 )
 
+REM pip install mamba-ssm[causal-conv1d] --no-build-isolation
 REM Ensure these are re-installed/correctly
-pip install TTS torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url https://download.pytorch.org/whl/cu121 --force-reinstall
+pip install TTS
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
+pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl
+pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post8/triton-3.0.0-cp310-cp310-win_amd64.whl
+pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl
+
 
 echo All dependencies installed successfully!
 pause

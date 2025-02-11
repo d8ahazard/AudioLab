@@ -37,8 +37,9 @@ AudioLab is an open-source powerhouse designed to bridge the gap in voice-clonin
 ## 🛠️ Pre-requisites
 
 To get started, ensure you have the following:
-1. **Python 3.10+**: We use advanced Python features like `match` statements.
-2. **CUDA 12.1**: Other versions might work but are untested. Install the appropriate drivers for your system.
+1. **Python 3.10**: We use advanced Python features like `match` statements. It has to be 3.10 for match, 3.11 won't work because fairseq is stupid.
+2. **CUDA 12.4**: Other versions might work but are untested. Install the appropriate drivers for your system. Windows users MUST be using
+CU124. Pre-compiled wheels are only available for this version.
 3. **Virtual Environment:** Highly recommended to keep dependencies isolated.
 
 > **Note:** This project assumes familiarity with basic Python setups. If you're new, there are countless tutorials to guide you—this is your chance to shine!

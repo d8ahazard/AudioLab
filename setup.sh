@@ -7,6 +7,7 @@ CUDA_URL="https://download.pytorch.org/whl/cu${CUDA_VERSION//./}"
 # Update pip
 echo "Updating pip..."
 python3 -m pip install --upgrade pip==24.0
+python3 -m pip install ninja
 
 # Install Torch and related libraries
 echo "Installing PyTorch and related packages..."
@@ -54,8 +55,9 @@ else
 fi
 
 # Ensure these are re-installed/correctly
+pip install mamba-ssm[causal-conv1d] --no-build-isolation
 pip install TTS
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu --extra-index-url "${CUDA_URL}"
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
