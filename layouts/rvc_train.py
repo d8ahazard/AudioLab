@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import gradio as gr
 import numpy as np
 import torch
 import torchaudio
+import yt_dlp
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 
@@ -120,6 +122,61 @@ if len(names):
 else:
     first_name = ""
 index_paths = []
+
+
+def download_file(url):
+    # 1. Validate the URL
+    if not url or not url.startswith('http'):
+        return gr.update()
+
+    try:
+        # 2. Pre-fetch media information
+        ydl_opts = {
+            'format': 'bestaudio/best',  # Ensure we get the highest quality audio
+            'noplaylist': True,  # Avoid downloading entire playlists
+            'quiet': True,  # Minimize yt-dlp output
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:  # Handle playlist case (unlikely with noplaylist=True)
+                info = info['entries'][0]
+
+            # Extract and sanitize the title to use as a filename
+            title = info.get('title', 'unknown_title')
+            sanitized_title = re.sub(r'[\\/*?:"<>|]', "_", title)
+
+            # Construct the file path
+            download_dir = os.path.join(output_path, "downloaded")
+            os.makedirs(download_dir, exist_ok=True)
+            file_path = os.path.join(download_dir, f"{sanitized_title}.mp3")
+
+            # 6. Check if the file already exists
+            if os.path.exists(file_path):
+                return gr.update(value=[file_path])
+
+            # Update ydl_opts for downloading
+            ydl_opts.update({
+                'outtmpl': os.path.join(download_dir, sanitized_title),  # Exclude extension
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            })
+
+            # 4. Handle downloading the file
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
+                ydl_download.download([url])
+
+            # Ensure the file was downloaded
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found after download: {file_path}")
+
+            # Return the file path for gr.File
+            return gr.update(value=[file_path])
+    except Exception as e:
+        logger.warning(f"Error: {e}")
+        return gr.update()
 
 
 def get_pretrained_models(path_str, f0_str, sr2):
@@ -865,6 +922,12 @@ def render():
                     file_types=["audio"],
                     file_count="multiple"
                 )
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        input_url = gr.Textbox(label='Input URL', placeholder='Enter URL', visible=True,
+                                               interactive=True, key="process_input_url")
+                    with gr.Column():
+                        input_url_button = gr.Button(value='Load', visible=True, interactive=True)
             with gr.Column():
                 gr.Markdown("### 🎶 Outputs")
                 with gr.Row():
@@ -934,6 +997,12 @@ def render():
                 inputs=[input_files],
                 outputs=[info3],
             )
+
+        input_url_button.click(
+            fn=download_file,
+            inputs=[input_url],
+            outputs=[input_files]
+        )
     return rvc_train
 
 
