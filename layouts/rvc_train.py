@@ -124,7 +124,9 @@ else:
 index_paths = []
 
 
-def download_file(url):
+def download_file(url, input_files):
+    if not input_files:
+        input_files = []
     # 1. Validate the URL
     if not url or not url.startswith('http'):
         return gr.update()
@@ -152,7 +154,9 @@ def download_file(url):
 
             # 6. Check if the file already exists
             if os.path.exists(file_path):
-                return gr.update(value=[file_path])
+                if not file_path in input_files:
+                    input_files.append(file_path)
+                return gr.update(value=input_files)
 
             # Update ydl_opts for downloading
             ydl_opts.update({
@@ -171,9 +175,10 @@ def download_file(url):
             # Ensure the file was downloaded
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"File not found after download: {file_path}")
-
+            if file_path not in input_files:
+                input_files.append(file_path)
             # Return the file path for gr.File
-            return gr.update(value=[file_path])
+            return gr.update(value=input_files)
     except Exception as e:
         logger.warning(f"Error: {e}")
         return gr.update()
@@ -1000,7 +1005,7 @@ def render():
 
         input_url_button.click(
             fn=download_file,
-            inputs=[input_url],
+            inputs=[input_url, input_files],
             outputs=[input_files]
         )
     return rvc_train
