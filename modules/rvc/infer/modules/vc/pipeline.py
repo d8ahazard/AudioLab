@@ -526,10 +526,10 @@ class Pipeline(object):
                 og_audio, orig_sr=self.sr, target_sr=(len(audio_opt) / len(og_audio)) * self.sr
             )
             logger.info(f"Resampled OG audio to match output length: {len(og_audio_resampled)}")
-            audio_opt = restore_silence(og_audio_resampled, audio_opt)
+            #audio_opt = restore_silence(og_audio_resampled, audio_opt)
             _print_peak_volume_db(audio_opt, "After restore_silence (resampled OG)")
         else:
-            audio_opt = restore_silence(og_audio, audio_opt)
+            #audio_opt = restore_silence(og_audio, audio_opt)
             _print_peak_volume_db(audio_opt, "After restore_silence")
 
         # 6) Resample to final sample rate if needed
