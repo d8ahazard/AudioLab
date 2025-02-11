@@ -17,6 +17,7 @@ AudioLab is an open-source powerhouse designed to bridge the gap in voice-clonin
 
 ### Audio Processing Capabilities
 - **Music Generation:** Create music from scratch or remix existing tracks using the brand-new YuE model(s).
+- **Zonos Text-to-Speech:** Generate high-quality speech using the Zonos TTS model.
 - **Text-to-Speech:** Convert text into natural-sounding speech, clone voices, and more using Coqui TTS.
 - **Audio Separation:** Isolate vocals, drums, bass, and other components from an audio track.
 - **Vocal Isolation:** Differentiate lead vocals from background vocals.
@@ -41,8 +42,29 @@ To get started, ensure you have the following:
 2. **CUDA 12.4**: Other versions might work but are untested. Install the appropriate drivers for your system. Windows users MUST be using
 CU124. Pre-compiled wheels are only available for this version.
 3. **Virtual Environment:** Highly recommended to keep dependencies isolated.
+4. **Windows Users:** Welcome to hell! You will have a fun time getting zonos/triton to work. Ensure you have msvc installed[]() and added to your path:
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64 
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx86\x86
 
 > **Note:** This project assumes familiarity with basic Python setups. If you're new, there are countless tutorials to guide you—this is your chance to shine!
+
+
+## Windows Troubleshooting
+
+If you are having trouble installing the dependencies on Windows, you can try the following steps:
+You might need https://aka.ms/vs/17/release/vc_redist.x64.exe or https://aka.ms/vs/17/release/vs_BuildTools.exe
+
+Paths to add to your PATH:
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx86\x86
+
+CUDA: Ensure you have the correct version of CUDA installed. You can check the version by running `nvcc --version` in the command prompt.
+https://developer.download.nvidia.com/compute/cuda/12.4.0/local_installers/cuda_12.4.0_551.61_windows.exe
+
+If you get a DLL error loading triton, try copying the dlls from the /libs folder to the following places:
+.venv\lib\site-packages\pandas\_libs\window
+.venv\lib\site-packages\sklearn\.libs
+C:\program files\python310\ (or wherever your python is installed)
 
 ---
 
@@ -106,6 +128,7 @@ AudioLab stands on the shoulders of giants. Here are the amazing open-source pro
 - [WhisperX](https://github.com/m-bain/whisperX) - Accurate audio transcription.
 - [Coqui TTS](https://github.com/coqui-ai/TTS) - For state-of-the-art text-to-speech.
 - [YuE](https://github.com/multimodal-art-projection/YuE) - For music generation.
+- [Zonos](https://github.com/Zyphra/Zonos) - For high-quality text-to-speech.
 
 ---
 

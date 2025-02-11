@@ -1,4 +1,22 @@
 @echo off
+REM Download the espeak-ng installer
+echo Installing espeak-ng...
+curl -L -o espeak-ng.msi https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi || (
+    echo Error downloading espeak-ng.msi. Exiting.
+    exit /b 1
+)
+
+REM Install espeak-ng silently
+msiexec /i espeak-ng.msi /quiet /norestart || (
+    echo Error installing espeak-ng. Exiting.
+    exit /b 1
+)
+
+REM Add "C:\Program Files\eSpeak NG\" to the *system* PATH
+REM (Requires running as Administrator; won't take effect in the current session)
+setx /M PATH "%PATH%;C:\Program Files\eSpeak NG\"
+
+echo Installation complete. You may need to restart your terminal or log out and back in for the PATH change to be recognized.
 
 REM Auto-detect CUDA driver version
 FOR /F "tokens=1-2 delims=." %%A IN ('nvidia-smi --query-gpu=driver_version --format=csv,noheader') DO (
@@ -72,17 +90,14 @@ git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git &&
     exit /b 1
 )
 
-REM pip install mamba-ssm[causal-conv1d] --no-build-isolation
-REM Ensure these are re-installed/correctly
 pip install TTS
 pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl
-pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post8/triton-3.0.0-cp310-cp310-win_amd64.whl
+pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post9/triton-3.2.0-cp310-cp310-win_amd64.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl
-
 
 echo All dependencies installed successfully!
 pause

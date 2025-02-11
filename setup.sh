@@ -1,5 +1,6 @@
 #!/bin/bash
 
+sudo apt-get install espeak
 # Auto-detect CUDA driver version
 CUDA_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d. -f1,2)
 CUDA_URL="https://download.pytorch.org/whl/cu${CUDA_VERSION//./}"
