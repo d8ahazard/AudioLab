@@ -39,7 +39,8 @@ def render_zonos():
             speaker = zonos_model.make_speaker_embedding(wav, sampling_rate)
             cond_dict = make_cond_dict(text=text, speaker=speaker, language="en-us")
             conditioning = zonos_model.prepare_conditioning(cond_dict)
-            codes = zonos_model.generate(conditioning)
+            max_tokens = 86 * 30 * 2
+            codes = zonos_model.generate(conditioning, max_new_tokens=max_tokens)
             wavs = zonos_model.autoencoder.decode(codes).cpu()
             out_file = os.path.join(output_path, "zonos", f"ZONOS_{int(time.time())}.wav")
             os.makedirs(os.path.dirname(out_file), exist_ok=True)

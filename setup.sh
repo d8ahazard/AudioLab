@@ -57,7 +57,8 @@ fi
 # Ensure these are re-installed/correctly
 pip install mamba-ssm[causal-conv1d] --no-build-isolation
 pip install TTS
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu --extra-index-url "${CUDA_URL}"
+pip install mamba-ssm[causal-conv1d] torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu --extra-index-url "${CUDA_URL}"
+#pip install mamba-ssm[causal-conv1d] torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu --extra-index-url "https://download.pytorch.org/whl/cu124"
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
