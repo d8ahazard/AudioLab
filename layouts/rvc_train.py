@@ -22,6 +22,7 @@ from sklearn.cluster import MiniBatchKMeans
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path, app_path
+from handlers.download import download_files
 from modules.rvc.configs.config import Config
 from modules.rvc.infer.modules.train.extract.extract_f0_print import extract_f0_features
 from modules.rvc.infer.modules.train.extract.extract_f0_rmvpe import extract_f0_features_rmvpe
@@ -122,66 +123,6 @@ if len(names):
 else:
     first_name = ""
 index_paths = []
-
-
-def download_file(url, input_files):
-    if not input_files:
-        input_files = []
-    # 1. Validate the URL
-    if not url or not url.startswith('http'):
-        return gr.update()
-
-    try:
-        # 2. Pre-fetch media information
-        ydl_opts = {
-            'format': 'bestaudio/best',  # Ensure we get the highest quality audio
-            'noplaylist': True,  # Avoid downloading entire playlists
-            'quiet': True,  # Minimize yt-dlp output
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if 'entries' in info:  # Handle playlist case (unlikely with noplaylist=True)
-                info = info['entries'][0]
-
-            # Extract and sanitize the title to use as a filename
-            title = info.get('title', 'unknown_title')
-            sanitized_title = re.sub(r'[\\/*?:"<>|]', "_", title)
-
-            # Construct the file path
-            download_dir = os.path.join(output_path, "downloaded")
-            os.makedirs(download_dir, exist_ok=True)
-            file_path = os.path.join(download_dir, f"{sanitized_title}.mp3")
-
-            # 6. Check if the file already exists
-            if os.path.exists(file_path):
-                if not file_path in input_files:
-                    input_files.append(file_path)
-                return gr.update(value=input_files)
-
-            # Update ydl_opts for downloading
-            ydl_opts.update({
-                'outtmpl': os.path.join(download_dir, sanitized_title),  # Exclude extension
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
-            })
-
-            # 4. Handle downloading the file
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
-                ydl_download.download([url])
-
-            # Ensure the file was downloaded
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"File not found after download: {file_path}")
-            if file_path not in input_files:
-                input_files.append(file_path)
-            # Return the file path for gr.File
-            return gr.update(value=input_files)
-    except Exception as e:
-        logger.warning(f"Error: {e}")
-        return gr.update()
 
 
 def get_pretrained_models(path_str, f0_str, sr2):
@@ -990,7 +931,8 @@ def render():
                     try:
                         audio = AudioSegment.from_file(f)
                         total_length += len(audio) / 1000
-                        yield gr.update(value=f"Total length: {total_length / 60:.2f} minutes. \nRecommended is 30-60 minutes.")
+                        yield gr.update(
+                            value=f"Total length: {total_length / 60:.2f} minutes. \nRecommended is 30-60 minutes.")
                     except Exception as e:
                         logger.error(f"Error processing file {f}: {e}")
                 total_length /= 60
@@ -1004,7 +946,7 @@ def render():
             )
 
         input_url_button.click(
-            fn=download_file,
+            fn=download_files,
             inputs=[input_url, input_files],
             outputs=[input_files]
         )

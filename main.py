@@ -17,8 +17,10 @@ from torchaudio._extension import _init_dll_path
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path
+from handlers.download import download_files
 from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
-from layouts.music import render as render_music, register_descriptions as music_register_descriptions, listen as music_listen
+from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
+    listen as music_listen
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.zonos import render_zonos, register_descriptions as zonos_register_descriptions, listen as zonos_listen
 from util.data_classes import ProjectFiles
@@ -123,66 +125,6 @@ def get_image_files(file_paths: List[str]) -> List[str]:
 
 def is_audio(file_path: str) -> bool:
     return Path(file_path).suffix in ['.wav', '.mp3', '.flac']
-
-
-def download_file(url, input_files):
-    if not input_files:
-        input_files = []
-    # 1. Validate the URL
-    if not url or not url.startswith('http'):
-        return gr.update()
-
-    try:
-        # 2. Pre-fetch media information
-        ydl_opts = {
-            'format': 'bestaudio/best',  # Ensure we get the highest quality audio
-            'noplaylist': True,  # Avoid downloading entire playlists
-            'quiet': True,  # Minimize yt-dlp output
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if 'entries' in info:  # Handle playlist case (unlikely with noplaylist=True)
-                info = info['entries'][0]
-
-            # Extract and sanitize the title to use as a filename
-            title = info.get('title', 'unknown_title')
-            sanitized_title = re.sub(r'[\\/*?:"<>|]', "_", title)
-
-            # Construct the file path
-            download_dir = os.path.join(output_path, "downloaded")
-            os.makedirs(download_dir, exist_ok=True)
-            file_path = os.path.join(download_dir, f"{sanitized_title}.mp3")
-
-            # 6. Check if the file already exists
-            if os.path.exists(file_path):
-                if not file_path in input_files:
-                    input_files.append(file_path)
-                return gr.update(value=input_files)
-
-            # Update ydl_opts for downloading
-            ydl_opts.update({
-                'outtmpl': os.path.join(download_dir, sanitized_title),  # Exclude extension
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
-            })
-
-            # 4. Handle downloading the file
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
-                ydl_download.download([url])
-
-            # Ensure the file was downloaded
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"File not found after download: {file_path}")
-            if file_path not in input_files:
-                input_files.append(file_path)
-            # Return the file path for gr.File
-            return gr.update(value=input_files)
-    except Exception as e:
-        logger.warning(f"Error: {e}")
-        return gr.update()
 
 
 def update_preview(output: str) -> Tuple[gr.update, gr.update]:
@@ -323,8 +265,10 @@ if __name__ == '__main__':
                         gr.Markdown("### 🎤 Inputs")
                         input_select = gr.Dropdown(label='Select Input Preview', choices=[], value=None, visible=False,
                                                    interactive=True, key="process_input_preview")
-                        input_audio = gr.Audio(label='Input Audio', value=None, visible=False, key="process_input_audio")
-                        input_image = gr.Image(label='Input Image', value=None, visible=False, key="process_input_image")
+                        input_audio = gr.Audio(label='Input Audio', value=None, visible=False,
+                                               key="process_input_audio")
+                        input_image = gr.Image(label='Input Image', value=None, visible=False,
+                                               key="process_input_image")
                         input_files = gr.File(label='Input Files', file_count='multiple', file_types=['audio', 'video'],
                                               key="process_inputs")
                         arg_handler.register_element("main", "process_inputs", input_files)
@@ -342,8 +286,10 @@ if __name__ == '__main__':
 
                         output_select = gr.Dropdown(label='Select Output Preview', choices=[], value=None,
                                                     visible=False, interactive=True, key="process_output_preview")
-                        output_audio = gr.Audio(label='Output Audio', value=None, visible=False, key="process_output_audio")
-                        output_image = gr.Image(label='Output Image', value=None, visible=False, key="process_output_image")
+                        output_audio = gr.Audio(label='Output Audio', value=None, visible=False,
+                                                key="process_output_audio")
+                        output_image = gr.Image(label='Output Image', value=None, visible=False,
+                                                key="process_output_image")
                         output_files = gr.File(label='Output Files', file_count='multiple',
                                                file_types=['audio', 'video'],
                                                interactive=False, key="process_output_files")
@@ -379,7 +325,7 @@ if __name__ == '__main__':
                 )
 
                 input_url_button.click(
-                    fn=download_file,
+                    fn=download_files,
                     inputs=[input_url, input_files],
                     outputs=[input_files]
                 )
