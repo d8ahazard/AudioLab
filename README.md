@@ -26,6 +26,7 @@ AudioLab is an open-source powerhouse for voice-cloning and audio separation, bu
 - **🚀 Audio Super Resolution:** Enhance and clean up audio.
 - **🎚️ Remastering:** Apply spectral characteristics from a reference track.
 - **🔄 Audio Conversion:** Convert between popular formats effortlessly.
+- **📜 Export to DAW:** Easily create Ableton Live and Reaper projects from separated stems.
 
 ### 🤖 Automation Features
 - **Auto-preprocessing** for voice model training.
