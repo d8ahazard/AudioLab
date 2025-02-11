@@ -1,4 +1,5 @@
 import json
+import os
 
 import torch
 import torch.nn as nn
@@ -42,8 +43,12 @@ class Zonos(nn.Module):
 
     @classmethod
     def from_pretrained(cls, repo_id: str, revision: str | None = None, device: str = "cuda") -> "Zonos":
-        config_path = hf_hub_download(repo_id=repo_id, filename="config.json", revision=revision)
-        model_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors", revision=revision)
+        if os.path.exists(repo_id):
+            config_path = os.path.join(repo_id, "config.json")
+            model_path = os.path.join(repo_id, "model.safetensors")
+        else:
+            config_path = hf_hub_download(repo_id=repo_id, filename="config.json", revision=revision)
+            model_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors", revision=revision)
         return cls.from_local(config_path, model_path, device)
 
     @classmethod
@@ -54,7 +59,7 @@ class Zonos(nn.Module):
         load_model(model, model_path, device=device)
         return model.bfloat16()
 
-    def make_speaker_embedding(self, wav: torch.Tensor, sr: int) -> torch.Tensor:
+    def make_speaker_embedding(self, wav: torch.Tensor, sr: int, s_path: str) -> torch.Tensor:
         """Generate a speaker embedding from an audio clip."""
         if self.spk_clone_model is None:
             self.spk_clone_model = SpeakerEmbeddingLDA()
