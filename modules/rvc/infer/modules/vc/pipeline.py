@@ -506,7 +506,7 @@ class Pipeline(object):
             )
 
         final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
-        _print_peak_volume_db(final_seg, "After vc final seg")
+        #_print_peak_volume_db(final_seg, "After vc final seg")
 
         audio_opt.append(final_seg)
         audio_opt = np.concatenate(audio_opt)
