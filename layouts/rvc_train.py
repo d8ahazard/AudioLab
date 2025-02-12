@@ -659,6 +659,36 @@ def train1key(
     yield get_info_str("Processing complete!")
 
 
+def do_train_index(project_name, existing_project, project_version, progress=gr.Progress()):
+    if existing_project is not None and existing_project != "":
+        project_name = existing_project
+    exp_dir = os.path.join(output_path, "voices", project_name)
+
+    infos = []
+
+    def get_info_str(strr):
+        infos.append(strr)
+        logger.info(strr)
+        return "\n".join(infos)
+
+    if not os.path.exists(exp_dir):
+        return get_info_str("Project not found.")
+
+    model_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}_final.pth")
+    if not os.path.exists(model_file):
+        return get_info_str("Model file not found.")
+    # Get the vers key from the model file
+    with open(model_file, "rb") as f:
+        model_dict = torch.load(f)
+        vers = model_dict.get("version", "v2")
+    index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
+    progress(0.25, "Building index")
+    yield get_info_str("Step4: Training complete, now building index.")
+    [get_info_str(_) for _ in train_index(project_name, project_version)]
+    progress(1, "Processing complete.")
+    yield get_info_str("Processing complete!")
+
+
 def list_voice_projects():
     output = [""]
     if not os.path.exists(output_path) or not os.path.exists(os.path.join(output_path, "voices")):
@@ -881,6 +911,10 @@ def render():
                         "Train",
                         elem_classes="hintitem", elem_id="rvc_start_train", variant="primary"
                     )
+                    train_index = gr.Button(
+                        "Build Index",
+                        elem_classes="hintitem", elem_id="rvc_train_index", variant="secondary",
+                    )
                     cancel_train = gr.Button(
                         "Cancel",
                         variant="secondary",
@@ -916,10 +950,16 @@ def render():
                         cache_dataset_to_gpu,
                         save_weights_each_ckpt,
                         model_version,
-                        gpus_rmvpe,
+                        gpus_rmvpe
                     ],
                     info3,
                     api_name="train_start_all",
+                )
+
+                train_index.click(
+                    do_train_index,
+                    [voice_name, existing_project, model_version],
+                    info3,
                 )
 
             def update_time_info(input_files):
@@ -978,6 +1018,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "start_train": "Click to begin training the voice model with the selected settings.",
         "cancel_train": "Click to cancel the training process if needed.",
         "output_info": "Displays logs and training progress information.",
+        "train_index": "Click to build or re-build the index for the trained voice model.",
     }
     for elem_id, description in descriptions.items():
         arg_handler.register_description("rvc", elem_id, description)
