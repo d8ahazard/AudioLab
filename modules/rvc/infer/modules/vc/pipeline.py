@@ -363,7 +363,7 @@ class Pipeline(object):
             except Exception as e:
                 pass
 
-        if file_index != "" and os.path.exists(file_index) and index_rate != 0:
+        if file_index is not None and os.path.exists(file_index) and index_rate != 0:
             try:
                 if not check_faiss_index_file(file_index):
                     file_index = extract_index_from_zip(file_index, model_path)
