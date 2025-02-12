@@ -30,7 +30,7 @@ from modules.rvc.infer.modules.train.extract.extract_f0_rmvpe_dml import extract
 from modules.rvc.infer.modules.train.extract_feature_print import extract_feature_print
 from modules.rvc.infer.modules.train.preprocess import preprocess_trainset
 from modules.rvc.infer.modules.train.train import train_main
-from modules.rvc.infer.modules.vc.modules import VC
+from modules.rvc.infer.modules.vc.pipeline import VC
 from modules.rvc.utils import HParams
 from util.data_classes import ProjectFiles
 from wrappers.separate import Separate

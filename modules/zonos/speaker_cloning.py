@@ -1,5 +1,6 @@
 import math
 import os
+import tempfile
 from functools import cache
 
 import torch
@@ -391,10 +392,18 @@ class SpeakerEmbeddingLDA(nn.Module):
     ):
         super().__init__()
         if speaker_dir is None:
-            spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
-                                             filename="ResNet293_SimAM_ASP_base.pt")
-            lda_spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
-                                                 filename="ResNet293_SimAM_ASP_base_LDA-128.pt")
+            try:
+                spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+                                                 filename="ResNet293_SimAM_ASP_base.pt")
+                lda_spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+                                                     filename="ResNet293_SimAM_ASP_base_LDA-128.pt")
+            except Exception as e:
+                temp_dir = tempfile.mkdtemp()
+                temp_dir = os.path.join(temp_dir, "speaker_embedding")
+                spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+                                                 filename="ResNet293_SimAM_ASP_base.pt", local_dir=temp_dir)
+                lda_spk_model_path = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+                                                     filename="ResNet293_SimAM_ASP_base_LDA-128.pt", local_dir=temp_dir)
         else:
             spk_model_path = os.path.join(speaker_dir, "ResNet293_SimAM_ASP_base.pt")
             lda_spk_model_path = os.path.join(speaker_dir, "ResNet293_SimAM_ASP_base_LDA-128.pt")

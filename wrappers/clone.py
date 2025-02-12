@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 from handlers.config import model_path
 from modules.rvc.configs.config import Config
-from modules.rvc.infer.modules.vc.modules import VC
+from modules.rvc.infer.modules.vc.pipeline import VC
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
@@ -13,11 +13,9 @@ def list_speakers():
     Scan the model_path/trained directory and return all .pth files (trained voice checkpoints).
     """
     speaker_dir = os.path.join(model_path, "trained")
-    return [
-        os.path.join(speaker_dir, f)
-        for f in os.listdir(speaker_dir)
-        if f.endswith(".pth")
-    ]
+    models = [f for f in os.listdir(speaker_dir) if f.endswith(".pth")]
+    model_names = [os.path.splitext(f)[0] for f in models]
+    return model_names
 
 
 def list_speakers_ui():
@@ -141,14 +139,6 @@ class Clone(BaseWrapper):
         )
     }
 
-    def setup(self):
-        """
-        Initialize the RVC voice conversion module (VC).
-        This is called once before processing audio.
-        """
-        config = Config()
-        self.vc = VC(config)
-
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         """
         Process one or more audio input(s) using the provided configurations.
@@ -159,7 +149,8 @@ class Clone(BaseWrapper):
           4. Appends the cloned audio output to project outputs.
         """
         # Ensure VC is set up
-        self.setup()
+        config = Config()
+        self.vc = VC(config)
 
         # Filter out unexpected kwargs
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
@@ -167,6 +158,12 @@ class Clone(BaseWrapper):
         # Extract relevant configs
         clone_bg_vocals = filtered_kwargs.get("clone_bg_vocals", False)
         selected_voice = filtered_kwargs.get("selected_voice", "")
+        speaker_dir = os.path.join(model_path, "trained")
+        selected_voice = os.path.join(speaker_dir, f"{selected_voice}.pth")
+        if not os.path.exists(selected_voice):
+            if callback is not None:
+                callback(0, "Selected voice model not found.")
+            return []
         spk_id = filtered_kwargs.get("speaker_id", 0)
         pitch_shift = filtered_kwargs.get("pitch_shift", 0)
         f0method = filtered_kwargs.get("pitch_extraction_method", "rvmpe")

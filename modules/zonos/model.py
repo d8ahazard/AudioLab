@@ -70,7 +70,7 @@ class Zonos(nn.Module):
     def make_speaker_embedding(self, wav: torch.Tensor, sr: int, s_path) -> torch.Tensor:
         """Generate a speaker embedding from an audio clip."""
         if self.spk_clone_model is None:
-            self.spk_clone_model = SpeakerEmbeddingLDA()
+            self.spk_clone_model = SpeakerEmbeddingLDA(speaker_dir=s_path)
         _, spk_embedding = self.spk_clone_model(wav.to(self.spk_clone_model.device), sr)
         return spk_embedding.unsqueeze(0).bfloat16()
 
