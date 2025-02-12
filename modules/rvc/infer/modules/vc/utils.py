@@ -1,20 +1,16 @@
-import logging
+import os
+from functools import lru_cache
+
 import os
 from functools import lru_cache
 
 import librosa
-import numpy as np
 import pyworld
-import soundfile as sf
 import torch
 from fairseq import checkpoint_utils
 from torch.nn import functional as F
 
-from handlers.config import model_path, output_path
-from modules.rvc.infer.modules.vc.pipeline import input_audio_path2wav
-
-# Set DEBUG_CLONE flag based on environment variable
-DEBUG_CLONE = True
+from handlers.config import model_path
 
 
 def get_index_path_from_model(sid):
@@ -103,6 +99,8 @@ def extract_index_from_zip(zip_path, extract_to):
 
 @lru_cache
 def cache_harvest_f0(input_audio_path, fs, f0max, f0min, frame_period):
+    from modules.rvc.infer.modules.vc.pipeline import input_audio_path2wav
+
     audio = input_audio_path2wav[input_audio_path]
     f0, t = pyworld.harvest(
         audio,
@@ -132,27 +130,3 @@ def change_rms(data1, sr1, data2, sr2, rate):
     return data2
 
 
-def debug_clone_audio(audio_data, sr, step_name):
-    """
-    Logs the max amplitude, RMS, sample rate, and length of the audio data,
-    and saves the audio file to disk with the step name (prefixed for ordering)
-    if DEBUG_CLONE is enabled.
-    """
-    max_amp = np.max(np.abs(audio_data)) + 1e-10
-    rms = np.sqrt(np.mean(audio_data ** 2))
-    length = len(audio_data)
-    logger = logging.getLogger(__name__)
-    logger.info(f"{step_name}: SR={sr}, Length={length}, Max Amp={max_amp:.4f}, RMS={rms:.4f}")
-
-    if not DEBUG_CLONE:
-        return
-    debug_folder = os.path.join(output_path, "debug")
-    os.makedirs(debug_folder, exist_ok=True)
-    # Compute maximum amplitude and RMS value
-    # Save the file so that alphabetical order reflects processing order
-    file_path = os.path.join(debug_folder, f"{step_name}.wav")
-    try:
-        sf.write(file_path, audio_data, sr)
-        logger.info(f"[DEBUG_CLONE] Saved debug audio: {file_path}")
-    except Exception as e:
-        logger.error(f"[DEBUG_CLONE] Failed to save debug audio {file_path}: {e}")
