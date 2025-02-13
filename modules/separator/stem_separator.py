@@ -424,13 +424,15 @@ class EnsembleDemucsMDXMusicSeparationModel:
         out_files = self.separator.separate(tmp_file)
         out_files = [os.path.join(output_folder, f) for f in out_files]
 
-        arrays = []
+        bg = None
+        main = None
         for f in out_files:
             arr, _ = librosa.load(f, sr=sr, mono=False)
-            arrays.append(arr)
-        if len(out_files) == 2:
-            bg = arrays[0]
-            main = arrays[1]
+            if "(Vocals)" in f:
+                bg = arr
+            elif "(Instrumental)" in f:
+                main = arr
+        if bg is not None and main is not None:
             return main, bg
         return vocals_array, None
 
