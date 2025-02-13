@@ -32,7 +32,7 @@ class Clone(BaseWrapper):
     """
 
     title = "Clone"
-    priority = 3
+    priority = 2
     default = True
     vc = None
     description = (
@@ -79,24 +79,6 @@ class Clone(BaseWrapper):
             type=str,
             choices=["pm", "harvest", "crepe", "rmvpe"],
             gradio_type="Dropdown",
-        ),
-        "export_format": TypedInput(
-            default="wav",
-            description="Output file format. (WAV is recommended for most cases.)",
-            type=str,
-            choices=["wav", "flac", "mp3", "m4a"],
-            gradio_type="Dropdown",
-            render=False
-        ),
-        "resample_rate": TypedInput(
-            default=0,
-            description="Resample rate (0 to keep the original sample rate).",
-            type=int,
-            gradio_type="Slider",
-            ge=0,
-            le=48000,
-            step=1,
-            render=False
         ),
         "volume_mix_rate": TypedInput(
             default=1,
@@ -150,7 +132,7 @@ class Clone(BaseWrapper):
         """
         # Ensure VC is set up
         config = Config()
-        self.vc = VC(config)
+        self.vc = VC(config, True)
 
         # Filter out unexpected kwargs
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
@@ -167,10 +149,8 @@ class Clone(BaseWrapper):
         spk_id = filtered_kwargs.get("speaker_id", 0)
         pitch_shift = filtered_kwargs.get("pitch_shift", 0)
         f0method = filtered_kwargs.get("pitch_extraction_method", "rvmpe")
-        resample_rate = filtered_kwargs.get("resample_rate", 0)
         rms_mix_rate = filtered_kwargs.get("volume_mix_rate", 1)
         protect = filtered_kwargs.get("accent_strength", 0.2)
-        format_ = filtered_kwargs.get("export_format", "wav")
         index_rate = filtered_kwargs.get("index_rate", 1)
         filter_radius = filtered_kwargs.get("filter_radius", 5)
 

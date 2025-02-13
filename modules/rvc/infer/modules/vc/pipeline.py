@@ -1,8 +1,5 @@
 import os
 
-# Force debug cloning on for now
-os.environ["DEBUG_CLONE"] = "true"
-
 import logging
 import traceback
 from time import time as ttime
@@ -37,12 +34,10 @@ from modules.rvc.infer.modules.vc.utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 input_audio_path2wav = {}
 
-# Set DEBUG_CLONE flag based on environment variable
-DEBUG_CLONE = True
+# Global debug cloning settings
+DEBUG_CLONE = False
 DEBUG_STEP_NO = 0
 
 
@@ -50,22 +45,20 @@ def debug_clone_audio(audio_data, sr, step_name):
     global DEBUG_STEP_NO
     """
     Logs the max amplitude, RMS, sample rate, and length of the audio data,
-    and saves the audio file to disk with the step name (prefixed for ordering)
-    if DEBUG_CLONE is enabled.
+    and saves the audio file to disk with the step name (prefixed for ordering).
     """
     max_amp = np.max(np.abs(audio_data)) + 1e-10
     rms = np.sqrt(np.mean(audio_data ** 2))
     length = len(audio_data)
-    logger = logging.getLogger(__name__)
     step_name = f"{DEBUG_STEP_NO:03d}_{step_name}"
-    logger.info(f"{step_name}: SR={sr}, Length={length}, Max Amp={max_amp:.4f}, RMS={rms:.4f}")
+    step_name_len = len(step_name)
+    padding = " " * (30 - step_name_len) if step_name_len < 30 else ""
+    logger.info(f"{step_name}:{padding}SR={sr}, Length={length}, Max Amp={max_amp:.4f}, RMS={rms:.4f}")
 
     if not DEBUG_CLONE:
         return
     debug_folder = os.path.join(output_path, "debug")
     os.makedirs(debug_folder, exist_ok=True)
-    # Compute maximum amplitude and RMS value
-    # Save the file so that alphabetical order reflects processing order
     file_path = os.path.join(debug_folder, f"{step_name}.wav")
     try:
         sf.write(file_path, audio_data, sr)
@@ -75,15 +68,26 @@ def debug_clone_audio(audio_data, sr, step_name):
 
 
 class Pipeline(object):
-    def __init__(self, tgt_sr, config):
-        # Minimal chunking tweaks: add +0.2s to x_pad, +2s to x_query
+    def __init__(self, tgt_sr, config, downsample_pipeline, processing_sr=None):
+        """
+        tgt_sr: target sample rate from the model checkpoint (e.g. 48000)
+        config: configuration object containing parameters including:
+            - x_pad, x_query, x_center, x_max, is_half, downsample_pipeline (bool)
+        processing_sr: if provided, the sample rate to use for all pipeline processing.
+                       If None, then it is set to 16000 when downsampling is enabled,
+                       or to tgt_sr when disabled.
+        """
         self.x_pad = config.x_pad + 0.2
         self.x_query = config.x_query + 2
         self.x_center = config.x_center
         self.x_max = config.x_max
         self.is_half = config.is_half
-
-        self.sr = 16000
+        # Decide on the processing sample rate:
+        if processing_sr is not None:
+            self.sr = processing_sr
+        else:
+            self.sr = 16000 if downsample_pipeline else tgt_sr
+        # This was 160, but we're using 80 for now
         self.window = 160
         self.t_pad = int(self.sr * self.x_pad)
         self.t_pad_tgt = int(tgt_sr * self.x_pad)
@@ -92,6 +96,9 @@ class Pipeline(object):
         self.t_center = int(self.sr * self.x_center)
         self.t_max = int(self.sr * self.x_max)
         self.device = config.device
+
+        # Compute filter coefficients using self.sr instead of a fixed 16000.
+        self.bh, self.ah = signal.butter(N=5, Wn=48, btype="high", fs=self.sr)
 
     def get_f0(
             self,
@@ -153,11 +160,11 @@ class Pipeline(object):
                 from modules.rvc.infer.lib.rmvpe import RMVPE
 
                 rvmpe_model_path = os.path.join(model_path, "rvc", "rmvpe.pt")
-                logger.info(f"Loading RMVPE model from {rvmpe_model_path}")
                 self.model_rmvpe = RMVPE(
                     model_path=rvmpe_model_path,
                     is_half=self.is_half,
                     device=self.device,
+                    sampling_rate=self.sr,
                 )
             f0 = self.model_rmvpe.infer_from_audio(x, thred=0.03)
             if "privateuseone" in str(self.device):
@@ -198,6 +205,7 @@ class Pipeline(object):
             version,
             protect,
     ):
+        # Process the input segment (audio0) and perform voice cloning.
         feats = torch.from_numpy(audio0)
         feats = feats.half() if self.is_half else feats.float()
         if feats.dim() == 2:
@@ -273,7 +281,7 @@ class Pipeline(object):
             if_f0,
             filter_radius,
             tgt_sr,
-            resample_sr,
+            og_sr,
             rms_mix_rate,
             version,
             protect,
@@ -292,10 +300,8 @@ class Pipeline(object):
         else:
             index = big_npy = None
 
-        og_audio = audio
-
-        # 1) Filtering using filtfilt
-        audio = signal.filtfilt(bh, ah, audio)
+        # 1) Filtering using filtfilt with coefficients computed at self.sr
+        audio = signal.filtfilt(self.bh, self.ah, audio)
         debug_clone_audio(audio, self.sr, "filtfilt")
 
         # Prepare segmentation by padding
@@ -393,47 +399,25 @@ class Pipeline(object):
         final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
         audio_opt.append(final_seg)
         audio_opt = np.concatenate(audio_opt)
-        debug_clone_audio(audio_opt, 16000, "after_vc_concat")
+        audio_opt = librosa.resample(audio_opt, orig_sr=tgt_sr, target_sr=og_sr)
 
-        # 4) RMS adjustment
+        debug_clone_audio(audio_opt, og_sr, "after_vc_concat")
+
         if rms_mix_rate != 1:
-            audio_opt = change_rms(audio, 16000, audio_opt, tgt_sr, rms_mix_rate)
-            debug_clone_audio(audio_opt, tgt_sr, "after_change_rms")
+            audio_opt = change_rms(audio, self.sr, audio_opt, tgt_sr, rms_mix_rate)
+            debug_clone_audio(audio_opt, og_sr, "after_change_rms")
 
-        # 5) Final resample to desired target rate if needed
-        if (tgt_sr != resample_sr) and (resample_sr > 16000):
-            audio_opt = librosa.resample(audio_opt, orig_sr=tgt_sr, target_sr=resample_sr)
-            debug_clone_audio(audio_opt, resample_sr, "after_final_resample")
-
-        # 6) Restore silence if needed
-        if len(audio_opt) != len(og_audio):
-            og_audio_resampled = librosa.resample(
-                og_audio, orig_sr=self.sr, target_sr=(len(audio_opt) / len(og_audio)) * self.sr
-            )
-            logger.info(f"Resampled OG audio to match output length: {len(og_audio_resampled)} (was {len(og_audio)})")
-            audio_opt = restore_silence(og_audio_resampled, audio_opt)
-        else:
-            audio_opt = restore_silence(og_audio, audio_opt)
-        debug_clone_audio(audio_opt, tgt_sr, "after_restore_silence")
-
-        # 7) Convert to int16
-        audio_max = np.abs(audio_opt).max() / 0.99
-        max_int16 = 32768
-        if audio_max > 1:
-            logger.info("Warning: audio_max > 1")
-            max_int16 /= audio_max
-        audio_opt = (audio_opt * max_int16).astype(np.int16)
-        final_sr = resample_sr if (tgt_sr != resample_sr and resample_sr >= 16000) else tgt_sr
-        debug_clone_audio(audio_opt, final_sr, "after_int16_conversion")
+        final_sr = og_sr
+        # debug_clone_audio(audio_opt, final_sr, "after_int16_conversion")
 
         del pitch, pitchf, sid_tensor
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return audio_opt
+        return audio_opt, final_sr
 
 
 class VC:
-    def __init__(self, config):
+    def __init__(self, config, downsample_pipeline):
         self.n_spk = None
         self.tgt_sr = None
         self.net_g = None
@@ -446,6 +430,7 @@ class VC:
         self.config = config
         self.global_step = 0
         self.total_steps = 0
+        self.downsample_pipeline = downsample_pipeline
 
     def get_vc(self, sid, *to_return_protect):
         logger.info("Get sid: " + sid)
@@ -466,7 +451,8 @@ class VC:
                 if not self.version:
                     sval = self.cpt["config"][14][0]
                     self.version = "v2" if sval == 24 else "v1"
-                    logger.info(f"Version: {sval}, {self.version}")
+                logger.info(f"IF_F0: {self.if_f0}, Version: {self.version}")
+
                 if self.version == "v1":
                     if self.if_f0 == 1:
                         self.net_g = SynthesizerTrnMs256NSFsid(*self.cpt["config"], is_half=self.config.is_half)
@@ -488,7 +474,7 @@ class VC:
         logger.info(f"Loading: {person}")
         self.cpt = torch.load(person, map_location="cpu")
         self.tgt_sr = self.cpt["config"][-1]
-        logger.info(f"Target SR: {self.tgt_sr}")
+        logger.info(f"Target SR from checkpoint: {self.tgt_sr}")
         self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
         self.if_f0 = self.cpt.get("f0", 1)
         self.version = self.cpt.get("version", "v1")
@@ -505,7 +491,14 @@ class VC:
         self.net_g.load_state_dict(self.cpt["weight"], strict=False)
         self.net_g.eval().to(self.config.device)
         self.net_g = self.net_g.half() if self.config.is_half else self.net_g.float()
-        self.pipeline = Pipeline(self.tgt_sr, self.config)
+        # Instantiate Pipeline. If downsampling is enabled (default), use 16k;
+        # otherwise, reinitialize the pipeline to process at the original input rate.
+        if not self.downsample_pipeline:
+            # Reinitialize Pipeline with processing_sr = original input rate.
+            self.pipeline = Pipeline(self.tgt_sr, self.config, self.downsample_pipeline,
+                                     processing_sr=None)  # will be re-created in vc_single
+        else:
+            self.pipeline = Pipeline(self.tgt_sr, self.config, self.downsample_pipeline)
         n_spk = self.cpt["config"][-3]
         index = {"value": get_index_path_from_model(person), "__type__": "update"}
         logger.info(f"Select index: {index}")
@@ -516,16 +509,6 @@ class VC:
             else {"visible": True, "maximum": n_spk, "__type__": "update"}
         )
 
-    # model,
-    # sid,
-    # path,
-    # f0_up_key,
-    # None,
-    # f0_method,
-    # index_rate,
-    # filter_radius,
-    # protect,
-    # callback = callback,
     def vc_single(
             self,
             model,
@@ -546,7 +529,6 @@ class VC:
                 file=input_audio_path, sr=None, mono=False, return_sr=True
             )
             debug_clone_audio(audio_float, og_sr, "vc_single_loaded_audio")
-            logger.info(f"Loaded audio: shape={audio_float.shape}, original sample rate={og_sr}")
             if callback is not None:
                 callback(self.global_step / self.total_steps,
                          f"Loaded audio: shape={audio_float.shape}, original SR={og_sr}",
@@ -554,7 +536,6 @@ class VC:
 
             # (B) Convert stereo to mono if needed.
             if audio_float.ndim == 2 and audio_float.shape[1] == 2:
-                logger.info("Converting stereo to mono (Mid-Side Encoding)")
                 if callback is not None:
                     callback(self.global_step / self.total_steps,
                              "Converting stereo to mono (Mid-Side Encoding)",
@@ -562,19 +543,24 @@ class VC:
                 mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
                 debug_clone_audio(mono_og, og_sr, "vc_single_mono_converted")
             else:
-                logger.info("Audio is already mono")
                 mono_og = audio_float if audio_float.ndim == 1 else audio_float.mean(axis=1)
                 side_og = None
                 orig_len = len(mono_og)
                 debug_clone_audio(mono_og, og_sr, "vc_single_mono_ready")
 
-            # (C) Resample to 16k for processing.
-            sr_rvc = 16000
+            # (C) Decide on the processing sample rate.
+            if self.downsample_pipeline:
+                sr_rvc = 16000
+            else:
+                sr_rvc = og_sr
+                # Reinitialize the pipeline so that it uses the original sample rate.
+                self.pipeline = Pipeline(self.tgt_sr, self.config, self.downsample_pipeline, processing_sr=og_sr)
+
             if og_sr != sr_rvc:
                 mono_for_pipeline = librosa.resample(mono_og, orig_sr=og_sr, target_sr=sr_rvc)
             else:
                 mono_for_pipeline = mono_og
-            debug_clone_audio(mono_for_pipeline, sr_rvc, "vc_single_resampled_16k")
+            debug_clone_audio(mono_for_pipeline, sr_rvc, "vc_single_pre_resample")
 
             # (D) Run the voice cloning pipeline.
             times = [0, 0, 0]
@@ -583,10 +569,13 @@ class VC:
                 self.get_vc(model)
             if self.hubert_model is None:
                 self.hubert_model = load_hubert(self.config)
-            logger.info("Running pipeline...")
             if callback is not None:
                 callback(self.global_step / self.total_steps, "Running pipeline...", self.total_steps)
-            audio_opt_16k = self.pipeline.pipeline(
+            # For pipeline, pass:
+            #   - tgt_sr: if downsampling is enabled, use the model's target (e.g. 48000);
+            #             if disabled, set tgt_sr equal to og_sr.
+            pipeline_tgt_sr = self.tgt_sr if self.downsample_pipeline else og_sr
+            audio_opt, audio_sr = self.pipeline.pipeline(
                 self.hubert_model,
                 self.net_g,
                 sid,
@@ -599,41 +588,56 @@ class VC:
                 index_rate,
                 self.if_f0,
                 filter_radius,
-                self.tgt_sr,
+                pipeline_tgt_sr,
                 og_sr,
                 rms_mix_rate,
                 self.version,
                 protect,
                 f0_file,
             )
-            debug_clone_audio(audio_opt_16k, sr_rvc, "vc_single_after_pipeline")
-            if audio_opt_16k.dtype == np.int16:
-                audio_opt_16k = audio_opt_16k.astype(np.float32) / 32768.0
+            debug_clone_audio(audio_opt, audio_sr, "vcs_after_pipeline")
+            # if audio_opt.dtype == np.int16:
+            #     audio_opt = audio_opt.astype(np.float32) / 32768.0
 
-            # (E) Resample back to original sample rate.
-            if sr_rvc != og_sr:
-                audio_opt_float = librosa.resample(audio_opt_16k, orig_sr=sr_rvc, target_sr=og_sr)
-            else:
-                audio_opt_float = audio_opt_16k
-            debug_clone_audio(audio_opt_float, og_sr, "vc_single_after_resample_back")
+            audio_opt_float = audio_opt
+            # debug_clone_audio(audio_opt_float, audio_sr, "vcs_after_resample_back")
 
             # (F) Reconstruct stereo if applicable.
             if side_og is not None:
-                logger.info("Reconstructing stereo (Mid-Side Decoding)")
                 if callback is not None:
                     callback(self.global_step / self.total_steps, "Reconstructing stereo (Mid-Side Decoding)",
                              self.total_steps)
                 new_len = len(audio_opt_float)
                 if new_len != orig_len:
-                    logger.info(f"Resampling side channel from {orig_len} to {new_len}")
                     side_og_resampled = resample_side(side_og, orig_len, new_len)
                 else:
                     side_og_resampled = side_og
                 output_stereo = mono_to_stereo_ms(audio_opt_float, side_og_resampled)
                 final_float = output_stereo
-                debug_clone_audio(final_float, og_sr, "vc_single_after_stereo_recon")
+                debug_clone_audio(final_float, audio_sr, "vcs_after_stereo_recon")
             else:
                 final_float = audio_opt_float.reshape(-1, 1)
+
+            # 6) Restore silence if needed.
+            # (F) Restore silence if needed.
+            # Use the mono version of the original audio as reference.
+            if abs(len(mono_og) - len(final_float)) < self.pipeline.window:
+                reference = mono_og[:len(final_float)]
+                logger.info(f"Using trimmed mono reference (length {len(reference)}) for silence restoration.")
+            else:
+                # Compute the target sample rate based on the length ratio.
+                target_sr = (len(final_float) / len(mono_og)) * og_sr
+                reference = librosa.resample(mono_og, orig_sr=og_sr, target_sr=target_sr)
+                # # Normalize the resampled reference to have the same RMS as the original mono_og.
+                # orig_ref_rms = np.sqrt(np.mean(mono_og ** 2))
+                # new_ref_rms = np.sqrt(np.mean(reference ** 2)) + 1e-8
+                # reference = reference * (orig_ref_rms / new_ref_rms)
+                logger.info(
+                    f"Resampled mono reference from {len(mono_og)} to {len(reference)} samples for silence restoration.")
+
+            final_float = restore_silence(reference, final_float, silence_threshold=0.001, frame_size=128)
+            debug_clone_audio(final_float, audio_sr, "vcs_after_silence_restore")
+
             self.global_step += 1
             return f"Success. Processing time: {times}", (og_sr, final_float)
         except Exception as e:
@@ -666,7 +670,6 @@ class VC:
             # Ensure model is loaded
             if self.pipeline is None:
                 self.get_vc(model)
-            infos = []
             for path in paths:
                 if callback is not None:
                     callback(self.global_step / self.total_steps, f"Processing {path}", self.total_steps)

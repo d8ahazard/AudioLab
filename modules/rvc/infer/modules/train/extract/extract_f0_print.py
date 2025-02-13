@@ -28,7 +28,7 @@ class FeatureInput(object):
         x = load_audio(path, self.fs)
         p_len = x.shape[0] // self.hop
         if f0_method == "pm":
-            time_step = 160 / 16000 * 1000
+            time_step = 160 / self.fs * 1000
             f0_min = 50
             f0_max = 1100
             f0 = (

@@ -83,7 +83,7 @@ class FeatureInput(object):
                     print("f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc()))
 
 
-def extract_f0_features_rmvpe_dml(exp_dir):
+def extract_f0_features_rmvpe_dml(exp_dir, samplerate=16000):
     global device
     f = open("%s/extract_f0_feature.log" % exp_dir, "a+")
 
@@ -97,7 +97,7 @@ def extract_f0_features_rmvpe_dml(exp_dir):
     device = torch_directml.device(torch_directml.default_device())
     with open(f"{exp_dir}/extract_f0_feature.log", "a+") as f:
         print("Starting RMVPE F0 feature extraction with DirectML", f)
-        feature_input = FeatureInput()
+        feature_input = FeatureInput(samplerate=samplerate)
         paths = []
         inp_root = f"{exp_dir}/1_16k_wavs"
         opt_root1 = f"{exp_dir}/2a_f0"

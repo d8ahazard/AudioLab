@@ -1,21 +1,21 @@
 import gc
+import logging
 import os
 import warnings
-from typing import List, Callable, Dict, Any
+from typing import List, Dict, Any
 
 import librosa
 import numpy as np
+import pyloudnorm as pyln
 import soundfile as sf
 import torch
-from scipy import signal
-import pyloudnorm as pyln
 from audiosr.pipeline import build_model, super_resolution
-from tqdm import tqdm
+from scipy import signal
 
-from handlers.config import output_path
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
+logger = logging.getLogger(__name__)
 # Suppress warnings
 warnings.filterwarnings("ignore")
 
@@ -52,8 +52,13 @@ def lr_filter(audio, cutoff, filter_type, order=12, sr=48000):
 class SuperResolution(BaseWrapper):
     title = "Super Resolution"
     description = "Upscale audio files to a higher sample rate using a pre-trained Super Resolution model."
-    priority = 2
+    priority = 3
     allowed_kwargs = {
+        "vocals_only": TypedInput(
+            description="When enabled, the model will only upscale the vocals in the audio file.",
+            default=True,
+            type=bool
+        ),
         "ddim_steps": TypedInput(
             description="The number of diffusion steps used during inference. A higher number provides better quality results but increases processing time.",
             default=50,
@@ -103,7 +108,8 @@ class SuperResolution(BaseWrapper):
         "tgt_ensemble": TypedInput(
             description="When enabled, combines the output with a low-pass filtered version of the original audio for enhanced quality and naturalness.",
             default=False,
-            type=bool
+            type=bool,
+            gradio_type="Checkbox"
         ),
         "tgt_cutoff": TypedInput(
             description="Specifies the cutoff frequency (in Hz) for the target audio ensemble's low-pass filter. Adjust this to fine-tune the balance of high and low frequencies.",
@@ -141,6 +147,7 @@ class SuperResolution(BaseWrapper):
         seed = filtered_kwargs.get("seed", -1)
         if seed == -1:
             seed = np.random.randint(0, 10000)
+        vocals_only = filtered_kwargs.get("vocals_only", True)
         guidance_scale = filtered_kwargs.get("guidance_scale", 3.5)
         ddim_steps = filtered_kwargs.get("ddim_steps", 50)
         tgt_ensemble = filtered_kwargs.get("tgt_ensemble", False)
@@ -161,6 +168,9 @@ class SuperResolution(BaseWrapper):
                 os.remove(os.path.join(temp_dir, temp_file))
             pj_inputs, _ = self.filter_inputs(project, "audio")
             outputs = []
+            if vocals_only:
+                outputs = [file for file in pj_inputs if "(Vocals)" not in file]
+                pj_inputs = [file for file in pj_inputs if "(Vocals)" in file]
             for tgt_file in pj_inputs:
                 print(f"Processing {tgt_file}")
                 tgt_name, _ = os.path.splitext(os.path.basename(tgt_file))
@@ -195,7 +205,7 @@ class SuperResolution(BaseWrapper):
                 chunks_per_channel = [process_chunks(channel) for channel in audio_channels]
                 sample_rate_ratio = self.sr / sr
                 total_length = len(chunks_per_channel[0][0]) * output_chunk_samples - (
-                            len(chunks_per_channel[0][0]) - 1) * (
+                        len(chunks_per_channel[0][0]) - 1) * (
                                    output_overlap_samples if enable_overlap else 0)
                 reconstructed_channels = [np.zeros((1, total_length)) for _ in audio_channels]
 
@@ -203,17 +213,19 @@ class SuperResolution(BaseWrapper):
                 meter_after = pyln.Meter(self.sr)
 
                 total_chunks = sum([len(chunks) for chunks, _ in chunks_per_channel])
-                total_steps = total_chunks * ddim_steps
+                current_step = 0
+
                 # Single global progress bar
-                progress_tqdm = tqdm(total=total_steps, desc="Processing", unit="steps", position=0, leave=True)
+                def update_progress(pct, desc, total):
+                    if callback is not None:
+                        callback(pct, desc, total)
+                    logger.info(f"{desc}: {pct:.2f}%")
 
-                def update_progress(progress):
-                        progress_tqdm.update(1)
-                        if callable(callback):
-                            callback(progress / total_steps, f"Processing {progress}/{total_steps} steps", total_steps)
-
+                update_progress(0, "Processing", total_chunks)
                 for ch_idx, (chunks, original_lengths) in enumerate(chunks_per_channel):
                     for i, chunk in enumerate(chunks):
+                        update_progress(current_step / total_chunks, "Processing", total_chunks)
+                        current_step += 1
                         try:
                             temp_wav = os.path.join(temp_dir, f"chunk{ch_idx}_{i}.wav")
                             loudness_before = meter_before.integrated_loudness(chunk)
@@ -229,8 +241,7 @@ class SuperResolution(BaseWrapper):
                                 seed=seed,
                                 guidance_scale=guidance_scale,
                                 ddim_steps=ddim_steps,
-                                latent_t_per_second=12.8,
-                                callback=update_progress
+                                latent_t_per_second=12.8
                             )
 
                             out_chunk = out_chunk[0]
@@ -260,7 +271,8 @@ class SuperResolution(BaseWrapper):
                             print(f"Error processing chunk {i + 1} of {len(chunks)}: {e}")
                             continue
 
-                reconstructed_audio = np.stack(reconstructed_channels, axis=-1) if is_stereo else reconstructed_channels[0]
+                reconstructed_audio = np.stack(reconstructed_channels, axis=-1) if is_stereo else \
+                    reconstructed_channels[0]
 
                 if tgt_ensemble:
                     low, _ = librosa.load(tgt_file, sr=48000, mono=False)
@@ -271,7 +283,7 @@ class SuperResolution(BaseWrapper):
                     output = low + high
                 else:
                     output = reconstructed_audio[0]
-
+                update_progress(100, "Processing", total_chunks)
                 output_file = os.path.join(output_folder, f"super_res_{tgt_name}.wav")
                 sf.write(output_file, output, self.sr, format="WAV", subtype="PCM_16")
 

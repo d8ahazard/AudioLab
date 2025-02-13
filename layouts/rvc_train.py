@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import pathlib
-import re
 import shutil
 import subprocess
 import sys
@@ -16,7 +15,6 @@ import gradio as gr
 import numpy as np
 import torch
 import torchaudio
-import yt_dlp
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 
@@ -30,7 +28,6 @@ from modules.rvc.infer.modules.train.extract.extract_f0_rmvpe_dml import extract
 from modules.rvc.infer.modules.train.extract_feature_print import extract_feature_print
 from modules.rvc.infer.modules.train.preprocess import preprocess_trainset
 from modules.rvc.infer.modules.train.train import train_main
-from modules.rvc.infer.modules.vc.pipeline import VC
 from modules.rvc.utils import HParams
 from util.data_classes import ProjectFiles
 from wrappers.separate import Separate
@@ -42,7 +39,6 @@ sys.path.append(now_dir)
 config = Config()
 F0GPUVisible = config.dml is False
 
-vc = VC(config)
 rvc_path = os.path.join(model_path, "rvc")
 
 ngpu = torch.cuda.device_count()
@@ -119,7 +115,6 @@ for name in os.listdir(weight_root):
         names.append(name)
 if len(names):
     first_name = names[0]
-    # vc.get_vc(first_name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 else:
     first_name = ""
 index_paths = []
@@ -675,6 +670,9 @@ def do_train_index(project_name, existing_project, project_version, progress=gr.
         return get_info_str("Project not found.")
 
     model_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}_final.pth")
+    model_file_new = os.path.join(index_root, f"{os.path.basename(exp_dir)}.pth")
+    if os.path.exists(model_file_new):
+        model_file = model_file_new
     if not os.path.exists(model_file):
         return get_info_str("Model file not found.")
     # Get the vers key from the model file

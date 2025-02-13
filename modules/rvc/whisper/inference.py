@@ -35,7 +35,7 @@ def pred_ppg(whisper: Whisper, wav_path, ppg_path, device):
     audln = audio.shape[0]
     ppg_a = []
     idx_s = 0
-    while (idx_s + 15 * 16000 < audln):
+    while idx_s + 15 * 16000 < audln:
         short = audio[idx_s:idx_s + 15 * 16000]
         idx_s = idx_s + 15 * 16000
         ppg_length = 15 * 16000 // 320
@@ -63,19 +63,3 @@ def pred_ppg(whisper: Whisper, wav_path, ppg_path, device):
             ppg = ppg[:ppg_length, ]  # [length, dim=1024]
             ppg_a.extend(ppg)
     np.save(ppg_path, ppg_a, allow_pickle=False)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-w", "--wav", help="wav", dest="wav", required=True)
-    parser.add_argument("-p", "--ppg", help="ppg", dest="ppg", required=True)
-    args = parser.parse_args()
-    print(args.wav)
-    print(args.ppg)
-
-    wavPath = args.wav
-    ppgPath = args.ppg
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    whisper = load_model(os.path.join("whisper_pretrain", "large-v3.pt"), device)
-    pred_ppg(whisper, wavPath, ppgPath, device)

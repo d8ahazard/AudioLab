@@ -84,13 +84,13 @@ class FeatureInput(object):
                     print("f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc()))
 
 
-def extract_f0_features_rmvpe(n_part, i_part, i_gpu, exp_dir, is_half_infer):
+def extract_f0_features_rmvpe(n_part, i_part, i_gpu, exp_dir, is_half_infer, sample_rate=16000):
     global is_half
     is_half = is_half_infer
     os.environ["CUDA_VISIBLE_DEVICES"] = str(i_gpu)
     with open(f"{exp_dir}/extract_f0_feature.log", "a+") as f:
         print("Starting RMVPE F0 feature extraction", f)
-        feature_input = FeatureInput()
+        feature_input = FeatureInput(samplerate=sample_rate)
         paths = []
         inp_root = f"{exp_dir}/1_16k_wavs"
         opt_root1 = f"{exp_dir}/2a_f0"
