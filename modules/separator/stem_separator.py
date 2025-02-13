@@ -12,6 +12,7 @@ import soundfile as sf
 import torch
 
 from handlers.config import app_path
+from handlers.patch_separate import patch_separator
 from handlers.reverb import extract_reverb
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.options = options
         self.device = torch.device("cuda:0") if torch.cuda.is_available() and not options.get("cpu", False) \
             else torch.device("cpu")
+        patch_separator()
         self.separator = Separator(
             log_level=logging.ERROR,
             model_file_dir=os.path.join(app_path, "models", "audio_separator")
@@ -385,22 +387,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
             return "vocals)" in stem_name and "(bg_vocals)" not in stem_name.lower()
         return False
 
-    @staticmethod
-    def _rename_bgvocal(filepath: str) -> str:
-        """ Renames file for BG vocal separation. """
-        dirname = os.path.dirname(filepath)
-        oldbase = os.path.basename(filepath)
-        newbase = oldbase.replace("(Vocals)_(Instrumental)", "(Vocals)(BG_Vocals)")
-        newbase = newbase.replace("(Vocals)_(Vocals)", "(Vocals)(Main Vocals)")
-        newbase = newbase.replace("(Vocals)(Instrumental)", "(Vocals)(BG_Vocals)")
-        newbase = newbase.replace("(Vocals)(Vocals)", "(Vocals)(Main Vocals)")
-        newbase = newbase.replace("_mel_band_roformer_karaoke_aufr33_viperx_sdr_10", "")
-        newpath = os.path.join(dirname, newbase)
-        if os.path.exists(filepath):
-            if os.path.exists(newpath):
-                os.remove(newpath)
-            os.rename(filepath, newpath)
-        return newpath
 
     @staticmethod
     def _rename_file(base_in: str, filepath: str) -> str:
