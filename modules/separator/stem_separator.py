@@ -429,12 +429,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
             arr, _ = librosa.load(f, sr=sr, mono=False)
             arrays.append(arr)
         if len(out_files) == 2:
-            if "(Instrumental)" in out_files[0]:
-                bg = arrays[0]
-                main = arrays[1]
-            else:
-                bg = arrays[1]
-                main = arrays[0]
+            bg = arrays[0]
+            main = arrays[1]
             return main, bg
         return vocals_array, None
 
