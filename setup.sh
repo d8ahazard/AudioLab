@@ -63,6 +63,7 @@ pip install mamba-ssm[causal-conv1d] torch==2.4.0 torchvision==0.19.0 torchaudio
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
-
-
+pip uninstall onnxruntime -y
+pip uninstall onnxruntime-gpu -y
+pip install onnxruntime-gpu --extra-index-url "${CUDA_URL}"
 echo "All dependencies installed successfully!"
