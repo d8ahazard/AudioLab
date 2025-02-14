@@ -171,7 +171,7 @@ class Clone(BaseWrapper):
 
             last_outputs = project.last_outputs
             # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
-            filtered_inputs = [p for p in last_outputs if "(Vocals)" in p]
+            filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals)" in p]
             if not filtered_inputs:
                 filtered_inputs = [project.src_file]
 

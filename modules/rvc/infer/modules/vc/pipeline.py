@@ -15,7 +15,8 @@ import torchcrepe
 from scipy import signal
 
 from handlers.config import model_path, output_path
-from handlers.noise_removal import restore_silence
+from handlers.noise_removal import restore_silence, restore_silence_claude, restore_silence_gemini, \
+    restore_silence_chatgpt, restore_silence_deepseek
 from handlers.stereo import stereo_to_mono_ms, resample_side, mono_to_stereo_ms
 from modules.rvc.infer.lib.audio import load_audio_advanced
 from modules.rvc.infer.lib.infer_pack.models import (
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 input_audio_path2wav = {}
 
 # Global debug cloning settings
-DEBUG_CLONE = False
+DEBUG_CLONE = True
 DEBUG_STEP_NO = 0
 
 
@@ -521,6 +522,7 @@ class VC:
             filter_radius,
             rms_mix_rate,
             protect,
+            clone_stereo=False,
             callback=None,
     ):
         try:
@@ -534,112 +536,117 @@ class VC:
                          f"Loaded audio: shape={audio_float.shape}, original SR={og_sr}",
                          self.total_steps)
 
-            # (B) Convert stereo to mono if needed.
-            if audio_float.ndim == 2 and audio_float.shape[1] == 2:
-                if callback is not None:
-                    callback(self.global_step / self.total_steps,
-                             "Converting stereo to mono (Mid-Side Encoding)",
-                             self.total_steps)
-                mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
-                debug_clone_audio(mono_og, og_sr, "vc_single_mono_converted")
-            else:
-                mono_og = audio_float if audio_float.ndim == 1 else audio_float.mean(axis=1)
-                side_og = None
-                orig_len = len(mono_og)
-                debug_clone_audio(mono_og, og_sr, "vc_single_mono_ready")
-
-            # (C) Decide on the processing sample rate.
-            if self.downsample_pipeline:
-                sr_rvc = 16000
-            else:
-                sr_rvc = og_sr
-                # Reinitialize the pipeline so that it uses the original sample rate.
+            # (B) Determine processing sample rate.
+            sr_rvc = 16000 if self.downsample_pipeline else og_sr
+            if not self.downsample_pipeline:
+                # Reinitialize the pipeline for original sample rate.
                 self.pipeline = Pipeline(self.tgt_sr, self.config, self.downsample_pipeline, processing_sr=og_sr)
 
-            if og_sr != sr_rvc:
-                mono_for_pipeline = librosa.resample(mono_og, orig_sr=og_sr, target_sr=sr_rvc)
-            else:
-                mono_for_pipeline = mono_og
-            debug_clone_audio(mono_for_pipeline, sr_rvc, "vc_single_pre_resample")
-
-            # (D) Run the voice cloning pipeline.
-            times = [0, 0, 0]
-            file_index = self.index
+            # (C) Ensure our models are loaded.
             if self.pipeline is None:
                 self.get_vc(model)
             if self.hubert_model is None:
                 self.hubert_model = load_hubert(self.config)
-            if callback is not None:
-                callback(self.global_step / self.total_steps, "Running pipeline...", self.total_steps)
-            # For pipeline, pass:
-            #   - tgt_sr: if downsampling is enabled, use the model's target (e.g. 48000);
-            #             if disabled, set tgt_sr equal to og_sr.
-            pipeline_tgt_sr = self.tgt_sr if self.downsample_pipeline else og_sr
-            audio_opt, audio_sr = self.pipeline.pipeline(
-                self.hubert_model,
-                self.net_g,
-                sid,
-                mono_for_pipeline,
-                input_audio_path,
-                times,
-                f0_up_key,
-                f0_method,
-                file_index,
-                index_rate,
-                self.if_f0,
-                filter_radius,
-                pipeline_tgt_sr,
-                og_sr,
-                rms_mix_rate,
-                self.version,
-                protect,
-                f0_file,
-            )
-            debug_clone_audio(audio_opt, audio_sr, "vcs_after_pipeline")
-            # if audio_opt.dtype == np.int16:
-            #     audio_opt = audio_opt.astype(np.float32) / 32768.0
 
-            audio_opt_float = audio_opt
-            # debug_clone_audio(audio_opt_float, audio_sr, "vcs_after_resample_back")
-
-            # (F) Reconstruct stereo if applicable.
-            if side_og is not None:
-                if callback is not None:
-                    callback(self.global_step / self.total_steps, "Reconstructing stereo (Mid-Side Decoding)",
-                             self.total_steps)
-                new_len = len(audio_opt_float)
-                if new_len != orig_len:
-                    side_og_resampled = resample_side(side_og, orig_len, new_len)
+            # (D) Helper function to process a single track.
+            def process_track(track, label):
+                # Resample if needed.
+                if og_sr != sr_rvc:
+                    track_resampled = librosa.resample(track, orig_sr=og_sr, target_sr=sr_rvc)
                 else:
-                    side_og_resampled = side_og
-                output_stereo = mono_to_stereo_ms(audio_opt_float, side_og_resampled)
-                final_float = output_stereo
-                debug_clone_audio(final_float, audio_sr, "vcs_after_stereo_recon")
-            else:
-                final_float = audio_opt_float.reshape(-1, 1)
+                    track_resampled = track
+                debug_clone_audio(track_resampled, sr_rvc, f"vc_single_{label}_pre_pipeline")
+                if callback is not None:
+                    callback(self.global_step / self.total_steps, f"Running pipeline for {label} channel...",
+                             self.total_steps)
+                processed, proc_sr = self.pipeline.pipeline(
+                    self.hubert_model,
+                    self.net_g,
+                    sid,
+                    track_resampled,
+                    input_audio_path,
+                    [0, 0, 0],  # times placeholder
+                    f0_up_key,
+                    f0_method,
+                    self.index,
+                    index_rate,
+                    self.if_f0,
+                    filter_radius,
+                    self.tgt_sr if self.downsample_pipeline else og_sr,
+                    og_sr,
+                    rms_mix_rate,
+                    self.version,
+                    protect,
+                    f0_file,
+                )
+                return processed, proc_sr
 
-            # 6) Restore silence if needed.
-            # (F) Restore silence if needed.
-            # Use the mono version of the original audio as reference.
-            if abs(len(mono_og) - len(final_float)) < self.pipeline.window:
-                reference = mono_og[:len(final_float)]
-                logger.info(f"Using trimmed mono reference (length {len(reference)}) for silence restoration.")
-            else:
-                # Compute the target sample rate based on the length ratio.
-                target_sr = (len(final_float) / len(mono_og)) * og_sr
-                reference = librosa.resample(mono_og, orig_sr=og_sr, target_sr=target_sr)
-                # # Normalize the resampled reference to have the same RMS as the original mono_og.
-                # orig_ref_rms = np.sqrt(np.mean(mono_og ** 2))
-                # new_ref_rms = np.sqrt(np.mean(reference ** 2)) + 1e-8
-                # reference = reference * (orig_ref_rms / new_ref_rms)
-                logger.info(
-                    f"Resampled mono reference from {len(mono_og)} to {len(reference)} samples for silence restoration.")
+            # (E) Process based on input channel configuration.
+            if audio_float.ndim == 2 and audio_float.shape[1] == 2:
+                # Stereo input.
+                left = audio_float[:, 0]
+                right = audio_float[:, 1]
 
-            final_float = restore_silence(reference, final_float, silence_threshold=0.001, frame_size=128)
-            debug_clone_audio(final_float, audio_sr, "vcs_after_silence_restore")
+                if clone_stereo:
+                    # --- Clone stereo: process left, right, and a "magic" center channel.
+                    debug_clone_audio(left, og_sr, "vc_single_left_channel")
+                    debug_clone_audio(right, og_sr, "vc_single_right_channel")
+                    # Create a center track (magic mono) as the average of left and right.
+                    center = 0.5 * (left + right)
+                    debug_clone_audio(center, og_sr, "vc_single_center_channel")
+
+                    left_opt, proc_sr = process_track(left, "left")
+                    right_opt, _ = process_track(right, "right")
+                    center_opt, _ = process_track(center, "center")
+
+                    # Trim outputs to the minimum length to avoid broadcasting issues.
+                    min_len = min(len(left_opt), len(right_opt), len(center_opt))
+                    left_opt = left_opt[:min_len]
+                    right_opt = right_opt[:min_len]
+                    center_opt = center_opt[:min_len]
+
+                    # Combine by using the center_opt as the mid and the side difference from left/right.
+                    side = 0.5 * (left_opt - right_opt)
+                    final_left = center_opt + side
+                    final_right = center_opt - side
+                    final_float = np.stack([final_left, final_right], axis=1)
+
+                else:
+                    # --- Non-clone stereo: convert to mono (keeping side info) and process.
+                    mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
+                    debug_clone_audio(mono_og, og_sr, "vc_single_mono_converted")
+                    processed_mono, proc_sr = process_track(mono_og, "mono")
+                    # Reconstruct stereo using resampled side information.
+                    new_len = len(processed_mono)
+                    if new_len != orig_len:
+                        side_resampled = resample_side(side_og, orig_len, new_len)
+                    else:
+                        side_resampled = side_og
+                    final_float = mono_to_stereo_ms(processed_mono, side_resampled)
+                    # --- Volume adjustment: match the RMS of the original mono.
+                    original_rms = np.sqrt(np.mean(mono_og ** 2))
+                    processed_rms = np.sqrt(np.mean(processed_mono ** 2))
+                    if processed_rms > 0:
+                        volume_adjust = original_rms / processed_rms
+                    else:
+                        volume_adjust = 1.0
+                    final_float *= volume_adjust
+            else:
+                # Mono input.
+                if audio_float.ndim == 1:
+                    mono = audio_float
+                else:
+                    mono = audio_float.mean(axis=1)
+                debug_clone_audio(mono, og_sr, "vc_single_mono_ready")
+                processed_mono, proc_sr = process_track(mono, "mono")
+                final_float = processed_mono.reshape(-1, 1)
+
+            # (F) Call silence restoration once.
+            final_float = restore_silence_deepseek(audio_float, final_float, og_sr, proc_sr)
+            debug_clone_audio(final_float, proc_sr, "vc_single_after_silence_restore")
 
             self.global_step += 1
-            return f"Success. Processing time: {times}", (og_sr, final_float)
+            return f"Success. Processing time: {[0, 0, 0]}", (og_sr, final_float)
         except Exception as e:
             info = traceback.format_exc()
             logger.info("[vc_single ERROR] " + info)
