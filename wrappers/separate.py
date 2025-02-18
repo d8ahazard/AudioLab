@@ -42,6 +42,14 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
+        "bg_vocal_layers": TypedInput(
+            default=1,
+            le=10,
+            ge=1,
+            description="Number of background vocal layers to separate.",
+            type=int,
+            gradio_type="Slider"
+        ),
         "vocals_only": TypedInput(
             default=True,
             description="Enable to separate only the main vocals and instrumental, disable for additional stems.",
@@ -156,6 +164,7 @@ class Separate(BaseWrapper):
                 "separate_woodwinds": filtered_kwargs.get("separate_woodwinds", False),
                 "alt_bass_model": filtered_kwargs.get("alt_bass_model", False),
                 "separate_bg_vocals": filtered_kwargs.get("separate_bg_vocals", True),
+                "bg_vocal_layers": filtered_kwargs.get("bg_vocal_layers", 1),
                 "reverb_removal": filtered_kwargs.get("reverb_removal", "Nothing"),
                 "echo_removal": filtered_kwargs.get("echo_removal", "Nothing"),
                 "delay_removal": filtered_kwargs.get("delay_removal", "Nothing"),

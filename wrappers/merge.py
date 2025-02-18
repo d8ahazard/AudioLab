@@ -60,7 +60,7 @@ class Merge(BaseWrapper):
             new_inputs = []
             for stem_path in inputs:
                 logger.info(f"Processing stem: {os.path.basename(stem_path)}")
-                if "(Vocals)" in stem_path and "(BG_Vocals)" not in stem_path:
+                if "(Vocals)" in stem_path and "(BG_Vocals" not in stem_path:
                     if os.path.exists(ir_file):
                         logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
                         stem_name, ext = os.path.splitext(os.path.basename(stem_path))

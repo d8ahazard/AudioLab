@@ -11,7 +11,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from handlers.config import app_path
+from handlers.config import app_path, output_path
 from handlers.patch_separate import patch_separator
 from handlers.reverb import extract_reverb
 
@@ -71,7 +71,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
         patch_separator()
         self.separator = Separator(
             log_level=logging.ERROR,
-            model_file_dir=os.path.join(app_path, "models", "audio_separator")
+            model_file_dir=os.path.join(app_path, "models", "audio_separator"),
+            invert_using_spec=True,
+            use_autocast=True
         )
         # Download all required models
         self.model_list = [
@@ -111,7 +113,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.noise_removal_model = options.get("noise_removal_model", "UVR-DeNoise.pth")
         self.crowd_removal_model = options.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx")
         self.separate_bg_vocals = options.get("separate_bg_vocals", True)
+        self.bg_vocal_layers = options.get("bg_vocal_layers", 1)
         self.store_reverb_ir = options.get("store_reverb_ir", False)
+        self.ensemble_strength = options.get("ensemble_strength", 1)
 
         # Progress tracking
         self.global_step = 0
@@ -181,6 +185,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
             ("Kim_Vocal_2.onnx", 6.9, 14.9),
             ("Kim_Vocal_1.onnx", 6.8, 14.9),
         ]
+        models_with_weights = models_with_weights[:self.ensemble_strength]
+
         model_idx = 1
         for model_name, v_wt, i_wt in models_with_weights:
             self.separator.load_model(model_name)
@@ -361,6 +367,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
             output_folder = res["output_folder"]
             for stem_key, label in stem_names.items():
                 if stem_key in res and res[stem_key] is not None:
+                    if stem_key == "bg_vocals" and "bg_vocals_" in base_name:
+                        bg_int = int(base_name.split("bg_vocals_")[-1])
+                        label = f"(BG_Vocals_{bg_int})"
                     # Use '__' as a delimiter to ensure robust splitting later
                     output_name = f"{base_name}__{label}.wav"
                     output_path = os.path.join(output_folder, output_name)
@@ -384,9 +393,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
         if setting == "All Vocals":
             return "vocals)" in stem_name.lower()
         if setting == "Main Vocals":
-            return "vocals)" in stem_name and "(bg_vocals)" not in stem_name.lower()
+            return "vocals)" in stem_name and "(bg_vocals" not in stem_name.lower()
         return False
-
 
     @staticmethod
     def _rename_file(base_in: str, filepath: str) -> str:
@@ -422,6 +430,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.separator.output_dir = output_folder
         self.separator.model_instance.output_dir = output_folder
         out_files = self.separator.separate(tmp_file)
+        self._advance_progress("Applied background vocal splitting")
         out_files = [os.path.join(output_folder, f) for f in out_files]
 
         bg = None
@@ -430,9 +439,16 @@ class EnsembleDemucsMDXMusicSeparationModel:
             arr, _ = librosa.load(f, sr=sr, mono=False)
             if "(Instrumental)" in f:
                 bg = arr
+                bg_file = f
             elif "(Vocals)" in f:
                 main = arr
+                main_file = f
         if bg is not None and main is not None:
+            # Ensure bg has data, and isn't empty
+            if np.max(np.abs(bg)) > 0.0:
+                bg = bg
+            else:
+                bg = None
             return main, bg
         return vocals_array, None
 
@@ -502,12 +518,16 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
         return []
     model = EnsembleDemucsMDXMusicSeparationModel(options, callback)
     ensemble_steps = 5
+    bg_steps = 0
+    if model.separate_bg_vocals:
+        bg_steps = model.bg_vocal_layers
+
     multi_stem_steps = 1 if not model.vocals_only else 0
     alt_bass_steps = 1 if (model.alt_bass_model and not model.vocals_only) else 0
     drum_steps = 1 if (model.separate_drums and not model.vocals_only) else 0
     ww_steps = 1 if (model.separate_woodwinds and not model.vocals_only) else 0
     saving_steps = 1
-    steps_per_file = ensemble_steps + multi_stem_steps + alt_bass_steps + drum_steps + ww_steps + saving_steps
+    steps_per_file = ensemble_steps + bg_steps + multi_stem_steps + alt_bass_steps + drum_steps + ww_steps + saving_steps
     model.total_steps = steps_per_file * len(files_data)
     if model.callback is not None:
         model.callback(0, "Starting Ensemble separation...", model.total_steps)
@@ -516,11 +536,15 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     if model.separate_bg_vocals:
         for base_name, res in results.items():
             if "vocals" in res and res["vocals"] is not None:
-                main_vocals, bg_vocals = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name, res["output_folder"])
+                main_vocals, bg_vocals = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name,
+                                                                         res["output_folder"])
                 res["vocals"] = main_vocals
-                res["bg_vocals"] = bg_vocals
+                # Don't save empty tracks.
+                if bg_vocals is not None:
+                    res["bg_vocals"] = bg_vocals
     # Always apply transformation chain to vocals and instrumental stems if any transform is set
-    transform_options = [model.reverb_removal, model.echo_removal, model.delay_removal, model.crowd_removal, model.noise_removal]
+    transform_options = [model.reverb_removal, model.echo_removal, model.delay_removal, model.crowd_removal,
+                         model.noise_removal]
     if any(opt != "Nothing" for opt in transform_options):
         for base_name, res in results.items():
             for stem_label in ["vocals", "instrumental"]:
@@ -580,7 +604,43 @@ def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, 
         "noise_removal_model": kwargs.get("noise_removal_model", "UVR-DeNoise.pth"),
         "crowd_removal_model": kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx"),
         "separate_bg_vocals": kwargs.get("separate_bg_vocals", True),
+        "bg_vocal_layers": kwargs.get("bg_vocal_layers", 1),
         "store_reverb_ir": kwargs.get("store_reverb_ir", False),
         "callback": callback
     }
     return predict_with_model(options, callback)
+
+
+def debug_ensemble(tgt_file):
+    import time
+    model = EnsembleDemucsMDXMusicSeparationModel({}, None)
+    base_name = os.path.splitext(os.path.basename(tgt_file))[0]
+    loaded, sr = librosa.load(tgt_file, sr=44100, mono=False)
+
+    for i in range(1, 6):
+        out_dir = os.path.join(output_path, "ensemble_debug")
+        start = time.time()
+        model.ensemble_strength = i
+        out_dir = os.path.join(out_dir, str(model.ensemble_strength))
+        os.makedirs(out_dir, exist_ok=True)
+        file_data = {"base_name": base_name, "mix_np": loaded, "sr": sr, "output_folder": out_dir}
+        results = model._ensemble_separate_all([file_data])
+        model._save_all_stems(results)
+        print(f"Time taken for {i} {time.time() - start}")
+
+
+def debug_bg_sep(tgt_file, bg_layers):
+    import time
+    model = EnsembleDemucsMDXMusicSeparationModel({}, None)
+    base_name = os.path.splitext(os.path.basename(tgt_file))[0]
+    loaded, sr = librosa.load(tgt_file, sr=44100, mono=False)
+    out_dir = os.path.join(output_path, "bg_sep_debug")
+    os.makedirs(out_dir, exist_ok=True)
+    start = time.time()
+    model.separate_bg_vocals = True
+    model.bg_vocal_layers = bg_layers
+    main, bg_vox = model._apply_bg_vocal_splitting(loaded, sr, base_name, out_dir)
+    if bg_layers > 1:
+        for i in range(bg_layers - 1):
+            main, bg_vox = model._apply_bg_vocal_splitting(bg_vox, sr, base_name, out_dir)
+    print(f"Time taken for {bg_layers} {time.time() - start}")

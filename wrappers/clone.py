@@ -171,13 +171,13 @@ class Clone(BaseWrapper):
 
             last_outputs = project.last_outputs
             # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
-            filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals)" in p]
+            filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals" in p]
             if not filtered_inputs:
                 filtered_inputs = [project.src_file]
 
             if not clone_bg_vocals:
-                # Exclude any "(BG_Vocals)" if user doesn't want to clone them
-                filtered_inputs = [p for p in filtered_inputs if "(BG_Vocals)" not in p]
+                # Exclude any "(BG_Vocals" if user doesn't want to clone them
+                filtered_inputs = [p for p in filtered_inputs if "(BG_Vocals" not in p]
 
             # Perform the voice conversion
             clone_outputs = self.vc.vc_multi(
