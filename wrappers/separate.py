@@ -88,20 +88,6 @@ class Separate(BaseWrapper):
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
-        "echo_removal": TypedInput(
-            default="Nothing",
-            description="Apply echo removal.",
-            type=str,
-            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
-            gradio_type="Dropdown"
-        ),
-        "delay_removal": TypedInput(
-            default="Nothing",
-            description="Apply delay removal.",
-            type=str,
-            choices=["Nothing", "Main Vocals", "All Vocals", "All"],
-            gradio_type="Dropdown"
-        ),
         "crowd_removal": TypedInput(
             default="Nothing",
             description="Apply crowd noise removal.",
@@ -114,14 +100,6 @@ class Separate(BaseWrapper):
             description="Apply general noise removal.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
-            gradio_type="Dropdown"
-        ),
-        # Model picks
-        "delay_removal_model": TypedInput(
-            default="UVR-DeEcho-DeReverb.pth",
-            description="Which echo/delay removal model to use",
-            type=str,
-            choices=["UVR-DeEcho-DeReverb.pth", "UVR-De-Echo-Normal.pth"],
             gradio_type="Dropdown"
         ),
         "noise_removal_model": TypedInput(

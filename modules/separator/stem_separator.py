@@ -105,8 +105,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
         # Transformation and BG vocal options from wrapper
         self.reverb_removal = options.get("reverb_removal", "Nothing")
-        self.echo_removal = options.get("echo_removal", "Nothing")
-        self.delay_removal = options.get("delay_removal", "Nothing")
         self.crowd_removal = options.get("crowd_removal", "Nothing")
         self.noise_removal = options.get("noise_removal", "Nothing")
         self.delay_removal_model = options.get("delay_removal_model", "UVR-DeEcho-DeReverb.pth")
@@ -454,10 +452,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
     def _apply_transform_chain(self, stem_array, sr, base_name, stem_label, output_folder) -> np.ndarray:
         """ Applies a series of transformations (reverb, echo, etc.) to a stem array. """
+
         transformations = [
-            ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", self.reverb_removal),
-            (self.delay_removal_model, "No Echo", self.echo_removal),
-            (self.delay_removal_model, "No Delay", self.delay_removal),
+            ("UVR-De-Echo-Normal.pth", "No Echo", self.reverb_removal),
             (self.crowd_removal_model, "No Crowd", self.crowd_removal),
             (self.noise_removal_model, "No Noise", self.noise_removal),
         ]
@@ -526,8 +523,19 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     alt_bass_steps = 1 if (model.alt_bass_model and not model.vocals_only) else 0
     drum_steps = 1 if (model.separate_drums and not model.vocals_only) else 0
     ww_steps = 1 if (model.separate_woodwinds and not model.vocals_only) else 0
+    transform_options = [model.reverb_removal, model.crowd_removal, model.noise_removal]
+    transform_steps = 0
+    for opt in transform_options:
+        if opt == "Nothing":
+            transform_steps += 0
+        elif opt == "All":
+            transform_steps += multi_stem_steps + alt_bass_steps + drum_steps + ww_steps
+        elif opt == "All Vocals":
+            transform_steps += 2
+        elif opt == "Main Vocals":
+            transform_steps += 1
     saving_steps = 1
-    steps_per_file = ensemble_steps + bg_steps + multi_stem_steps + alt_bass_steps + drum_steps + ww_steps + saving_steps
+    steps_per_file = transform_steps + ensemble_steps + bg_steps + multi_stem_steps + alt_bass_steps + drum_steps + ww_steps + saving_steps
     model.total_steps = steps_per_file * len(files_data)
     if model.callback is not None:
         model.callback(0, "Starting Ensemble separation...", model.total_steps)
@@ -543,8 +551,6 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
                 if bg_vocals is not None:
                     res["bg_vocals"] = bg_vocals
     # Always apply transformation chain to vocals and instrumental stems if any transform is set
-    transform_options = [model.reverb_removal, model.echo_removal, model.delay_removal, model.crowd_removal,
-                         model.noise_removal]
     if any(opt != "Nothing" for opt in transform_options):
         for base_name, res in results.items():
             for stem_label in ["vocals", "instrumental"]:
@@ -644,3 +650,48 @@ def debug_bg_sep(tgt_file, bg_layers):
         for i in range(bg_layers - 1):
             main, bg_vox = model._apply_bg_vocal_splitting(bg_vox, sr, base_name, out_dir)
     print(f"Time taken for {bg_layers} {time.time() - start}")
+
+
+def debug_reverb(tgt_file):
+    reverb_models = [
+        ("UVR-De-Echo-Aggressive.pth", "No Echo", "Echo"),
+        ("UVR-De-Echo-Normal.pth", "No Echo", "Echo"),
+        ("UVR-DeEcho-DeReverb.pth", "No reverb", "Reverb"),
+        ("MDX23C-De-Reverb-aufr33-jarredou.ckpt", "dry", "No dry"),
+        ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", "noreverb", "reverb"),
+        ("dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt", "noreverb", "reverb"),
+        ("dereverb-echo_mel_band_roformer_sdr_10.0169.ckpt", "dry", "No dry"),
+        ("dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt", "dry", "No dry"),
+        ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", "Reverb"),
+    ]
+    import time
+    from audio_separator.separator import Separator
+    separator = Separator(
+        log_level=logging.ERROR,
+        model_file_dir=os.path.join(app_path, "models", "audio_separator"),
+        invert_using_spec=True,
+        use_autocast=True
+    )
+    output_dir = os.path.join(output_path, "reverb_debug")
+    os.makedirs(output_dir, exist_ok=True)
+    separator.output_dir = output_dir
+    # Delete all the existing files in output_dir
+    for f in os.listdir(output_dir):
+        os.remove(os.path.join(output_dir, f))
+
+    for (model_file, dry_string, wet_string) in reverb_models:
+        print(f"Running reverb model: {model_file}")
+        separator.load_model(model_file)
+        start_time = time.time()
+        output_files = separator.separate(tgt_file)
+        output_files = [os.path.join(output_dir, f) for f in output_files]
+        dry_file = None
+        wet_file = None
+        for f in output_files:
+            if dry_string in f:
+                dry_file = os.path.join(output_dir, f)
+            if wet_string in f:
+                wet_file = os.path.join(output_dir, f)
+        if not dry_file or not wet_file:
+            print(f"Couldn't find files for {dry_string} and {wet_string} in {output_files}")
+        print(f"Time taken for {model_file} {time.time() - start_time}")
