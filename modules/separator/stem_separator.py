@@ -428,9 +428,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
         main = None
         for f in out_files:
             arr, _ = librosa.load(f, sr=sr, mono=False)
-            if "(Vocals)" in f:
+            if "(Instrumental)" in f:
                 bg = arr
-            elif "(Instrumental)" in f:
+            elif "(Vocals)" in f:
                 main = arr
         if bg is not None and main is not None:
             return main, bg
