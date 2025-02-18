@@ -584,25 +584,23 @@ def train1key(
         for index, f in enumerate(vocal_files):
             progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
             try:
+                current_dir = os.path.dirname(f)
                 base_name, ext = os.path.splitext(os.path.basename(f))
                 output_file = os.path.join(data_dir, f"{base_name}.wav")
-
-                if ext.lower() != ".wav":
-                    # Use FFmpeg for conversion
-                    temp_output = f"{base_name}_temp.wav"
-                    subprocess.run([
-                        "ffmpeg", "-i", f, temp_output, "-y", "-loglevel", "error"
-                    ], check=True)
-
-                    # Ensure the file is readable and has valid data
-                    audio, samplerate = torchaudio.load(temp_output)
-                    torchaudio.save(output_file, audio, sample_rate=samplerate)
-                    os.remove(temp_output)
+                if os.path.exists(output_file):
+                    f = output_file
+                audio, samplerate = torchaudio.load(f)
+                # If the audio is stereo, convert to mono
+                if audio.shape[0] == 2:
+                    left_channel = audio[0].unsqueeze(0)
+                    logger.info(f"Converting stereo to mono: {f}")
+                    torchaudio.save(output_file, left_channel, sample_rate=samplerate)
                 else:
-                    # If already a WAV file, copy it to the data_dir
-                    shutil.copyfile(f, output_file)
+                    if not os.path.exists(output_file):
+                        torchaudio.save(output_file, audio, sample_rate=samplerate)
 
             except Exception as e:
+                traceback.print_exc()
                 logger.error(f"Error processing file {f}: {e}")
         preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
 
