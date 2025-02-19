@@ -234,12 +234,6 @@ if __name__ == '__main__':
 
     with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue") as ui:
         with gr.Tabs(selected="process"):
-            with gr.Tab(label='Zonos', id="zonos"):
-                render_zonos()
-            with gr.Tab(label='TTS', id="tts"):
-                render_tts()
-            with gr.Tab(label="Music", id="music"):
-                render_music(arg_handler)
             with gr.Tab(label='Process', id="process"):
                 gr.Markdown("## Music Processing")
                 processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers,
@@ -337,6 +331,12 @@ if __name__ == '__main__':
                 )
             with gr.Tab(label="Train", id="train"):
                 rvc_render()
+            with gr.Tab(label='Zonos', id="zonos"):
+                render_zonos()
+            with gr.Tab(label='TTS', id="tts"):
+                render_tts()
+            with gr.Tab(label="Music", id="music"):
+                render_music(arg_handler)
 
         tts_listen()
         music_listen()

@@ -74,7 +74,7 @@ class Clone(BaseWrapper):
             gradio_type="Number",
         ),
         "pitch_extraction_method": TypedInput(
-            default="rmvpe",
+            default="harvest",
             description="Pitch extraction algorithm. 'harvest' allows more features (e.g. smoothing).",
             type=str,
             choices=["pm", "harvest", "crepe", "rmvpe"],
@@ -101,7 +101,7 @@ class Clone(BaseWrapper):
             step=0.01,
         ),
         "filter_radius": TypedInput(
-            default=5,
+            default=7,
             description="Median filter radius for 'harvest' pitch recognition. "
                         "Higher values reduce 'auto-tune' artifacts but may lose detail.",
             type=int,
