@@ -331,12 +331,12 @@ if __name__ == '__main__':
                 )
             with gr.Tab(label="Train", id="train"):
                 rvc_render()
-            with gr.Tab(label='Zonos', id="zonos"):
-                render_zonos()
-            with gr.Tab(label='TTS', id="tts"):
-                render_tts()
             with gr.Tab(label="Music", id="music"):
                 render_music(arg_handler)
+            with gr.Tab(label='TTS', id="tts"):
+                render_tts()
+            with gr.Tab(label='Zonos', id="zonos"):
+                render_zonos()
 
         tts_listen()
         music_listen()
