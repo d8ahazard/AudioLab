@@ -258,7 +258,7 @@ def extract_f0_feature(num_processors, extract_method, use_pitch_guidance, exp_d
                 gpus_rmvpe = gpus_rmvpe.split("-")
                 leng = len(gpus_rmvpe)
                 ps = []
-                # TODO: Threading and shit
+                # TODO: Threading and stuff
                 for idx, n_g in enumerate(gpus_rmvpe):
                     extract_f0_features_rmvpe(leng, idx, n_g, exp_dir, config.is_half)
             else:

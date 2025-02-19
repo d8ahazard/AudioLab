@@ -1,7 +1,7 @@
 import os
 import traceback
-
 import fairseq
+import logging
 import numpy as np
 import soundfile as sf
 import torch
@@ -12,15 +12,17 @@ from handlers.config import model_path
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
+logger = logging.getLogger(__name__)
+
 
 # wave must be 16k, hop_size=320
-def readwave(wav_path, normalize=False):
+def read_wave(wav_path, normalize=False):
     wav, sr = sf.read(wav_path)
-    assert sr == 16000
+    assert sr == 16000, f"Expected sample rate 16000, got {sr}"
     feats = torch.from_numpy(wav).float()
-    if feats.dim() == 2:  # double channels
+    if feats.dim() == 2:  # dual channels
         feats = feats.mean(-1)
-    assert feats.dim() == 1, feats.dim()
+    assert feats.dim() == 1, f"Expected 1D features, got {feats.dim()}D"
     if normalize:
         with torch.no_grad():
             feats = F.layer_norm(feats, feats.shape)
@@ -47,54 +49,60 @@ def extract_feature_print(device, exp_dir, version, is_half):
 
         fairseq.modules.grad_multiply.GradMultiply.forward = forward_dml
 
-    f = open("%s/extract_f0_feature.log" % exp_dir, "a+")
+    # Build paths using os.path.join
+    log_file = os.path.join(exp_dir, "extract_f0_feature.log")
+    # (Removed unused file handle for logging)
 
     model_file = os.path.join(model_path, "rvc", "hubert_base.pt")
+    wav_dir = os.path.join(exp_dir, "1_16k_wavs")
+    if version == "v1":
+        features_dir = os.path.join(exp_dir, "3_feature256")
+    else:
+        features_dir = os.path.join(exp_dir, "3_feature768")
+    os.makedirs(features_dir, exist_ok=True)
 
-    print("exp_dir: " + exp_dir)
-    wavPath = "%s/1_16k_wavs" % exp_dir
-    outPath = (
-        "%s/3_feature256" % exp_dir if version == "v1" else "%s/3_feature768" % exp_dir
-    )
-    os.makedirs(outPath, exist_ok=True)
+    logger.info("exp_dir: %s", exp_dir)
+    logger.info("Load model(s) from %s", model_file)
 
-    # HuBERT model
-    print("load model(s) from {}".format(model_file))
-    # if hubert model is exist
-    if not os.access(model_path, os.F_OK):
-        print(
-            "Error: Extracting is shut down because %s does not exist, you may download it from https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main"
-            % model_path
+    # Check for required files/directories
+    if not os.path.exists(model_file):
+        logger.error(
+            "Error: Model file %s does not exist. Please download it from "
+            "https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main", model_file
         )
-        exit(0)
-    models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
+        raise FileNotFoundError("Model file not found: " + model_file)
+    if not os.path.exists(wav_dir):
+        logger.error("Error: WAV directory %s does not exist.", wav_dir)
+        raise FileNotFoundError("WAV directory not found: " + wav_dir)
+
+    models, saved_cfg, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
         [model_file],
         suffix="",
     )
     model = models[0]
     model = model.to(device)
-    print("move model to %s" % device)
+    logger.info("Move model to %s", device)
     if is_half:
         if device not in ["mps", "cpu"]:
             model = model.half()
     model.eval()
 
-    todo = sorted(list(os.listdir(wavPath)))
-    n = max(1, len(todo) // 10)  # 最多打印十条
-    if len(todo) == 0:
-        print("no-feature-todo")
+    wav_files = sorted(os.listdir(wav_dir))
+    n = max(1, len(wav_files) // 10)  # Print at most 10 logs
+    if len(wav_files) == 0:
+        logger.info("No files to process in %s", wav_dir)
     else:
-        print("all-feature-%s" % len(todo))
-        for idx, file in enumerate(todo):
+        logger.info("Total files to process: %s", len(wav_files))
+        for idx, wav_file in enumerate(wav_files):
             try:
-                if file.endswith(".wav"):
-                    wav_path = "%s/%s" % (wavPath, file)
-                    out_path = "%s/%s" % (outPath, file.replace("wav", "npy"))
+                if wav_file.endswith(".wav"):
+                    input_wav_path = os.path.join(wav_dir, wav_file)
+                    output_feature_path = os.path.join(features_dir, wav_file.replace("wav", "npy"))
 
-                    if os.path.exists(out_path):
+                    if os.path.exists(output_feature_path):
                         continue
 
-                    feats = readwave(wav_path, normalize=saved_cfg.task.normalize)
+                    feats = read_wave(input_wav_path, normalize=saved_cfg.task.normalize)
                     padding_mask = torch.BoolTensor(feats.shape).fill_(False)
                     inputs = {
                         "source": (
@@ -103,7 +111,7 @@ def extract_feature_print(device, exp_dir, version, is_half):
                             else feats.to(device)
                         ),
                         "padding_mask": padding_mask.to(device),
-                        "output_layer": 9 if version == "v1" else 12,  # layer 9
+                        "output_layer": 9 if version == "v1" else 12,  # layer 9 or 12
                     }
                     with torch.no_grad():
                         logits = model.extract_features(**inputs)
@@ -113,11 +121,12 @@ def extract_feature_print(device, exp_dir, version, is_half):
 
                     feats = feats.squeeze(0).float().cpu().numpy()
                     if np.isnan(feats).sum() == 0:
-                        np.save(out_path, feats, allow_pickle=False)
+                        np.save(output_feature_path, feats, allow_pickle=False)
                     else:
-                        print("%s-contains nan" % file)
+                        logger.warning("%s contains NaN values", wav_file)
                     if idx % n == 0:
-                        print("now-%s,all-%s,%s,%s" % (len(todo), idx, file, feats.shape))
-            except:
-                print(traceback.format_exc())
-        print("all-feature-done")
+                        logger.info("Progress: Total %s, Processed %s, File %s, Feature shape %s",
+                                    len(wav_files), idx, wav_file, feats.shape)
+            except Exception:
+                logger.error(traceback.format_exc())
+        logger.info("Feature extraction done for all files")
