@@ -3,7 +3,6 @@ import logging
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 import traceback
 from random import shuffle
@@ -58,39 +57,15 @@ if torch.cuda.is_available() or ngpu != 0:
         if any(
                 value in gpu_name.upper()
                 for value in [
-                    "10",
-                    "16",
-                    "20",
-                    "30",
-                    "40",
-                    "A2",
-                    "A3",
-                    "A4",
-                    "P4",
-                    "A50",
-                    "500",
-                    "A60",
-                    "70",
-                    "80",
-                    "90",
-                    "M4",
-                    "T4",
-                    "TITAN",
-                    "4060",
-                    "L",
-                    "6000",
+                    "10", "16", "20", "30", "40", "A2", "A3", "A4", "P4", "A50", "500",
+                    "A60", "70", "80", "90", "M4", "T4", "TITAN", "4060", "L", "6000",
                 ]
         ):
-            # A10#A100#V100#A40#P40#M40#K80#A4500
-            if_gpu_ok = True  # 至少有一张能用的N卡
+            if_gpu_ok = True  # At least one usable NVIDIA card
             gpu_infos.append("%s\t%s" % (i, gpu_name))
             mem.append(
                 int(
-                    torch.cuda.get_device_properties(i).total_memory
-                    / 1024
-                    / 1024
-                    / 1024
-                    + 0.4
+                    torch.cuda.get_device_properties(i).total_memory / 1024 / 1024 / 1024 + 0.4
                 )
             )
 if if_gpu_ok and len(gpu_infos) > 0:
@@ -121,37 +96,24 @@ index_paths = []
 
 
 def get_pretrained_models(path_str, f0_str, sr2):
-    if_pretrained_generator_exist = os.access(
-        f"{rvc_path}/pretrained%s/%sG%s.pth" % (path_str, f0_str, sr2), os.F_OK
-    )
-    if_pretrained_discriminator_exist = os.access(
-        f"{rvc_path}/pretrained%s/%sD%s.pth" % (path_str, f0_str, sr2), os.F_OK
-    )
+    generator_path = os.path.join(rvc_path, "pretrained", path_str, f"{f0_str}G{sr2}.pth")
+    discriminator_path = os.path.join(rvc_path, "pretrained", path_str, f"{f0_str}D{sr2}.pth")
+    if_pretrained_generator_exist = os.path.exists(generator_path)
+    if_pretrained_discriminator_exist = os.path.exists(discriminator_path)
     if not if_pretrained_generator_exist:
-        logger.warning(
-            "assets/pretrained%s/%sG%s.pth not exist, will not use pretrained model",
-            path_str,
-            f0_str,
-            sr2,
+        logger.error(
+            f"{generator_path} not exist, will not use pretrained model."
         )
+        raise FileNotFoundError(f"{generator_path} not exist, will not use pretrained model.")
     if not if_pretrained_discriminator_exist:
-        logger.warning(
-            f"{rvc_path}/pretrained%s/%sD%s.pth not exist, will not use pretrained model",
-            path_str,
-            f0_str,
-            sr2,
+        logger.error(
+            f"{discriminator_path} not exist, will not use pretrained model."
         )
+        raise FileNotFoundError(f"{discriminator_path} not exist, will not use pretrained model.")
     return (
-        (
-            f"{rvc_path}/pretrained%s/%sG%s.pth" % (path_str, f0_str, sr2)
-            if if_pretrained_generator_exist
-            else ""
-        ),
-        (
-            f"{rvc_path}/pretrained%s/%sD%s.pth" % (path_str, f0_str, sr2)
-            if if_pretrained_discriminator_exist
-            else ""
-        ),
+        os.path.join(rvc_path, "pretrained", path_str, f"{f0_str}G{sr2}.pth") if if_pretrained_generator_exist else "",
+        os.path.join(rvc_path, "pretrained", path_str,
+                     f"{f0_str}D{sr2}.pth") if if_pretrained_discriminator_exist else ""
     )
 
 
@@ -209,7 +171,7 @@ def change_f0(if_f0_3, sr2, version19):  # f0method8,pretrained_G14,pretrained_D
     return (
         {"visible": if_f0_3, "__type__": "update"},
         {"visible": if_f0_3, "__type__": "update"},
-        *get_pretrained_models(path_str, "f0" if if_f0_3 == True else "", sr2),
+        *get_pretrained_models(path_str, "f0" if if_f0_3 else "", sr2),
     )
 
 
@@ -222,7 +184,7 @@ def change_f0_method(f0method8):
 
 
 def if_done(done, p):
-    while 1:
+    while True:
         if p.poll() is None:
             sleep(0.5)
         else:
@@ -231,7 +193,7 @@ def if_done(done, p):
 
 
 def if_done_multi(done, ps):
-    while 1:
+    while True:
         flag = 1
         for p in ps:
             if p.poll() is None:
@@ -258,12 +220,10 @@ def extract_f0_feature(num_processors, extract_method, use_pitch_guidance, exp_d
                 gpus_rmvpe = gpus_rmvpe.split("-")
                 leng = len(gpus_rmvpe)
                 ps = []
-                # TODO: Threading and stuff
                 for idx, n_g in enumerate(gpus_rmvpe):
                     extract_f0_features_rmvpe(leng, idx, n_g, exp_dir, config.is_half)
             else:
                 extract_f0_features_rmvpe_dml(exp_dir)
-
     extract_feature_print(config.device, exp_dir, project_version, config.is_half)
 
 
@@ -285,229 +245,192 @@ def click_train(
         model_version,
         progress=gr.Progress(),
 ):
-    config = Config()
-    exp_dir = os.path.join(output_path, "voices", voice_name)
-    os.makedirs(exp_dir, exist_ok=True)
-    gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
-    feature_dir = os.path.join(exp_dir, "3_feature256" if model_version == "v1" else "3_feature768")
-    f0_dir = os.path.join(exp_dir, "2a_f0")
-    f0nsf_dir = os.path.join(exp_dir, "2b-f0nsf")
+    try:
+        config_obj = Config()
+        exp_dir = os.path.join(output_path, "voices", voice_name)
+        os.makedirs(exp_dir, exist_ok=True)
+        gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
+        feature_dir = os.path.join(exp_dir, "3_feature256" if model_version == "v1" else "3_feature768")
+        f0_dir = os.path.join(exp_dir, "2a_f0")
+        f0nsf_dir = os.path.join(exp_dir, "2b-f0nsf")
 
-    def get_basenames(directory: str) -> set:
-        """Return a set of file basenames (up to the first dot) from a directory."""
-        return {filename.split('.')[0] for filename in os.listdir(directory)}
+        def get_basenames(directory: str) -> set:
+            return {filename.split('.')[0] for filename in os.listdir(directory)}
 
-    def fix_escapes(entries: List[str]) -> List[str]:
-        """Fix backslashes in file paths."""
-        return [entry.replace("\\", "\\\\") for entry in entries]
+        def fix_escapes(entries: List[str]) -> List[str]:
+            return [entry.replace("\\", "\\\\") for entry in entries]
 
-    def build_entry(name: str, use_pitch_guidance: bool, gt_wavs_dir: str, feature_dir: str,
-                    f0_dir: str, f0nsf_dir: str, speaker_index: int) -> str:
-        """Build a single entry string based on the provided file name."""
+        def build_entry(name: str, use_pitch_guidance: bool, gt_wavs_dir: str, feature_dir: str,
+                        f0_dir: str, f0nsf_dir: str, speaker_index: int) -> str:
+            if use_pitch_guidance:
+                wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
+                feature_path = os.path.join(feature_dir, f"{name}.npy")
+                f0_path = os.path.join(f0_dir, f"{name}.wav.npy")
+                f0nsf_path = os.path.join(f0nsf_dir, f"{name}.wav.npy")
+                return f"{wav_path}|{feature_path}|{f0_path}|{f0nsf_path}|{speaker_index}"
+            else:
+                wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
+                feature_path = os.path.join(feature_dir, f"{name}.npy")
+                return f"{wav_path}|{feature_path}|{speaker_index}"
+
         if use_pitch_guidance:
-            wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
-            feature_path = os.path.join(feature_dir, f"{name}.npy")
-            f0_path = os.path.join(f0_dir, f"{name}.wav.npy")
-            f0nsf_path = os.path.join(f0nsf_dir, f"{name}.wav.npy")
-            return f"{wav_path}|{feature_path}|{f0_path}|{f0nsf_path}|{speaker_index}"
-        else:
-            wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
-            feature_path = os.path.join(feature_dir, f"{name}.npy")
-            return f"{wav_path}|{feature_path}|{speaker_index}"
-
-    # Get the intersection of base names from the required directories
-    if use_pitch_guidance:
-        f_names = (
-                get_basenames(gt_wavs_dir) &
-                get_basenames(feature_dir) &
-                get_basenames(f0_dir) &
-                get_basenames(f0nsf_dir)
-        )
-    else:
-        f_names = get_basenames(gt_wavs_dir) & get_basenames(feature_dir)
-
-    # Build the list of entries for each file name
-    opt = [build_entry(f_name, use_pitch_guidance, gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, speaker_index)
-           for f_name in f_names]
-
-    # Determine feature dimension and mute paths
-    fea_dim = 256 if model_version == "v1" else 768
-    mutes_dir = os.path.join(app_path, "modules", "rvc")
-
-    mute_wav_path = os.path.join(mutes_dir, "logs", "mute", "0_gt_wavs")
-    mute_feature_path = os.path.join(mutes_dir, "logs", "mute", f"3_feature{fea_dim}")
-    mute_f0_path = os.path.join(mutes_dir, "logs", "mute", "2a_f0")
-    mute_f0nsf_path = os.path.join(mutes_dir, "logs", "mute", "2b-f0nsf")
-
-    # Append mute entries twice to the list
-    for _ in range(2):
-        if use_pitch_guidance:
-            mute_entry = "|".join([
-                os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
-                os.path.join(mute_feature_path, "mute.npy"),
-                os.path.join(mute_f0_path, "mute.wav.npy"),
-                os.path.join(mute_f0nsf_path, "mute.wav.npy"),
-                str(speaker_index)
-            ])
-        else:
-            mute_entry = "|".join([
-                os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
-                os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
-                str(speaker_index)
-            ])
-        opt.append(mute_entry)
-
-    shuffle(opt)
-    opt = fix_escapes(opt)
-    with open(os.path.join(exp_dir, "filelist.txt"), "w") as f:
-        f.write("\n".join(opt))
-    logger.debug("Write filelist done")
-    logger.info("Use gpus: %s", str(more_gpu_ids))
-    # If resume_training is True, last_epoch should be the last epoch number.
-    if resume_training:
-        existing_pretrained_dir = os.path.join(exp_dir, "checkpoints")
-    if pretrained_generator == "":
-        logger.info("No pretrained Generator")
-    if pretrained_discriminator == "":
-        logger.info("No pretrained Discriminator")
-    if model_version == "v1" or sample_rate == "40k":
-        config_path = "v1/%s.json" % sample_rate
-    else:
-        config_path = "v3/%s.json" % sample_rate
-    config_save_path = os.path.join(exp_dir, "config.json")
-    if not pathlib.Path(config_save_path).exists():
-        with open(config_save_path, "w", encoding="utf-8") as f:
-            json.dump(
-                config.json_config[config_path],
-                f,
-                ensure_ascii=False,
-                indent=4,
-                sort_keys=True,
+            f_names = (
+                    get_basenames(gt_wavs_dir) &
+                    get_basenames(feature_dir) &
+                    get_basenames(f0_dir) &
+                    get_basenames(f0nsf_dir)
             )
-            f.write("\n")
-    config_save_path = os.path.join(exp_dir, "config.json")
+        else:
+            f_names = get_basenames(gt_wavs_dir) & get_basenames(feature_dir)
 
-    # Load configuration.
-    with open(config_save_path, "r") as f:
-        config = json.load(f)
+        opt = [build_entry(f_name, use_pitch_guidance, gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, speaker_index)
+               for f_name in f_names]
 
-    # Manually constructing hparams object.
-    hparams = HParams(**config)
-    hparams.model_dir = hparams.experiment_dir = exp_dir
-    hparams.save_every_epoch = save_epoch_frequency
-    hparams.name = voice_name
-    hparams.total_epoch = total_epochs
-    hparams.pretrainG = pretrained_generator
-    hparams.pretrainD = pretrained_discriminator
-    hparams.version = model_version
-    hparams.gpus = more_gpu_ids if more_gpu_ids else "0"
-    hparams.train.batch_size = train_batch_size
-    hparams.train.epochs = total_epochs
-    hparams.sample_rate = sample_rate
-    hparams.if_f0 = 1 if use_pitch_guidance else 0
-    hparams.if_latest = 1 if save_latest_only else 0
-    hparams.save_every_weights = 1 if save_weights_each_ckpt == "Yes" else 0
-    hparams.if_cache_data_in_gpu = 1 if cache_dataset_to_gpu == "Yes" else 0
-    hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
+        fea_dim = 256 if model_version == "v1" else 768
+        mutes_dir = os.path.join(app_path, "modules", "rvc")
+        mute_wav_path = os.path.join(mutes_dir, "logs", "mute", "0_gt_wavs")
+        mute_feature_path = os.path.join(mutes_dir, "logs", "mute", f"3_feature{fea_dim}")
+        mute_f0_path = os.path.join(mutes_dir, "logs", "mute", "2a_f0")
+        mute_f0nsf_path = os.path.join(mutes_dir, "logs", "mute", "2b-f0nsf")
 
-    # Logging for debugging.
-    logger.info(f"Training with hparams: {hparams}")
+        for _ in range(2):
+            if use_pitch_guidance:
+                mute_entry = "|".join([
+                    os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
+                    os.path.join(mute_feature_path, "mute.npy"),
+                    os.path.join(mute_f0_path, "mute.wav.npy"),
+                    os.path.join(mute_f0nsf_path, "mute.wav.npy"),
+                    str(speaker_index)
+                ])
+            else:
+                mute_entry = "|".join([
+                    os.path.join(mute_wav_path, f"mute{sample_rate}.wav"),
+                    os.path.join(mute_feature_path, f"{fea_dim}", "mute.npy"),
+                    str(speaker_index)
+                ])
+            opt.append(mute_entry)
 
-    # Directly call the main() function from train script.
-    train_main(hparams, progress)
-    return "Training complete."
+        shuffle(opt)
+        opt = fix_escapes(opt)
+        with open(os.path.join(exp_dir, "filelist.txt"), "w") as f:
+            f.write("\n".join(opt))
+        logger.debug("Write filelist done")
+        logger.info("Use gpus: %s", str(more_gpu_ids))
+        if resume_training:
+            existing_pretrained_dir = os.path.join(exp_dir, "checkpoints")
+        if pretrained_generator == "":
+            logger.info("No pretrained Generator")
+        if pretrained_discriminator == "":
+            logger.info("No pretrained Discriminator")
+        if model_version == "v1" or sample_rate == "40k":
+            config_path = "v1/%s.json" % sample_rate
+        else:
+            config_path = "v3/%s.json" % sample_rate
+        config_save_path = os.path.join(exp_dir, "config.json")
+        if not pathlib.Path(config_save_path).exists():
+            with open(config_save_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    config_obj.json_config[config_path],
+                    f,
+                    ensure_ascii=False,
+                    indent=4,
+                    sort_keys=True,
+                )
+                f.write("\n")
+        config_save_path = os.path.join(exp_dir, "config.json")
+        with open(config_save_path, "r") as f:
+            config_loaded = json.load(f)
+        hparams = HParams(**config_loaded)
+        hparams.model_dir = hparams.experiment_dir = exp_dir
+        hparams.save_every_epoch = save_epoch_frequency
+        hparams.name = voice_name
+        hparams.total_epoch = total_epochs
+        hparams.pretrainG = pretrained_generator
+        hparams.pretrainD = pretrained_discriminator
+        hparams.version = model_version
+        hparams.gpus = more_gpu_ids if more_gpu_ids else "0"
+        hparams.train.batch_size = train_batch_size
+        hparams.train.epochs = total_epochs
+        hparams.sample_rate = sample_rate
+        hparams.if_f0 = 1 if use_pitch_guidance else 0
+        hparams.if_latest = 1 if save_latest_only else 0
+        hparams.save_every_weights = 1 if save_weights_each_ckpt == "Yes" else 0
+        hparams.if_cache_data_in_gpu = 1 if cache_dataset_to_gpu == "Yes" else 0
+        hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
+
+        logger.info(f"Training with hparams: {hparams}")
+        train_main(hparams, progress)
+        return "Training complete."
+    except Exception as e:
+        error_msg = f"Error during training: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
 
 
 def train_index(project_name, model_version):
     exp_dir = os.path.join(output_path, "voices", project_name)
     os.makedirs(exp_dir, exist_ok=True)
-
     feature_dir = os.path.join(exp_dir, "3_feature256") if model_version == "v1" else os.path.join(exp_dir,
                                                                                                    "3_feature768")
-
     if not os.path.exists(feature_dir):
         return "Please extract features first!"
-
     feature_files = sorted(os.listdir(feature_dir))
     if not feature_files:
         return "Please extract features first!"
-
     infos = []
     npys = []
-
     for file_name in feature_files:
         file_path = os.path.join(feature_dir, file_name)
         npys.append(np.load(file_path))
-
     big_npy = np.concatenate(npys, axis=0)
     big_npy_idx = np.arange(big_npy.shape[0])
     np.random.shuffle(big_npy_idx)
     big_npy = big_npy[big_npy_idx]
-
     if big_npy.shape[0] > 200000:
         infos.append(f"Trying k-means with {big_npy.shape[0]} data points to 10,000 centers.")
         yield "\n".join(infos)
         try:
-            big_npy = (
-                MiniBatchKMeans(
-                    n_clusters=10000,
-                    verbose=True,
-                    batch_size=256 * config.n_cpu,
-                    compute_labels=False,
-                    init="random",
-                ).fit(big_npy).cluster_centers_
-            )
+            big_npy = MiniBatchKMeans(
+                n_clusters=10000,
+                verbose=True,
+                batch_size=256 * config.n_cpu,
+                compute_labels=False,
+                init="random",
+            ).fit(big_npy).cluster_centers_
         except Exception:
             info = traceback.format_exc()
             logger.info(info)
             infos.append(info)
             yield "\n".join(infos)
-
     total_feature_path = os.path.join(exp_dir, "total_fea.npy")
     np.save(total_feature_path, big_npy)
-
     n_ivf = min(int(16 * np.sqrt(big_npy.shape[0])), big_npy.shape[0] // 39)
     infos.append(f"Shape: {big_npy.shape}, IVF size: {n_ivf}")
     yield "\n".join(infos)
-
     dimension = 256 if model_version == "v1" else 768
     index = faiss.index_factory(dimension, f"IVF{n_ivf},Flat")
-
     infos.append("Training the index...")
     yield "\n".join(infos)
-
     index_ivf = faiss.extract_index_ivf(index)
     index_ivf.nprobe = 1
-
     index.train(big_npy)
-
-    trained_index_path = os.path.join(
-        exp_dir, f"trained_IVF{n_ivf}_Flat_nprobe_{index_ivf.nprobe}_{model_version}.index"
-    )
+    trained_index_path = os.path.join(exp_dir,
+                                      f"trained_IVF{n_ivf}_Flat_nprobe_{index_ivf.nprobe}_{model_version}.index")
     faiss.write_index(index, trained_index_path)
-
     infos.append("Adding data to the index...")
     yield "\n".join(infos)
-
     batch_size_add = 8192
     for i in range(0, big_npy.shape[0], batch_size_add):
         index.add(big_npy[i:i + batch_size_add])
-
-    added_index_path = os.path.join(
-        exp_dir, f"added_IVF{n_ivf}_Flat_nprobe_{index_ivf.nprobe}_{model_version}.index"
-    )
+    added_index_path = os.path.join(exp_dir, f"added_IVF{n_ivf}_Flat_nprobe_{index_ivf.nprobe}_{model_version}.index")
     faiss.write_index(index, added_index_path)
-
     infos.append(f"Successfully built index: {added_index_path}")
-
     try:
-        # Copy the file to os.path.join(model_path, "trained", f{voice_name}._index)
-        print(f"Copying index to {index_root}")
+        logger.info(f"Copying index to {index_root}")
         shutil.copy(added_index_path, os.path.join(index_root, f"{os.path.basename(exp_dir)}.index"))
         infos.append(f"Linked index to external location: {outside_index_root}")
     except Exception:
         infos.append(f"Failed to link index to external location: {outside_index_root}")
-
     yield "\n".join(infos)
 
 
@@ -540,7 +463,6 @@ def train1key(
         return "Please provide a project name."
     if project_name and existing_project_name:
         return "Please provide only one project name."
-
     if (not project_name or project_name == "") and existing_project_name:
         logger.info("Using existing project name")
         project_name = existing_project_name
@@ -550,7 +472,6 @@ def train1key(
             return f"Project {project_name} does not exist. Please provide a valid project name."
         input_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir)]
         inputs = input_files
-
     if not inputs:
         return "Please provide input files."
 
@@ -573,81 +494,98 @@ def train1key(
     for d in [gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, data_dir]:
         if not os.path.exists(d):
             missing_dirs.append(d)
+
     # Preprocess
-    if not resuming_training or len(missing_dirs) > 0:
-        yield get_info_str("Step1: Preprocessing data.")
-        vocal_files = inputs
-        if separate_vocals:
-            vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
-            yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
+    try:
+        if not resuming_training or len(missing_dirs) > 0:
+            yield get_info_str("Step1: Preprocessing data.")
+            vocal_files = inputs
+            if separate_vocals:
+                vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
+                yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
+            for index, f in enumerate(vocal_files):
+                progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
+                try:
+                    current_dir = os.path.dirname(f)
+                    base_name, ext = os.path.splitext(os.path.basename(f))
+                    output_file = os.path.join(data_dir, f"{base_name}.wav")
+                    if os.path.exists(output_file):
+                        f = output_file
+                    audio, samplerate = torchaudio.load(f)
+                    if audio.shape[0] == 2:
+                        left_channel = audio[0].unsqueeze(0)
+                        logger.info(f"Converting stereo to mono: {f}")
+                        torchaudio.save(output_file, left_channel, sample_rate=samplerate)
+                    else:
+                        if not os.path.exists(output_file):
+                            torchaudio.save(output_file, audio, sample_rate=samplerate)
+                except Exception as e:
+                    traceback.print_exc()
+                    logger.error(f"Error processing file {f}: {e}")
+            preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
+        else:
+            progress(0.25, "Skipping pitch feature extraction.")
+            yield get_info_str("Step1: Data already preprocessed.")
+            yield get_info_str("Step2: Pitch features already extracted.")
+    except Exception as e:
+        error_msg = f"Error during preprocessing: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield get_info_str(error_msg)
+        return
 
-        for index, f in enumerate(vocal_files):
-            progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
-            try:
-                current_dir = os.path.dirname(f)
-                base_name, ext = os.path.splitext(os.path.basename(f))
-                output_file = os.path.join(data_dir, f"{base_name}.wav")
-                if os.path.exists(output_file):
-                    f = output_file
-                audio, samplerate = torchaudio.load(f)
-                # If the audio is stereo, convert to mono
-                if audio.shape[0] == 2:
-                    left_channel = audio[0].unsqueeze(0)
-                    logger.info(f"Converting stereo to mono: {f}")
-                    torchaudio.save(output_file, left_channel, sample_rate=samplerate)
-                else:
-                    if not os.path.exists(output_file):
-                        torchaudio.save(output_file, audio, sample_rate=samplerate)
-
-            except Exception as e:
-                traceback.print_exc()
-                logger.error(f"Error processing file {f}: {e}")
-        preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
-
-        # Extract pitch features
+    # Extract pitch features
+    try:
         yield get_info_str("Step2: Extracting pitch features.")
         progress(0.25, "Extracting pitch features.")
-        extract_f0_feature(
-            num_cpus,
-            extraction_method,
+        extract_f0_feature(num_cpus, extraction_method, use_pitch_guidance, exp_dir, project_version, gpus_rmvpe)
+    except Exception as e:
+        error_msg = f"Error during pitch feature extraction: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield get_info_str(error_msg)
+        return
+
+    # Training model
+    try:
+        progress(0.5, "Training model.")
+        yield get_info_str("Step3: Training model.")
+        click_train(
+            project_name,
+            resuming_training,
+            tgt_sample_rate,
             use_pitch_guidance,
-            exp_dir,
+            spk_id,
+            epoch_save_freq,
+            train_epochs,
+            batch_size,
+            save_latest,
+            generator,
+            discriminator,
+            tgt_gpus,
+            cache_to_gpu,
+            save_weights_every,
             project_version,
-            gpus_rmvpe
+            progress
         )
-    else:
-        progress(0.25, "Skipping pitch feature extraction.")
-        yield get_info_str("Step1: Data already preprocessed.")
-        yield get_info_str("Step2: Pitch features already extracted.")
+    except Exception as e:
+        error_msg = f"Error during model training: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield get_info_str(error_msg)
+        return
 
-    progress(0.5, "Training model.")
-    yield get_info_str("Step3: Training model.")
-    click_train(
-        project_name,
-        resuming_training,
-        tgt_sample_rate,
-        use_pitch_guidance,
-        spk_id,
-        epoch_save_freq,
-        train_epochs,
-        batch_size,
-        save_latest,
-        generator,
-        discriminator,
-        tgt_gpus,
-        cache_to_gpu,
-        save_weights_every,
-        project_version,
-        progress
-    )
-
-    index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
-    if not os.path.exists(index_file):
-        progress(0.75, "Building index")
-        yield get_info_str("Step4: Training complete, now building index.")
-        [get_info_str(_) for _ in train_index(project_name, project_version)]
-    else:
-        yield get_info_str("Step4: Index already exists.")
+    # Index building
+    try:
+        index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
+        if not os.path.exists(index_file):
+            progress(0.75, "Building index")
+            yield get_info_str("Step4: Training complete, now building index.")
+            [get_info_str(_) for _ in train_index(project_name, project_version)]
+        else:
+            yield get_info_str("Step4: Index already exists.")
+    except Exception as e:
+        error_msg = f"Error during index building: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield get_info_str(error_msg)
+        return
 
     yield get_info_str("Processing complete!")
 
@@ -656,7 +594,6 @@ def do_train_index(project_name, existing_project, project_version, progress=gr.
     if existing_project is not None and existing_project != "":
         project_name = existing_project
     exp_dir = os.path.join(output_path, "voices", project_name)
-
     infos = []
 
     def get_info_str(strr):
@@ -664,25 +601,30 @@ def do_train_index(project_name, existing_project, project_version, progress=gr.
         logger.info(strr)
         return "\n".join(infos)
 
-    if not os.path.exists(exp_dir):
-        return get_info_str("Project not found.")
-
-    model_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}_final.pth")
-    model_file_new = os.path.join(index_root, f"{os.path.basename(exp_dir)}.pth")
-    if os.path.exists(model_file_new):
-        model_file = model_file_new
-    if not os.path.exists(model_file):
-        return get_info_str("Model file not found.")
-    # Get the vers key from the model file
-    with open(model_file, "rb") as f:
-        model_dict = torch.load(f)
-        vers = model_dict.get("version", "v2")
-    index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
-    progress(0.25, "Building index")
-    yield get_info_str("Step4: Training complete, now building index.")
-    [get_info_str(_) for _ in train_index(project_name, project_version)]
-    progress(1, "Processing complete.")
-    yield get_info_str("Processing complete!")
+    try:
+        if not os.path.exists(exp_dir):
+            yield get_info_str("Project not found.")
+            return
+        model_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}_final.pth")
+        model_file_new = os.path.join(index_root, f"{os.path.basename(exp_dir)}.pth")
+        if os.path.exists(model_file_new):
+            model_file = model_file_new
+        if not os.path.exists(model_file):
+            yield get_info_str("Model file not found.")
+            return
+        with open(model_file, "rb") as f:
+            model_dict = torch.load(f)
+            vers = model_dict.get("version", "v2")
+        index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
+        progress(0.25, "Building index")
+        yield get_info_str("Step4: Training complete, now building index.")
+        [get_info_str(_) for _ in train_index(project_name, project_version)]
+        progress(1, "Processing complete.")
+        yield get_info_str("Processing complete!")
+    except Exception as e:
+        error_msg = f"Error during index training: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield error_msg
 
 
 def list_voice_projects():
@@ -712,7 +654,6 @@ def render():
     with gr.Blocks() as rvc_train:
         gr.Markdown("## RVC Training")
         with gr.Row():
-            # GR Markdown saying RVC Training and cool emoji
             with gr.Column():
                 gr.Markdown("### 🔧 Settings")
                 voice_name = gr.Textbox(
@@ -733,7 +674,6 @@ def render():
                         elem_classes="hintitem", elem_id="rvc_refresh_button"
                     )
                     refresh_button.click(fn=list_voice_projects_ui, outputs=[existing_project])
-
                 total_epochs = gr.Slider(
                     minimum=2,
                     maximum=1000,
@@ -743,7 +683,6 @@ def render():
                     interactive=True,
                     elem_classes="hintitem", elem_id="rvc_total_epochs"
                 )
-
                 train_batch_size = gr.Slider(
                     minimum=1,
                     maximum=40,
@@ -753,13 +692,11 @@ def render():
                     interactive=True,
                     elem_classes="hintitem", elem_id="rvc_train_batch_size"
                 )
-
                 separate_vocals = gr.Checkbox(
                     label="Separate Vocals",
                     value=True,
                     elem_classes="hintitem", elem_id="rvc_separate_vocals"
                 )
-
                 with gr.Accordion(label="Advanced", open=False):
                     sample_rate = gr.Radio(
                         label="Target Sampling Rate",
@@ -877,14 +814,14 @@ def render():
                     [pretrained_generator, pretrained_discriminator],
                 )
                 model_version.change(
-                    change_version19,
-                    [sample_rate, use_pitch_guidance, model_version],
-                    [pretrained_generator, pretrained_discriminator, sample_rate],
+                    fn=change_version19,
+                    inputs=[sample_rate, use_pitch_guidance, model_version],
+                    outputs=[pretrained_generator, pretrained_discriminator, sample_rate],
                 )
                 use_pitch_guidance.change(
-                    change_f0,
-                    [use_pitch_guidance, sample_rate, model_version],
-                    [pitch_extraction_method, gpus_rmvpe, pretrained_generator, pretrained_discriminator],
+                    fn=change_f0,
+                    inputs=[use_pitch_guidance, sample_rate, model_version],
+                    outputs=[pitch_extraction_method, gpus_rmvpe, pretrained_generator, pretrained_discriminator],
                 )
             with gr.Column():
                 gr.Markdown("### 🎤 Input")
@@ -917,7 +854,6 @@ def render():
                         visible=False,
                         elem_classes="hintitem", elem_id="rvc_cancel_train"
                     )
-
                 info3 = gr.Textbox(
                     label="Output Info",
                     value="",
@@ -951,7 +887,6 @@ def render():
                     info3,
                     api_name="train_start_all",
                 )
-
                 train_index.click(
                     do_train_index,
                     [voice_name, existing_project, model_version],
@@ -980,12 +915,11 @@ def render():
                 inputs=[input_files],
                 outputs=[info3],
             )
-
-        input_url_button.click(
-            fn=download_files,
-            inputs=[input_url, input_files],
-            outputs=[input_files]
-        )
+            input_url_button.click(
+                fn=download_files,
+                inputs=[input_url, input_files],
+                outputs=[input_files]
+            )
     return rvc_train
 
 

@@ -202,7 +202,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["instrumental_list"].append(istem)
                 results[base_name]["v_weights"].append(v_wt)
                 results[base_name]["i_weights"].append(i_wt)
-                self._advance_progress(f"Ensemble {model_idx}/{len(models_with_weights)} done for \n {base_name}")
+                self._advance_progress(f"Grouping nubbins {model_idx}/{len(models_with_weights)} from \n {base_name}")
             model_idx += 1
         for base_name, res in results.items():
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
@@ -306,7 +306,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 elif "(crash)" in dplow:
                     res["drums_crash"] = arrp
             res["drums_other"] = drums_other
-            self._advance_progress(f"Advanced drum separation done for {base_name}")
+            self._advance_progress(f"Thuper drum separation done for {base_name}")
 
     def _woodwinds_separation_all(self, results: Dict[str, Dict]):
         """ Separates woodwinds from the 'other' stem on all files. """
@@ -336,11 +336,11 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 leftover_other[:, :new_woodwinds.shape[-1]] -= new_woodwinds
             res["woodwinds"] = new_woodwinds
             res["other"] = leftover_other
-            self._advance_progress(f"Woodwinds separation done for {base_name}")
+            self._advance_progress(f"Windy-boi separation done for {base_name}")
 
     def _save_all_stems(self, results: Dict[str, Dict]) -> List[str]:
         """ Saves all final stems to disk and cleans up temporary files. """
-        self._advance_progress("Saving final stems")
+        self._advance_progress("Saving ze stems")
         output_files = []
         stem_names = {
             "vocals": "(Vocals)",
@@ -373,7 +373,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     output_path = os.path.join(output_folder, output_name)
                     sf.write(output_path, res[stem_key].T, sr, subtype="FLOAT")
                     output_files.append(output_path)
-            self._advance_progress(f"Stems saved for {base_name}")
+            self._advance_progress(f"Saved ze stems for {base_name}")
         for base_name, res in results.items():
             output_folder = res["output_folder"]
             for temp_file in os.listdir(output_folder):
@@ -428,7 +428,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.separator.output_dir = output_folder
         self.separator.model_instance.output_dir = output_folder
         out_files = self.separator.separate(tmp_file)
-        self._advance_progress("Applied background vocal splitting")
+        self._advance_progress("Executed background singers!")
         out_files = [os.path.join(output_folder, f) for f in out_files]
 
         bg = None
@@ -477,7 +477,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                         chosen_file = out_files_full[1]
                         alt_file = out_files_full[0]
                     chosen_file = self._rename_file(base_name, chosen_file)
-                    if out_label == "No Reverb" and stem_label.lower() == "vocals" and self.store_reverb_ir and alt_file:
+                    if (out_label == "No Echo" or out_label == "No Reverb") and stem_label.lower() == "vocals" and self.store_reverb_ir and alt_file:
                         try:
                             out_ir = os.path.join(output_folder, "impulse_response.ir")
                             logger.info(f"Extracting reverb IR from {os.path.basename(alt_file)}")
@@ -491,7 +491,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                             break
                 if chosen_file:
                     current_array, _ = librosa.load(chosen_file, sr=sr, mono=False)
-                self._advance_progress(f"Applied transform {out_label} on {stem_label} for {base_name}")
+                self._advance_progress(f"TRANSFORMERS - THE SOUNDTRACK: {out_label} on {stem_label} for {base_name}")
         return current_array
 
 

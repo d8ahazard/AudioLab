@@ -249,7 +249,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
         audiopaths_and_text_new = []
         lengths = []
         for audiopath, text, dv in self.audiopaths_and_text:
-            if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
+            if self.min_text_len <= len(text) <= self.max_text_len:
                 audiopaths_and_text_new.append([audiopath, text, dv])
                 lengths.append(os.path.getsize(audiopath) // (3 * self.hop_length))
         self.audiopaths_and_text = audiopaths_and_text_new
@@ -267,6 +267,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
 
         phone = self.get_labels(phone)
         spec, wav = self.get_audio(file)
+        if spec is None or wav is None:
+            return None
         dv = self.get_sid(dv)
 
         len_phone = phone.size()[0]
@@ -277,7 +279,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
             spec = spec[:, :len_min]
             wav = wav[:, :len_wav]
             phone = phone[:len_min, :]
-        return (spec, wav, phone, dv)
+        return spec, wav, phone, dv
 
     def get_labels(self, phone):
         phone = np.load(phone)
@@ -295,17 +297,26 @@ class TextAudioLoader(torch.utils.data.Dataset):
                     sampling_rate, self.sampling_rate
                 )
             )
-        audio_norm = audio
-        #        audio_norm = audio / self.max_wav_value
-        #        audio_norm = audio / np.abs(audio).max()
-
-        audio_norm = audio_norm.unsqueeze(0)
+        audio_norm = audio.unsqueeze(0)
         spec_filename = filename.replace(".wav", ".spec.pt")
-        if os.path.exists(spec_filename):
-            try:
-                spec = torch.load(spec_filename)
-            except:
-                logger.warning("%s %s", spec_filename, traceback.format_exc())
+
+        try:
+            if os.path.exists(spec_filename):
+                try:
+                    spec = torch.load(spec_filename)
+                except:
+                    logger.warning("%s %s", spec_filename, traceback.format_exc())
+                    spec = spectrogram_torch(
+                        audio_norm,
+                        self.filter_length,
+                        self.sampling_rate,
+                        self.hop_length,
+                        self.win_length,
+                        center=False,
+                    )
+                    spec = torch.squeeze(spec, 0)
+                    torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
+            else:
                 spec = spectrogram_torch(
                     audio_norm,
                     self.filter_length,
@@ -316,17 +327,13 @@ class TextAudioLoader(torch.utils.data.Dataset):
                 )
                 spec = torch.squeeze(spec, 0)
                 torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
-        else:
-            spec = spectrogram_torch(
-                audio_norm,
-                self.filter_length,
-                self.sampling_rate,
-                self.hop_length,
-                self.win_length,
-                center=False,
+        except NotImplementedError as e:
+            logger.warning(
+                "NotImplementedError for file %s (likely invalid shape for reflect pad). Skipping.\n%s",
+                filename, e
             )
-            spec = torch.squeeze(spec, 0)
-            torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
+            return None, None
+
         return spec, audio_norm
 
     def __getitem__(self, index):

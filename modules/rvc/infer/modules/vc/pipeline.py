@@ -1,6 +1,5 @@
-import os
-
 import logging
+import os
 import traceback
 from time import time as ttime
 
@@ -15,8 +14,7 @@ import torchcrepe
 from scipy import signal
 
 from handlers.config import model_path, output_path
-from handlers.noise_removal import restore_silence, restore_silence_claude, restore_silence_gemini, \
-    restore_silence_chatgpt, restore_silence_deepseek
+from handlers.noise_removal import restore_silence
 from handlers.stereo import stereo_to_mono_ms, resample_side, mono_to_stereo_ms
 from modules.rvc.infer.lib.audio import load_audio_advanced
 from modules.rvc.infer.lib.infer_pack.models import (
@@ -33,6 +31,7 @@ from modules.rvc.infer.modules.vc.utils import (
     get_index_path_from_model,
     load_hubert,
 )
+from util.audio_track import shift_pitch
 
 logger = logging.getLogger(__name__)
 input_audio_path2wav = {}
@@ -530,6 +529,11 @@ class VC:
             audio_float, og_sr = load_audio_advanced(
                 file=input_audio_path, sr=None, mono=False, return_sr=True
             )
+            if f0_up_key != 0:
+                # Pitch shift audio_float and set f0_up_key to 0.
+                audio_float, og_sr = shift_pitch((audio_float, og_sr), f0_up_key)
+                f0_up_key = 0
+
             debug_clone_audio(audio_float, og_sr, "vc_single_loaded_audio")
             if callback is not None:
                 callback(self.global_step / self.total_steps,
@@ -557,7 +561,7 @@ class VC:
                     track_resampled = track
                 debug_clone_audio(track_resampled, sr_rvc, f"vc_single_{label}_pre_pipeline")
                 if callback is not None:
-                    callback(self.global_step / self.total_steps, f"Running pipeline for {label} channel...",
+                    callback(self.global_step / self.total_steps, f"Running {label} pipeline...",
                              self.total_steps)
                 processed, proc_sr = self.pipeline.pipeline(
                     self.hubert_model,
@@ -642,7 +646,7 @@ class VC:
                 final_float = processed_mono.reshape(-1, 1)
 
             # (F) Call silence restoration once.
-            final_float = restore_silence_deepseek(audio_float, final_float, og_sr, proc_sr)
+            final_float = restore_silence(audio_float, final_float, og_sr, proc_sr)
             debug_clone_audio(final_float, proc_sr, "vc_single_after_silence_restore")
 
             self.global_step += 1
@@ -679,7 +683,7 @@ class VC:
                 self.get_vc(model)
             for path in paths:
                 if callback is not None:
-                    callback(self.global_step / self.total_steps, f"Processing {path}", self.total_steps)
+                    callback(self.global_step / self.total_steps, f"Processing {os.path.basename(path)}", self.total_steps)
                 info, opt = self.vc_single(
                     model,
                     sid,

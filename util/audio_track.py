@@ -1,5 +1,7 @@
 import xml.etree.ElementTree as ET
 
+from pydub import AudioSegment
+
 
 class AudioTrack:
     def __init__(
@@ -507,7 +509,8 @@ class AudioTrack:
         warp_marker_id1 = self.get_next_pointee_id()
         warp_marker_id2 = self.get_next_pointee_id()
         ET.SubElement(warp_markers_elem, "WarpMarker", {"SecTime": "0", "BeatTime": "0", "Id": str(warp_marker_id1)})
-        ET.SubElement(warp_markers_elem, "WarpMarker", {"SecTime": "0.015625", "BeatTime": "0.03125", "Id": str(warp_marker_id2)})
+        ET.SubElement(warp_markers_elem, "WarpMarker",
+                      {"SecTime": "0.015625", "BeatTime": "0.03125", "Id": str(warp_marker_id2)})
 
         ET.SubElement(audio_clip_elem, "SavedWarpMarkersForStretched")
         ET.SubElement(audio_clip_elem, "MarkersGenerated", {"Value": "true"})
@@ -590,3 +593,137 @@ class AudioTrack:
         ET.SubElement(device_chain2_elem, "SignalModulations")
 
         return audio_track_elem
+
+
+from typing import Union, Tuple
+import numpy as np
+import torch
+import torchaudio.functional as AF
+from pydub import AudioSegment
+
+
+def shift_pitch(audio: Union[AudioSegment, Tuple[np.ndarray, int]], pitch_shift: int) -> Union[
+    AudioSegment, Tuple[np.ndarray, int]]:
+    """
+    Pitch shift audio by a given number of semitones WITHOUT altering its speed,
+    using torchaudio.functional.pitch_shift.
+
+    If the input is an AudioSegment, the output will be an AudioSegment.
+    If the input is a tuple (ndarray, sample_rate), the output will be a tuple (ndarray, sample_rate).
+
+    Requirements:
+     - torchaudio >= 2.1 (which includes pitch_shift)
+     - PyTorch installed (version matching torchaudio)
+    """
+    if pitch_shift == 0:
+        return audio
+
+    # Branch based on input type
+    if isinstance(audio, AudioSegment):
+        # === AudioSegment branch ===
+        sample_rate = audio.frame_rate
+        channels = audio.channels
+        sample_width = audio.sample_width
+
+        # Convert AudioSegment to float32 NumPy array
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        max_val = float(1 << (8 * sample_width - 1))
+        samples = samples / max_val
+
+        # Reshape to [channels, num_frames] for torchaudio
+        if channels > 1:
+            samples = samples.reshape(-1, channels).T  # shape: (channels, n_frames)
+        else:
+            samples = np.expand_dims(samples, axis=0)  # shape: (1, n_frames)
+
+        waveform = torch.from_numpy(samples)
+
+        # Pitch shift with torchaudio.functional.pitch_shift
+        pitched_wf = AF.pitch_shift(
+            waveform,
+            sample_rate=sample_rate,
+            n_steps=pitch_shift,
+            bins_per_octave=12
+        )
+
+        # Convert back to NumPy and transpose to (n_frames, channels)
+        pitched_np = pitched_wf.numpy().transpose(1, 0)
+        pitched_np = pitched_np * max_val
+
+        # Determine dtype based on sample_width
+        if sample_width == 1:
+            dtype = np.int8
+        elif sample_width == 2:
+            dtype = np.int16
+        elif sample_width == 4:
+            dtype = np.int32
+        else:
+            dtype = np.int16  # fallback
+
+        min_val, max_allow = -max_val, max_val - 1
+        pitched_np = np.clip(pitched_np, min_val, max_allow).astype(dtype)
+
+        # Flatten for pydub’s raw byte layout and spawn a new AudioSegment
+        pitched_flat = pitched_np.flatten()
+        return audio._spawn(pitched_flat.tobytes())
+
+    elif isinstance(audio, tuple) and len(audio) == 2:
+        # === Tuple branch: (ndarray, sample_rate) ===
+        samples, sample_rate = audio
+
+        # Determine audio shape: assume 1D array is mono, 2D is (n_frames, channels)
+        if samples.ndim == 1:
+            channels = 1
+            waveform_np = np.expand_dims(samples, axis=0)  # shape: (1, n_frames)
+        elif samples.ndim == 2:
+            channels = samples.shape[1]
+            waveform_np = samples.T  # shape: (channels, n_frames)
+        else:
+            raise ValueError("Input ndarray must be 1D or 2D.")
+
+        # Check if data is integer type; if so, normalize it
+        if np.issubdtype(samples.dtype, np.integer):
+            sample_width = samples.dtype.itemsize
+            max_val = float(1 << (8 * sample_width - 1))
+            waveform_np = waveform_np.astype(np.float32) / max_val
+            is_integer = True
+        else:
+            # Assume float data already in [-1, 1]
+            max_val = 1.0
+            sample_width = 4
+            is_integer = False
+
+        waveform = torch.from_numpy(waveform_np)
+
+        # Pitch shift
+        pitched_wf = AF.pitch_shift(
+            waveform,
+            sample_rate=sample_rate,
+            n_steps=pitch_shift,
+            bins_per_octave=12
+        )
+
+        # Convert back to NumPy and transpose to (n_frames, channels)
+        pitched_np = pitched_wf.numpy().transpose(1, 0)
+
+        if is_integer:
+            pitched_np = pitched_np * max_val
+            if sample_width == 1:
+                dtype = np.int8
+            elif sample_width == 2:
+                dtype = np.int16
+            elif sample_width == 4:
+                dtype = np.int32
+            else:
+                dtype = np.int16
+            min_val, max_allow = -max_val, max_val - 1
+            pitched_np = np.clip(pitched_np, min_val, max_allow).astype(dtype)
+
+        # If original was mono (1D), return 1D array
+        if samples.ndim == 1:
+            pitched_np = pitched_np.flatten()
+
+        return pitched_np, sample_rate
+
+    else:
+        raise TypeError("Input audio must be either an AudioSegment or a tuple of (ndarray, sample_rate).")

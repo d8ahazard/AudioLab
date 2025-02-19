@@ -5,6 +5,7 @@ import logging
 from pydub import AudioSegment, effects
 
 from handlers.reverb import apply_reverb
+from util.audio_track import shift_pitch
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
@@ -26,82 +27,6 @@ class Merge(BaseWrapper):
             render=False
         ),
     }
-
-    @staticmethod
-    def shift_pitch(audio: AudioSegment, pitch_shift: int) -> AudioSegment:
-        """
-        Pitch shift an AudioSegment by a given number of semitones WITHOUT altering its speed,
-        using torchaudio.functional.pitch_shift (no SoX, no RubberBand).
-
-        Requirements:
-         - torchaudio >= 2.1 (which includes pitch_shift)
-         - PyTorch installed (version matching torchaudio)
-        """
-        if pitch_shift == 0:
-            return audio
-
-        import torch
-        import torchaudio.functional as AF
-        import numpy as np
-
-        # 1) Gather audio info
-        sample_rate = audio.frame_rate
-        channels = audio.channels
-        sample_width = audio.sample_width
-
-        # 2) Convert AudioSegment to float32 NumPy array
-        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
-
-        #   e.g. for 16-bit audio, max_val = 32768
-        max_val = float(1 << (8 * sample_width - 1))
-        # Normalize to [-1.0, 1.0]
-        samples = samples / max_val
-
-        # 3) Reshape to [channels, num_frames] for torchaudio
-        if channels > 1:
-            samples = samples.reshape(-1, channels).T  # shape: (channels, n_frames)
-        else:
-            # shape: (1, n_frames)
-            samples = np.expand_dims(samples, axis=0)
-
-        # 4) Convert to a PyTorch tensor
-        waveform = torch.from_numpy(samples)
-
-        # 5) Call torchaudio pitch_shift
-        #    (n_steps is the # of semitones; bins_per_octave=12 means standard semitones)
-        pitched_wf = AF.pitch_shift(
-            waveform,
-            sample_rate=sample_rate,
-            n_steps=pitch_shift,
-            bins_per_octave=12
-        )
-
-        # 6) Convert pitched audio back to NumPy, shape => (n_frames, channels)
-        pitched_np = pitched_wf.numpy()
-        pitched_np = pitched_np.transpose(1, 0)  # Now shape: (n_frames, channels)
-
-        # 7) Denormalize from [-1,1] back to integer range
-        pitched_np = pitched_np * max_val
-
-        # Decide on integer dtype
-        if sample_width == 1:
-            dtype = np.int8
-        elif sample_width == 2:
-            dtype = np.int16
-        elif sample_width == 4:
-            dtype = np.int32
-        else:
-            dtype = np.int16  # fallback
-
-        # Clip & convert
-        min_val, max_allow = -max_val, max_val - 1
-        pitched_np = np.clip(pitched_np, min_val, max_allow).astype(dtype)
-
-        # 8) Flatten if multi-channel to match pydub’s raw byte layout
-        pitched_flat = pitched_np.flatten()
-
-        # 9) Spawn a new AudioSegment with the same metadata but pitched samples
-        return audio._spawn(pitched_flat.tobytes())
 
     def process_audio(self, pj_inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[
         ProjectFiles]:
@@ -138,7 +63,7 @@ class Merge(BaseWrapper):
 
                 if pitch_shift != 0 and "(Vocals)" not in stem_path:
                     logger.info(f"Applying pitch shift to {os.path.basename(stem_path)}")
-                    seg = self.shift_pitch(seg, pitch_shift)
+                    seg = shift_pitch(seg, pitch_shift)
 
                 new_inputs.append(seg)
 
