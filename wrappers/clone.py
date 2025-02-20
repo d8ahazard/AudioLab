@@ -61,15 +61,29 @@ class Clone(BaseWrapper):
             type=bool,
             gradio_type="Checkbox",
         ),
-        "speaker_id": TypedInput(
-            default=0,
-            description="The ID of the speaker to use if the model was trained on multiple speakers.",
-            type=int,
-            gradio_type="Number",
-        ),
         "pitch_shift": TypedInput(
             default=0,
             description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down).",
+            type=int,
+            gradio_type="Number",
+        ),
+        "clone_stereo": TypedInput(
+            default=False,
+            description="Clone stereo audio instead of converting to mono.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+        "stereo_processing": TypedInput(
+            default="mono",
+            choices=["none", "mono", "stereo"],
+            description="Stereo processing mode. None creates a single mono track, 'mono' converts stereo to mono and attempts to reconstruct; 'stereo' clones stereo audio and re-creates a similar width.",
+            type=str,
+            gradio_type="Dropdown",
+            render=False
+        ),
+        "speaker_id": TypedInput(
+            default=0,
+            description="The ID of the speaker to use if the model was trained on multiple speakers.",
             type=int,
             gradio_type="Number",
         ),
@@ -153,6 +167,7 @@ class Clone(BaseWrapper):
         protect = filtered_kwargs.get("accent_strength", 0.2)
         index_rate = filtered_kwargs.get("index_rate", 1)
         filter_radius = filtered_kwargs.get("filter_radius", 5)
+        clone_stereo = filtered_kwargs.get("clone_stereo", False)
 
         outputs = []
         total_steps = len(inputs)
@@ -190,6 +205,7 @@ class Clone(BaseWrapper):
                 filter_radius=filter_radius,
                 rms_mix_rate=rms_mix_rate,
                 protect=protect,
+                clone_stereo=clone_stereo,
                 project_dir=project.project_dir,
                 callback=project_callback
             )

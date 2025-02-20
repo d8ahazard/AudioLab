@@ -318,7 +318,9 @@ def render_zonos():
                 OUTPUT_AUDIO = gr.Audio(
                     label="Output Audio",
                     elem_classes="hintitem", elem_id="zonos_infer_output_audio", key="zonos_infer_output_audio",
-                    type="filepath"
+                    type="filepath",
+                    sources=None,
+                    interactive=False
                 )
 
         start_tts.click(

@@ -47,7 +47,9 @@ class Merge(BaseWrapper):
             ir_file = os.path.join(project.project_dir, "stems", "impulse_response.ir")
 
             new_inputs = []
-            for stem_path in inputs:
+            for i, stem_path in enumerate(inputs):
+                if callback is not None:
+                    callback(i / len(inputs), f"Processing stem: {os.path.basename(stem_path)}", len(inputs))
                 logger.info(f"Processing stem: {os.path.basename(stem_path)}")
                 if "(Vocals)" in stem_path and "(BG_Vocals" not in stem_path:
                     if os.path.exists(ir_file):
@@ -61,7 +63,7 @@ class Merge(BaseWrapper):
                 else:
                     seg = AudioSegment.from_file(stem_path)
 
-                if pitch_shift != 0 and "(Vocals)" not in stem_path:
+                if pitch_shift != 0 and "(Cloned)" not in stem_path:
                     logger.info(f"Applying pitch shift to {os.path.basename(stem_path)}")
                     seg = shift_pitch(seg, pitch_shift)
 

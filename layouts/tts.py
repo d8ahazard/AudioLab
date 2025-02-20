@@ -99,7 +99,9 @@ def render_tts():
                 OUTPUT_AUDIO = gr.Audio(
                     label="Output Audio",
                     elem_classes="hintitem", elem_id="tts_infer_output_audio", key="tts_infer_output_audio",
-                    type="filepath"
+                    type="filepath",
+                    sources=None,
+                    interactive=False
                 )
 
         tts_language.change(update_tts_model, inputs=tts_language, outputs=tts_model)

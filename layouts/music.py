@@ -157,15 +157,21 @@ def render(arg_handler: ArgHandler):
                 OUTPUT_MIX = gr.Audio(
                     label="Final Mix",
                     elem_classes="hintitem", elem_id="yue_output_mix", key="yue_output_mix",
-                    type="filepath"
+                    type="filepath",
+                    sources=None,
+                    interactive=False
                 )
                 output_vocal = gr.Audio(
                     label="Vocal Output",
-                    elem_classes="hintitem", elem_id="yue_output_vocal", key="yue_output_vocal"
+                    elem_classes="hintitem", elem_id="yue_output_vocal", key="yue_output_vocal",
+                    sources=None,
+                    interactive=False
                 )
                 output_inst = gr.Audio(
                     label="Instrumental Output",
-                    elem_classes="hintitem", elem_id="yue_output_inst", key="yue_output_inst"
+                    elem_classes="hintitem", elem_id="yue_output_inst", key="yue_output_inst",
+                    sources=None,
+                    interactive=False
                 )
 
     return app
