@@ -6,9 +6,8 @@ from handlers.config import output_path
 from util.data_classes import ProjectFiles
 
 
-def create_reaper_project(project: ProjectFiles, bpm: int = None):
+def create_reaper_project(project: ProjectFiles, stems, bpm: int = None):
     project_name = os.path.basename(project.project_dir)
-    stems = project.last_outputs
 
     # Prepare the Reaper project directory: /reaper/<project_name>/
     reaper_project_dir = os.path.join(project.project_dir, "export", "reaper", project_name)

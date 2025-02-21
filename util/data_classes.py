@@ -33,6 +33,7 @@ class ProjectFiles:
         self.file_dict = {
             'source': [src_file]
         }
+        self.output_dict = {}
 
         # Enumerate other folders/files in the project_dir
         for root, dirs, files in os.walk(project_dir):
@@ -50,13 +51,16 @@ class ProjectFiles:
         self.last_outputs = outputs
         if process not in self.file_dict:
             self.file_dict[process] = []
+        if process not in self.output_dict:
+            self.output_dict[process] = []
         self.file_dict[process].extend(outputs)
+        self.output_dict[process].extend(outputs)
 
     def all_outputs(self) -> List[str]:
         output_list = []
-        for key in self.file_dict:
-            if key != "merge" and key != "convert":
-                for file in self.file_dict[key]:
+        for key in self.output_dict:
+            if key != "merge" and key != "convert" and key != "export":
+                for file in self.output_dict[key]:
                     if os.path.exists(file) and file not in output_list:
                         output_list.append(file)
         return output_list

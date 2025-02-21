@@ -22,6 +22,7 @@ class AudioTrack:
             original_crc=0,
             default_duration=44100,
             default_sample_rate=44100,
+            pitch_shift=0
     ):
         """
         AudioTrack that includes 2 Send knobs referencing Return A (Id=0) and B (Id=1).
@@ -54,6 +55,8 @@ class AudioTrack:
         self.original_crc = original_crc
         self.default_duration = default_duration
         self.default_sample_rate = default_sample_rate
+        self.pitch_shift = pitch_shift
+        self.is_warped = self.pitch_shift != 0
 
         # We'll define a base for automation IDs so each track has unique sub-IDs.
         # Example: if track_id=15, base_automation_id=1500, so no collisions with track_id=14 => 1400.
@@ -449,7 +452,7 @@ class AudioTrack:
 
         ET.SubElement(audio_clip_elem, "FreezeStart", {"Value": "0"})
         ET.SubElement(audio_clip_elem, "FreezeEnd", {"Value": "0"})
-        ET.SubElement(audio_clip_elem, "IsWarped", {"Value": "false"})
+        ET.SubElement(audio_clip_elem, "IsWarped", {"Value": "false" if not self.is_warped else "true"})
         ET.SubElement(audio_clip_elem, "TakeId", {"Value": "1"})
 
         # SampleRef/FileRef
@@ -474,7 +477,7 @@ class AudioTrack:
         ET.SubElement(onsets_elem, "UserOnsets")
         ET.SubElement(onsets_elem, "HasUserOnsets", {"Value": "false"})
 
-        ET.SubElement(audio_clip_elem, "WarpMode", {"Value": "4"})
+        ET.SubElement(audio_clip_elem, "WarpMode", {"Value": "6"})
         ET.SubElement(audio_clip_elem, "GranularityTones", {"Value": "30"})
         ET.SubElement(audio_clip_elem, "GranularityTexture", {"Value": "65"})
         ET.SubElement(audio_clip_elem, "FluctuationTexture", {"Value": "25"})
@@ -500,7 +503,7 @@ class AudioTrack:
         ET.SubElement(fades_elem, "IsDefaultFadeIn", {"Value": "true"})
         ET.SubElement(fades_elem, "IsDefaultFadeOut", {"Value": "true"})
 
-        ET.SubElement(audio_clip_elem, "PitchCoarse", {"Value": "0"})
+        ET.SubElement(audio_clip_elem, "PitchCoarse", {"Value": str(self.pitch_shift)})
         ET.SubElement(audio_clip_elem, "PitchFine", {"Value": "0"})
         ET.SubElement(audio_clip_elem, "SampleVolume", {"Value": "1"})
 

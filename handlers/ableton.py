@@ -4,18 +4,23 @@ import shutil
 import wave
 import binascii
 import xml.etree.ElementTree as ET
+from typing import List
+
+import librosa
 
 from handlers.config import output_path, app_path
 from util.audio_track import AudioTrack
 from util.data_classes import ProjectFiles
 
 
-def create_ableton_project(project: ProjectFiles, bpm: int = None):
+def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = None, pitch_shift: int = 0):
     project_name = os.path.basename(project.project_dir)
-    stems = project.last_outputs
 
     # Prepare the Ableton project directory: /ableton/<project_name>/
     als_project_dir = os.path.join(project.project_dir, "export", "ableton", project_name)
+    # Delete any existing project
+    if os.path.exists(als_project_dir):
+        shutil.rmtree(als_project_dir)
     os.makedirs(als_project_dir, exist_ok=True)
 
     # Where we'll copy stems:
@@ -80,13 +85,11 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
     # 4) DETERMINE CLIP LENGTH FROM THE FIRST STEM
     # -------------------------------------------------------------------------
     first_stem = stems[0]
-    with wave.open(first_stem, 'rb') as w:
-        frames = w.getnframes()
-        samplerate = w.getframerate()
-        track_length_secs = frames / samplerate
-
+    y, sr = librosa.load(first_stem, sr=None)
+    # Calculate track length in seconds
+    track_length_secs = len(y) / sr
     clip_start = 16.0
-    clip_end = clip_start + track_length_secs
+    clip_end = clip_start + (track_length_secs * 2)
 
     # -------------------------------------------------------------------------
     # Prepare global next pointee ID from <NextPointeeId> element or use a default
@@ -105,8 +108,12 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
     # -------------------------------------------------------------------------
     for idx, stem_path in enumerate(stems):
         stem_basename = os.path.basename(stem_path)
+        stem_pitch_shift = 0 if "(Cloned)" in stem_basename else pitch_shift
         dest_stem_path = os.path.join(samples_path, stem_basename)
-        shutil.copy2(stem_path, dest_stem_path)
+        if stem_path != dest_stem_path:
+            shutil.copy2(stem_path, dest_stem_path)
+        else:
+            print(f"Stem {stem_basename} already in project folder??")
 
         original_file_size = os.path.getsize(dest_stem_path)
         with open(dest_stem_path, 'rb') as f:
@@ -133,8 +140,9 @@ def create_ableton_project(project: ProjectFiles, bpm: int = None):
             absolute_path=dest_stem_path,
             original_file_size=original_file_size,
             original_crc=crc_val,
-            default_duration=frames,
-            default_sample_rate=samplerate
+            default_duration=len(y),
+            default_sample_rate=sr,
+            pitch_shift=stem_pitch_shift
         )
 
         track_elem = audio_track_obj.to_element()

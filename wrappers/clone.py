@@ -89,7 +89,7 @@ class Clone(BaseWrapper):
         ),
         "clone_stereo": TypedInput(
             default=False,
-            description="Clone stereo audio instead of converting to mono.",
+            description="When enabled, side-channel (audio panning) information is cloned. This can improve the stereo effect but may not work in all cases.",
             type=bool,
             gradio_type="Checkbox"
         ),
@@ -266,16 +266,6 @@ class Clone(BaseWrapper):
                     project_dir=project.project_dir,
                     callback=project_callback
                 )
-                # Append (selected_voice) and (pitch_extraction_method) to the output file name
-                for output in clone_outputs:
-                    base_name, ext = os.path.splitext(os.path.basename(output))
-                    selected_voice_base_name, _ = os.path.splitext(os.path.basename(selected_voice))
-                    new_name = os.path.join(os.path.dirname(output),
-                                            f"{base_name}({selected_voice_base_name}_{f0method}){ext}")
-                    if os.path.exists(new_name):
-                        os.remove(new_name)
-                    os.rename(output, new_name)
-                    clone_outputs[clone_outputs.index(output)] = new_name
                 # Store results
                 project.add_output("cloned", clone_outputs)
                 # Update the last_outputs so we don't lose references to unprocessed files

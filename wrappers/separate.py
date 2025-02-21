@@ -260,7 +260,7 @@ class Separate(BaseWrapper):
                 final_stems = project.file_dict.get("stems", [])
                 for fname in os.listdir(out_dir):
                     full_path = os.path.join(out_dir, fname)
-                    if fname == "separation_info.json":
+                    if fname == "separation_info.json" or fname == "impulse_response.ir":
                         continue
                     if full_path not in final_stems:
                         self.del_stem(full_path)

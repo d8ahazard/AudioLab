@@ -280,7 +280,7 @@ class FeatureExtractor:
             f0_method = f0_method.pop()
 
         if f0_method == "hybrid":
-            methods_list = ["rmvpe+", "crepe"]
+            methods_list = ["rmvpe+", "crepe", "harvest"]
             f0 = self.get_f0_hybrid_computation(methods_list, merge_type, **params)
         elif isinstance(f0_method, list):
             f0 = self.get_f0_hybrid_computation(f0_method, merge_type, **params)

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import traceback
@@ -597,6 +598,15 @@ class VC:
                     mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
                     debug_clone_audio(mono_og, og_sr, "vc_single_mono_converted")
                     processed_mono, proc_sr = process_track(mono_og, "mono")
+                    if pitch_correction:
+                        if callback is not None:
+                            callback(
+                                self.global_step / self.total_steps,
+                                "Applying pitch correction...",
+                                self.total_steps)
+                        processed_mono, detected_key, scale_type = auto_tune_track(
+                            processed_mono, proc_sr, 0.5, pitch_correction_humanize, f0_method=f0_method)
+                        logger.info(f"Pitch correction applied: {detected_key} {scale_type}")
 
                     # Reconstruct stereo using resampled side information
                     new_len = len(processed_mono)
@@ -637,18 +647,6 @@ class VC:
             final_float = restore_silence(audio_float, final_float, og_sr, proc_sr)
             debug_clone_audio(final_float, proc_sr, "vc_single_after_silence_restore")
 
-            # (G) Apply pitch correction for stereo if enabled.
-            if pitch_correction and clone_stereo:
-                if callback is not None:
-                    callback(
-                        self.global_step / self.total_steps,
-                        "Applying pitch correction...",
-                        self.total_steps)
-                final_float, detected_key, scale_type = auto_tune_track(
-                    final_float, proc_sr, 0.5, pitch_correction_humanize, f0_method=f0_method)
-                debug_clone_audio(final_float, proc_sr, "vc_single_after_pitch_correction")
-                logger.info(f"Pitch correction applied: {detected_key} {scale_type}")
-
             self.global_step += 1
             return f"Success. Processing time: {[0, 0, 0]}", (og_sr, final_float)
         except Exception as e:
@@ -677,6 +675,23 @@ class VC:
             project_dir,
             callback=None,
     ):
+        clone_params = {
+            "model": model,
+            "sid": sid,
+            "f0_up_key": f0_up_key,
+            "f0_method": f0_method,
+            "index_rate": index_rate,
+            "filter_radius": filter_radius,
+            "rms_mix_rate": rms_mix_rate,
+            "protect": protect,
+            "merge_type": merge_type,
+            "crepe_hop_length": crepe_hop_length,
+            "f0_autotune": f0_autotune,
+            "rmvpe_onnx": rmvpe_onnx,
+            "clone_stereo": clone_stereo,
+            "pitch_correction": pitch_correction,
+            "pitch_correction_humanize": pitch_correction_humanize
+        }
         outputs = []
         global DEBUG_STEP_NO
         DEBUG_STEP_NO = 0
@@ -692,6 +707,25 @@ class VC:
                 if callback is not None:
                     callback(self.global_step / self.total_steps,
                              f"Processing {os.path.basename(path)}", self.total_steps)
+
+                base_name, ext = os.path.splitext(os.path.basename(path))
+                model_base, _ = os.path.splitext(os.path.basename(model))
+                cloned_name = f"{base_name}(Cloned)({model_base}_{f0_method}).wav"
+                output_file = os.path.join(opt_root, cloned_name)
+                clone_params_file = os.path.join(opt_root, "clone_params.json")
+                param_match = False
+                if os.path.exists(clone_params_file):
+                    # Load and compare
+                    with open(clone_params_file, "r") as f:
+                        clone_params_loaded = json.load(f)
+                    param_match = clone_params_loaded == clone_params
+                if os.path.exists(output_file) and param_match:
+                    logger.info(f"Skipping {path} as {output_file} already exists.")
+                    outputs.append(output_file)
+                    continue
+                with open(clone_params_file, "w") as f:
+                    json.dump(clone_params, f, indent=4)
+
                 info, opt = self.vc_single(
                     model,
                     sid,
@@ -715,9 +749,6 @@ class VC:
                 if "Success" in info:
                     try:
                         tgt_sr, audio_opt = opt
-                        base_name, ext = os.path.splitext(os.path.basename(path))
-                        cloned_name = f"{base_name}(Cloned).wav"
-                        output_file = os.path.join(opt_root, cloned_name)
                         sf.write(output_file, audio_opt, tgt_sr, format="wav", subtype="PCM_16")
                         outputs.append(output_file)
                     except Exception as e:

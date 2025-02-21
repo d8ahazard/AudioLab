@@ -5,6 +5,8 @@ from typing import Any, List, Dict
 import librosa
 import logging
 
+import numpy as np
+
 from handlers.ableton import create_ableton_project
 from handlers.reaper import create_reaper_project
 from util.data_classes import ProjectFiles
@@ -25,6 +27,9 @@ def detect_bpm(audio_path: str, start_time: float = 0, end_time: float = None):
 
     try:
         y, sr = librosa.load(audio_path, offset=start_time, duration=duration)
+        # Convert to real if the signal is complex
+        if np.iscomplexobj(y):
+            y = y.real
         bpm, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr)
         beat_times = [float(time) for time in beat_times]
@@ -33,7 +38,6 @@ def detect_bpm(audio_path: str, start_time: float = 0, end_time: float = None):
         print(f"Error detecting BPM for {audio_path}: {e}")
 
     return bpm, beat_times
-
 
 def zip_folder(folder_path: str):
     """
@@ -85,6 +89,13 @@ class Export(BaseWrapper):
             type=bool,
             gradio_type="Checkbox",
         ),
+        "pitch_shift": TypedInput(
+            default=0,
+            description="Pitch shift in semitones.",
+            type=int,
+            gradio_type="Slider",
+            render=False
+        ),
     }
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
@@ -98,8 +109,22 @@ class Export(BaseWrapper):
                 filtered_kwargs = {key: value for key, value in kwargs.items() if key in self.allowed_kwargs}
                 project_format = filtered_kwargs.get("project_format", "Ableton")
                 export_all_stems = filtered_kwargs.get("export_all_stems", True)
+                pitch_shift = filtered_kwargs.get("pitch_shift", 0)
                 if export_all_stems:
                     stems = project_file.all_outputs()
+                    stems_dir = os.path.join(project_file.project_dir, "stems")
+                    all_stem_files = [os.path.join(stems_dir, stem) for stem in os.listdir(stems_dir)]
+                    for stem in all_stem_files:
+                        if stem not in stems:
+                            stems.append(stem)
+
+                existing_stems = [stem for stem in stems if os.path.exists(stem)]
+                # Remove non-wav files
+                existing_stems = [stem for stem in existing_stems if stem.endswith(".wav")]
+                for stem in stems:
+                    if stem not in existing_stems:
+                        logger.error(f"Stem {stem} not found.")
+                stems = existing_stems
 
                 # OPTIONAL: If we want to detect BPM from the "Instrumental" track
                 for stem in stems:
@@ -107,20 +132,22 @@ class Export(BaseWrapper):
                         # detect_bpm returns (bpm, beat_times)
                         found_bpm, _ = detect_bpm(stem)
                         if found_bpm > 0:
+                            print(f"Detected BPM: {found_bpm}")
                             bpm = found_bpm
                         break
                     if "(Drums)" in stem:
                         found_bpm, _ = detect_bpm(stem)
                         if found_bpm > 0:
+                            print(f"Detected BPM: {found_bpm}")
                             bpm = found_bpm
                         break
                 out_zip = None
                 if project_format == "Ableton":
-                    als_path = create_ableton_project(project_file, bpm)
+                    als_path = create_ableton_project(project_file, stems, bpm, pitch_shift)
                     out_zip = zip_folder(als_path)
                     print(f"Saved Ableton project to: {als_path}")
                 elif project_format == "Reaper":
-                    reaper_path = create_reaper_project(project_file, bpm)
+                    reaper_path = create_reaper_project(project_file, stems, bpm)
                     out_zip = zip_folder(reaper_path)
                     print(f"Saved Reaper project to: {reaper_path}")
                 last_outputs = project_file.last_outputs

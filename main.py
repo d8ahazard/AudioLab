@@ -166,7 +166,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
         processor_key = tgt_processor.title.replace(' ', '')
         processor_settings = settings.get(processor_key, {}) if settings else {}
         # If the processor is 'merge', set the pitch_shift to the last clone pitch shift
-        if processor_title == 'Merge':
+        if processor_title == 'Merge' or processor_title == "Export":
             processor_settings['pitch_shift'] = clone_pitch_shift
         if len(processor_settings):
             logger.info(f"Processor settings for {processor_title}:")

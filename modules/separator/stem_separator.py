@@ -10,6 +10,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
+from audio_separator.separator import Separator
 
 from handlers.config import app_path, output_path
 from handlers.patch_separate import patch_separator
@@ -477,7 +478,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                         chosen_file = out_files_full[1]
                         alt_file = out_files_full[0]
                     chosen_file = self._rename_file(base_name, chosen_file)
-                    if (out_label == "No Echo" or out_label == "No Reverb") and stem_label.lower() == "vocals" and self.store_reverb_ir and alt_file:
+                    if (
+                            out_label == "No Echo" or out_label == "No Reverb") and stem_label.lower() == "vocals" and self.store_reverb_ir and alt_file:
                         try:
                             out_ir = os.path.join(output_folder, "impulse_response.ir")
                             logger.info(f"Extracting reverb IR from {os.path.basename(alt_file)}")
@@ -635,21 +637,28 @@ def debug_ensemble(tgt_file):
         print(f"Time taken for {i} {time.time() - start}")
 
 
-def debug_bg_sep(tgt_file, bg_layers):
+def debug_bg_sep(tgt_file):
     import time
-    model = EnsembleDemucsMDXMusicSeparationModel({}, None)
-    base_name = os.path.splitext(os.path.basename(tgt_file))[0]
-    loaded, sr = librosa.load(tgt_file, sr=44100, mono=False)
+    separator = Separator(
+        log_level=logging.ERROR,
+        model_file_dir=os.path.join(app_path, "models", "audio_separator"),
+        invert_using_spec=True,
+        use_autocast=True
+    )
+    bg_models = [
+        "MelBandRoformerSYHFT.ckpt",
+        "model_chorus_bs_roformer_ep_267_sdr_24.1275.ckpt",
+        "kuielab_a_other.onnx",
+        "kuielab_b_other.onnx",
+    ]
     out_dir = os.path.join(output_path, "bg_sep_debug")
     os.makedirs(out_dir, exist_ok=True)
-    start = time.time()
-    model.separate_bg_vocals = True
-    model.bg_vocal_layers = bg_layers
-    main, bg_vox = model._apply_bg_vocal_splitting(loaded, sr, base_name, out_dir)
-    if bg_layers > 1:
-        for i in range(bg_layers - 1):
-            main, bg_vox = model._apply_bg_vocal_splitting(bg_vox, sr, base_name, out_dir)
-    print(f"Time taken for {bg_layers} {time.time() - start}")
+    separator.output_dir = out_dir
+    for bg_model in bg_models:
+        separator.load_model(bg_model)
+        start = time.time()
+        main, bg_vox = separator.separate(tgt_file)
+        print(f"Time taken for {bg_model} {time.time() - start}")
 
 
 def debug_reverb(tgt_file):
