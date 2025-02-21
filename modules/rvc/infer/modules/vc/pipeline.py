@@ -6,13 +6,12 @@ from time import time as ttime
 import faiss
 import librosa
 import numpy as np
-import parselmouth
 import soundfile as sf
 import torch
 import torch.nn.functional as F
-import torchcrepe
 from scipy import signal
 
+from handlers.autotune import auto_tune_track
 from handlers.config import model_path, output_path
 from handlers.noise_removal import restore_silence
 from handlers.stereo import stereo_to_mono_ms, resample_side, mono_to_stereo_ms
@@ -26,7 +25,6 @@ from modules.rvc.infer.lib.infer_pack.models import (
 from modules.rvc.infer.modules.vc.utils import (
     check_faiss_index_file,
     extract_index_from_zip,
-    cache_harvest_f0,
     change_rms,
     get_index_path_from_model,
     load_hubert,
@@ -37,7 +35,7 @@ logger = logging.getLogger(__name__)
 input_audio_path2wav = {}
 
 # Global debug cloning settings
-DEBUG_CLONE = True
+DEBUG_CLONE = False
 DEBUG_STEP_NO = 0
 
 
@@ -82,6 +80,10 @@ class Pipeline(object):
         self.x_center = config.x_center
         self.x_max = config.x_max
         self.is_half = config.is_half
+        # Store config and target SR for later use (e.g. for FeatureExtractor)
+        self.config = config
+        self.tgt_sr = tgt_sr
+
         # Decide on the processing sample rate:
         if processing_sr is not None:
             self.sr = processing_sr
@@ -109,86 +111,37 @@ class Pipeline(object):
             f0_method,
             filter_radius,
             inp_f0=None,
+            merge_type="median",
+            crepe_hop_length=160,
+            f0_autotune=False,
+            rmvpe_onnx=False,
+            f0_min=50,
+            f0_max=1100,
     ):
-        global input_audio_path2wav
-        time_step = self.window / self.sr * 1000
-        f0_min = 50
-        f0_max = 1100
-        f0_mel_min = 1127 * np.log(1 + f0_min / 700)
-        f0_mel_max = 1127 * np.log(1 + f0_max / 700)
-
-        if f0_method == "pm":
-            f0 = (
-                parselmouth.Sound(x, self.sr)
-                .to_pitch_ac(
-                    time_step=time_step / 1000,
-                    voicing_threshold=0.6,
-                    pitch_floor=f0_min,
-                    pitch_ceiling=f0_max,
-                )
-                .selected_array["frequency"]
-            )
-            pad_size = (p_len - len(f0) + 1) // 2
-            if pad_size > 0 or p_len - len(f0) - pad_size > 0:
-                f0 = np.pad(f0, [[pad_size, p_len - len(f0) - pad_size]], mode="constant")
-        elif f0_method == "harvest":
-            input_audio_path2wav[input_audio_path] = x.astype(np.double)
-            f0 = cache_harvest_f0(input_audio_path, self.sr, f0_max, f0_min, 10)
-            if filter_radius > 2:
-                f0 = signal.medfilt(f0, 3)
-        elif f0_method == "crepe":
-            model = "full"
-            batch_size = 512
-            audio_t = torch.tensor(np.copy(x))[None].float()
-            f0, pd = torchcrepe.predict(
-                audio_t,
-                self.sr,
-                self.window,
-                f0_min,
-                f0_max,
-                model,
-                batch_size=batch_size,
-                device=self.device,
-                return_periodicity=True,
-            )
-            pd = torchcrepe.filter.median(pd, 3)
-            f0 = torchcrepe.filter.mean(f0, 3)
-            f0[pd < 0.1] = 0
-            f0 = f0[0].cpu().numpy()
-        else:
-            if not hasattr(self, "model_rmvpe"):
-                from modules.rvc.infer.lib.rmvpe import RMVPE
-
-                rvmpe_model_path = os.path.join(model_path, "rvc", "rmvpe.pt")
-                self.model_rmvpe = RMVPE(
-                    model_path=rvmpe_model_path,
-                    is_half=self.is_half,
-                    device=self.device,
-                    sampling_rate=self.sr,
-                )
-            f0 = self.model_rmvpe.infer_from_audio(x, thred=0.03)
-            if "privateuseone" in str(self.device):
-                del self.model_rmvpe.model
-                del self.model_rmvpe
-                logger.info("Cleaning runtime memory")
-
-        # Pitch shift
-        f0 *= pow(2, f0_up_key / 12)
-        tf0 = self.sr // self.window
-
-        if inp_f0 is not None:
-            delta_t = np.round((inp_f0[:, 0].max() - inp_f0[:, 0].min()) * tf0 + 1).astype("int16")
-            replace_f0 = np.interp(list(range(delta_t)), inp_f0[:, 0] * 100, inp_f0[:, 1])
-            shape = f0[self.x_pad * tf0: self.x_pad * tf0 + len(replace_f0)].shape[0]
-            f0[self.x_pad * tf0: self.x_pad * tf0 + len(replace_f0)] = replace_f0[:shape]
-
-        f0bak = f0.copy()
-        f0_mel = 1127 * np.log(1 + f0 / 700)
-        f0_mel[f0_mel > 0] = ((f0_mel[f0_mel > 0] - f0_mel_min) * 254 / (f0_mel_max - f0_mel_min) + 1)
-        f0_mel[f0_mel <= 1] = 1
-        f0_mel[f0_mel > 255] = 255
-        f0_coarse = np.rint(f0_mel).astype(np.int32)
-        return f0_coarse, f0bak
+        # Use the new FeatureExtractor to compute f0.
+        from modules.rvc.pitch_extraction import FeatureExtractor
+        fe = FeatureExtractor(self.tgt_sr, self.config, onnx=rmvpe_onnx)
+        pitch, pitchf = fe.get_f0(
+            x,
+            f0_up_key,
+            f0_method,
+            merge_type=merge_type,
+            filter_radius=filter_radius,
+            crepe_hop_length=crepe_hop_length,
+            f0_autotune=f0_autotune,
+            rmvpe_onnx=rmvpe_onnx,
+            inp_f0=inp_f0,
+            f0_min=f0_min,
+            f0_max=f0_max,
+        )
+        # Ensure f0 arrays have the expected length
+        pitch = pitch[:p_len]
+        pitchf = pitchf[:p_len]
+        if "mps" not in str(self.device) or "xpu" not in str(self.device):
+            pitchf = pitchf.astype(np.float32)
+        pitch = torch.tensor(pitch, device=self.device).unsqueeze(0).long()
+        pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
+        return pitch, pitchf
 
     def voice_clone(
             self,
@@ -280,6 +233,10 @@ class Pipeline(object):
             index_rate,
             if_f0,
             filter_radius,
+            merge_type,
+            crepe_hop_length,
+            f0_autotune,
+            rmvpe_onnx,
             tgt_sr,
             og_sr,
             rms_mix_rate,
@@ -338,14 +295,9 @@ class Pipeline(object):
         pitch, pitchf = None, None
         if if_f0 == 1:
             pitch, pitchf = self.get_f0(
-                input_audio_path, audio_pad, p_len, f0_up_key, f0_method, filter_radius, inp_f0
+                input_audio_path, audio_pad, p_len, f0_up_key, f0_method, filter_radius, inp_f0,
+                merge_type=merge_type, crepe_hop_length=crepe_hop_length, f0_autotune=f0_autotune, rmvpe_onnx=rmvpe_onnx
             )
-            pitch = pitch[:p_len]
-            pitchf = pitchf[:p_len]
-            if "mps" not in str(self.device) or "xpu" not in str(self.device):
-                pitchf = pitchf.astype(np.float32)
-            pitch = torch.tensor(pitch, device=self.device).unsqueeze(0).long()
-            pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
         t2 = ttime()
         times[1] += t2 - t1
 
@@ -408,7 +360,6 @@ class Pipeline(object):
             debug_clone_audio(audio_opt, og_sr, "after_change_rms")
 
         final_sr = og_sr
-        # debug_clone_audio(audio_opt, final_sr, "after_int16_conversion")
 
         del pitch, pitchf, sid_tensor
         if torch.cuda.is_available():
@@ -521,6 +472,12 @@ class VC:
             filter_radius,
             rms_mix_rate,
             protect,
+            pitch_correction,
+            pitch_correction_humanize,
+            merge_type,
+            crepe_hop_length,
+            f0_autotune,
+            rmvpe_onnx,
             clone_stereo=False,
             callback=None,
     ):
@@ -583,6 +540,10 @@ class VC:
                     index_rate,
                     self.if_f0,
                     filter_radius,
+                    merge_type,  # new parameter
+                    crepe_hop_length,  # new parameter
+                    f0_autotune,  # new parameter
+                    rmvpe_onnx,  # new parameter
                     self.tgt_sr if self.downsample_pipeline else og_sr,
                     og_sr,
                     rms_mix_rate,
@@ -648,10 +609,7 @@ class VC:
                     # --- Volume adjustment: match the RMS of the original mono
                     original_rms = np.sqrt(np.mean(mono_og ** 2))
                     processed_rms = np.sqrt(np.mean(processed_mono ** 2))
-                    if processed_rms > 0:
-                        volume_adjust = original_rms / processed_rms
-                    else:
-                        volume_adjust = 1.0
+                    volume_adjust = original_rms / processed_rms if processed_rms > 0 else 1.0
                     final_float *= volume_adjust
             else:
                 # Mono input
@@ -661,11 +619,35 @@ class VC:
                     mono = audio_float.mean(axis=1)
                 debug_clone_audio(mono, og_sr, "vc_single_mono_ready")
                 processed_mono, proc_sr = process_track(mono, "mono")
-                final_float = processed_mono.reshape(-1, 1)
+                # (G) Apply pitch correction if enabled
+                if pitch_correction:
+                    if callback is not None:
+                        callback(
+                            self.global_step / self.total_steps,
+                            "Applying pitch correction...",
+                            self.total_steps)
+                    processed_mono, detected_key, scale_type = auto_tune_track(
+                        processed_mono, proc_sr, 0.5, pitch_correction_humanize, f0_method=f0_method)
+                    logger.info(f"Pitch correction applied: {detected_key} {scale_type}")
 
-            # (F) Call silence restoration once
-            #final_float = restore_silence(audio_float, final_float, og_sr, proc_sr)
-            #debug_clone_audio(final_float, proc_sr, "vc_single_after_silence_restore")
+                final_float = processed_mono.reshape(-1, 1)
+                debug_clone_audio(final_float, proc_sr, "vc_single_after_pitch_correction")
+
+            # (F) Optional: Call silence restoration if needed.
+            final_float = restore_silence(audio_float, final_float, og_sr, proc_sr)
+            debug_clone_audio(final_float, proc_sr, "vc_single_after_silence_restore")
+
+            # (G) Apply pitch correction for stereo if enabled.
+            if pitch_correction and clone_stereo:
+                if callback is not None:
+                    callback(
+                        self.global_step / self.total_steps,
+                        "Applying pitch correction...",
+                        self.total_steps)
+                final_float, detected_key, scale_type = auto_tune_track(
+                    final_float, proc_sr, 0.5, pitch_correction_humanize, f0_method=f0_method)
+                debug_clone_audio(final_float, proc_sr, "vc_single_after_pitch_correction")
+                logger.info(f"Pitch correction applied: {detected_key} {scale_type}")
 
             self.global_step += 1
             return f"Success. Processing time: {[0, 0, 0]}", (og_sr, final_float)
@@ -685,7 +667,13 @@ class VC:
             filter_radius,
             rms_mix_rate,
             protect,
+            merge_type,
+            crepe_hop_length,
+            f0_autotune,
+            rmvpe_onnx,
             clone_stereo,
+            pitch_correction,
+            pitch_correction_humanize,
             project_dir,
             callback=None,
     ):
@@ -702,7 +690,8 @@ class VC:
                 self.get_vc(model)
             for path in paths:
                 if callback is not None:
-                    callback(self.global_step / self.total_steps, f"Processing {os.path.basename(path)}", self.total_steps)
+                    callback(self.global_step / self.total_steps,
+                             f"Processing {os.path.basename(path)}", self.total_steps)
                 info, opt = self.vc_single(
                     model,
                     sid,
@@ -714,6 +703,12 @@ class VC:
                     filter_radius,
                     rms_mix_rate,
                     protect,
+                    pitch_correction,
+                    pitch_correction_humanize,
+                    merge_type,  # new parameter
+                    crepe_hop_length,  # new parameter
+                    f0_autotune,  # new parameter
+                    rmvpe_onnx,  # new parameter
                     clone_stereo,
                     callback=callback,
                 )
@@ -727,8 +722,11 @@ class VC:
                         outputs.append(output_file)
                     except Exception as e:
                         traceback.print_exc()
+                else:
+                    logger.error(f"Failed to process {path}: {info}")
+                    raise Exception(f"Failed to process {path}: {info}")
             return outputs
         except Exception:
             traceback.print_exc()
             logger.warning(traceback.format_exc())
-            return outputs
+            raise Exception("Failed to process audio files.")

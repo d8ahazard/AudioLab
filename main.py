@@ -176,9 +176,14 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
             logger.info("---------------------------------------------------------------------")
         else:
             logger.info(f"No settings found for {processor_title}.")
-        outputs = tgt_processor.process_audio(inputs, progress, **processor_settings)
-        for output in outputs:
-            all_outputs.extend(output.last_outputs)
+        try:
+            outputs = tgt_processor.process_audio(inputs, progress, **processor_settings)
+            for output in outputs:
+                all_outputs.extend(output.last_outputs)
+        except Exception as e:
+            logger.error(f"Error processing with {processor_title}: {e}")
+            traceback.print_exc()
+            break
         inputs = outputs
 
     # Last output should be first in the list

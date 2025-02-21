@@ -202,7 +202,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["instrumental_list"].append(istem)
                 results[base_name]["v_weights"].append(v_wt)
                 results[base_name]["i_weights"].append(i_wt)
-                self._advance_progress(f"Grouping nubbins {model_idx}/{len(models_with_weights)} from \n {base_name}")
+                self._advance_progress(f"Grouping nubbins from \n {base_name}.")
             model_idx += 1
         for base_name, res in results.items():
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
@@ -244,7 +244,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             # Delete tmp_instru_wav
             if os.path.exists(tmp_instru_wav):
                 os.remove(tmp_instru_wav)
-            self._advance_progress(f"6-stem separation done for {base_name}")
+            self._advance_progress(f"Super stems sorted for {base_name}.")
 
     def _alt_bass_separation_all(self, results: Dict[str, Dict]):
         """ Applies an alternate bass separation model on all files. """
@@ -268,7 +268,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     res["bass"] = arrb
             if os.path.exists(tmp_instru_wav):
                 os.remove(tmp_instru_wav)
-            self._advance_progress(f"Alt Bass separation done for {base_name}")
+            self._advance_progress(f"'Alt' Bass separation done for {base_name}.")
 
     def _advanced_drum_separation_all(self, results: Dict[str, Dict]):
         """ Runs advanced drum separation on the drums stem for all files. """
@@ -306,7 +306,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 elif "(crash)" in dplow:
                     res["drums_crash"] = arrp
             res["drums_other"] = drums_other
-            self._advance_progress(f"Thuper drum separation done for {base_name}")
+            self._advance_progress(f"Thuper drum separation done for {base_name}.")
 
     def _woodwinds_separation_all(self, results: Dict[str, Dict]):
         """ Separates woodwinds from the 'other' stem on all files. """
@@ -336,7 +336,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 leftover_other[:, :new_woodwinds.shape[-1]] -= new_woodwinds
             res["woodwinds"] = new_woodwinds
             res["other"] = leftover_other
-            self._advance_progress(f"Windy-boi separation done for {base_name}")
+            self._advance_progress(f"Windy-bois separated for {base_name}.")
 
     def _save_all_stems(self, results: Dict[str, Dict]) -> List[str]:
         """ Saves all final stems to disk and cleans up temporary files. """
@@ -373,7 +373,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     output_path = os.path.join(output_folder, output_name)
                     sf.write(output_path, res[stem_key].T, sr, subtype="FLOAT")
                     output_files.append(output_path)
-            self._advance_progress(f"Saved ze stems for {base_name}")
+            self._advance_progress(f"Saved ze stems for {base_name}.")
         for base_name, res in results.items():
             output_folder = res["output_folder"]
             for temp_file in os.listdir(output_folder):
@@ -424,7 +424,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
     def _apply_bg_vocal_splitting(self, vocals_array, sr, base_name, output_folder):
         """ Applies background vocal splitting to the vocals array. """
         tmp_file = write_temp_wav(vocals_array, sr, output_folder)
-        self.separator.load_model("mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
+        self.separator.load_model("UVR-BVE-4B_SN-44100-1.pth")
+
         self.separator.output_dir = output_folder
         self.separator.model_instance.output_dir = output_folder
         out_files = self.separator.separate(tmp_file)
@@ -435,17 +436,16 @@ class EnsembleDemucsMDXMusicSeparationModel:
         main = None
         for f in out_files:
             arr, _ = librosa.load(f, sr=sr, mono=False)
-            if "(Instrumental)" in f:
+            if "(Vocals)" in f:
                 bg = arr
-                bg_file = f
-            elif "(Vocals)" in f:
+            elif "(Instrumental)" in f:
                 main = arr
-                main_file = f
         if bg is not None and main is not None:
             # Ensure bg has data, and isn't empty
             if np.max(np.abs(bg)) > 0.0:
                 bg = bg
             else:
+                logger.info("BG vocals empty.")
                 bg = None
             return main, bg
         return vocals_array, None

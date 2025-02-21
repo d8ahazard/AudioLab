@@ -1,17 +1,11 @@
-import argparse
-import glob
-import json
+import gc
 import logging
-import os
-import subprocess
+import multiprocessing
 import sys
-import traceback
-from collections import OrderedDict
-from pathlib import Path
 
+import numpy as np
+import psutil
 import torch
-
-from handlers.config import model_path
 
 MATPLOTLIB_FLAG = False
 
@@ -49,3 +43,39 @@ class HParams:
 
     def __repr__(self):
         return self.__dict__.__repr__()
+
+
+def gc_collect():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.set_threshold(100, 10, 1)
+    gc.collect()
+
+
+def get_optimal_torch_device(index=0) -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device(
+            f"cuda:{index % torch.cuda.device_count()}"
+        )  # Very fast
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def get_optimal_threads(offset=0):
+    cores = multiprocessing.cpu_count() - offset
+    return int(max(np.floor(cores * (1 - psutil.cpu_percent())), 1))
+
+
+def get_merge_func(merge_type: str):
+    if merge_type == "min":
+        return np.min
+    elif merge_type == "max":
+        return np.max
+    elif merge_type == "median":
+        return np.median
+    else:
+        return np.mean

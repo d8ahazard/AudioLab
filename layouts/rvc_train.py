@@ -676,8 +676,8 @@ def render():
                     refresh_button.click(fn=list_voice_projects_ui, outputs=[existing_project])
                 total_epochs = gr.Slider(
                     minimum=2,
-                    maximum=1000,
-                    step=1,
+                    maximum=2000,
+                    step=5,
                     label="Total Training Epochs",
                     value=125,
                     interactive=True,

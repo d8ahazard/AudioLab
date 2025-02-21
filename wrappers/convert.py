@@ -39,10 +39,10 @@ class Convert(BaseWrapper):
             os.makedirs(output_folder, exist_ok=True)
             for idx, input_file in enumerate(non_mp3_inputs):
                 if callback is not None:
-                    pct_done = int((idx + 1) / len(non_mp3_inputs) * 100)
+                    pct_done = int((idx + 1) / len(non_mp3_inputs))
                     callback(pct_done, f"Converting {os.path.basename(input_file)}", len(non_mp3_inputs))
                 file_name, ext = os.path.splitext(os.path.basename(input_file))
-                output_file = os.path.join(output_folder, f"{file_name}(Final).mp3")
+                output_file = os.path.join(output_folder, f"{file_name}.mp3")
                 if os.path.exists(output_file):
                     os.remove(output_file)
                 # Convert to MP3

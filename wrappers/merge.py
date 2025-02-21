@@ -34,70 +34,76 @@ class Merge(BaseWrapper):
 
         filtered_kwargs = {key: value for key, value in kwargs.items() if key in self.allowed_kwargs}
         pitch_shift = filtered_kwargs.get("pitch_shift", 0)
+        try:
+            for project in pj_inputs:
+                logger.info(f"Processing project: {os.path.basename(project.project_dir)}")
+                src_stem = project.src_file
+                src_name, _ = os.path.splitext(os.path.basename(src_stem))
+                output_folder = os.path.join(project.project_dir, "merged")
+                os.makedirs(output_folder, exist_ok=True)
 
-        for project in pj_inputs:
-            logger.info(f"Processing project: {os.path.basename(project.project_dir)}")
-            src_stem = project.src_file
-            src_name, _ = os.path.splitext(os.path.basename(src_stem))
-            output_folder = os.path.join(project.project_dir, "merged")
-            os.makedirs(output_folder, exist_ok=True)
+                inputs, _ = self.filter_inputs(project, "audio")
 
-            inputs, _ = self.filter_inputs(project, "audio")
+                ir_file = os.path.join(project.project_dir, "stems", "impulse_response.ir")
 
-            ir_file = os.path.join(project.project_dir, "stems", "impulse_response.ir")
+                new_inputs = []
+                for i, stem_path in enumerate(inputs):
+                    if callback is not None:
+                        callback(i / len(inputs), f"Processing stem: {os.path.basename(stem_path)}", len(inputs))
+                    logger.info(f"Processing stem: {os.path.basename(stem_path)}")
+                    if "(Vocals)" in stem_path and "(BG_Vocals" not in stem_path:
 
-            new_inputs = []
-            for i, stem_path in enumerate(inputs):
-                if callback is not None:
-                    callback(i / len(inputs), f"Processing stem: {os.path.basename(stem_path)}", len(inputs))
-                logger.info(f"Processing stem: {os.path.basename(stem_path)}")
-                if "(Vocals)" in stem_path and "(BG_Vocals" not in stem_path:
-                    if os.path.exists(ir_file):
-                        logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
-                        stem_name, ext = os.path.splitext(os.path.basename(stem_path))
-                        reverb_stem_path = os.path.join(project.project_dir, "stems", f"{stem_name}(Re-Reverb){ext}")
-                        reverb_stem = apply_reverb(stem_path, ir_file, reverb_stem_path)
-                        seg = AudioSegment.from_file(reverb_stem)
+                        if os.path.exists(ir_file):
+                            logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
+                            stem_name, ext = os.path.splitext(os.path.basename(stem_path))
+                            src_name = stem_name.replace("(Vocals)", "")
+                            reverb_stem_path = os.path.join(project.project_dir, "stems", f"{stem_name}(Re-Reverb){ext}")
+                            reverb_stem = apply_reverb(stem_path, ir_file, reverb_stem_path)
+                            seg = AudioSegment.from_file(reverb_stem)
+                        else:
+                            seg = AudioSegment.from_file(stem_path)
                     else:
                         seg = AudioSegment.from_file(stem_path)
+
+                    if pitch_shift != 0 and "(Cloned)" not in stem_path:
+                        logger.info(f"Applying pitch shift to {os.path.basename(stem_path)}")
+                        seg = shift_pitch(seg, pitch_shift)
+
+                    new_inputs.append(seg)
+
+                # Determine output file extension.
+                if isinstance(new_inputs[0], AudioSegment):
+                    first_ext = ".wav"
                 else:
-                    seg = AudioSegment.from_file(stem_path)
+                    _, file_ext = os.path.splitext(os.path.basename(new_inputs[0]))
+                    first_ext = file_ext.lower() if file_ext else ".wav"
 
-                if pitch_shift != 0 and "(Cloned)" not in stem_path:
-                    logger.info(f"Applying pitch shift to {os.path.basename(stem_path)}")
-                    seg = shift_pitch(seg, pitch_shift)
+                output_file = os.path.join(output_folder, f"{src_name}(Merged){first_ext}")
+                if os.path.exists(output_file):
+                    os.remove(output_file)
 
-                new_inputs.append(seg)
+                merged_segment = new_inputs[0]
+                for seg in new_inputs[1:]:
+                    merged_segment = merged_segment.overlay(seg)
 
-            # Determine output file extension.
-            if isinstance(new_inputs[0], AudioSegment):
-                first_ext = ".wav"
-            else:
-                _, file_ext = os.path.splitext(os.path.basename(new_inputs[0]))
-                first_ext = file_ext.lower() if file_ext else ".wav"
+                # Normalize final mix.
+                merged_segment = effects.normalize(merged_segment)
 
-            output_file = os.path.join(output_folder, f"{src_name}_(Merged){first_ext}")
-            if os.path.exists(output_file):
-                os.remove(output_file)
+                # Export final output.
+                export_format = first_ext.lstrip(".")
+                merged_segment.export(
+                    output_file,
+                    format=export_format,
+                    bitrate="320k" if export_format == "mp3" else None
+                )
 
-            merged_segment = new_inputs[0]
-            for seg in new_inputs[1:]:
-                merged_segment = merged_segment.overlay(seg)
-
-            # Normalize final mix.
-            merged_segment = effects.normalize(merged_segment)
-
-            # Export final output.
-            export_format = first_ext.lstrip(".")
-            merged_segment.export(
-                output_file,
-                format=export_format,
-                bitrate="320k" if export_format == "mp3" else None
-            )
-
-            project.add_output("merged", output_file)
-            pj_outputs.append(project)
-
+                project.add_output("merged", output_file)
+                pj_outputs.append(project)
+        except Exception as e:
+            logger.exception("Error merging audio files.")
+            if callback is not None:
+                callback(1.0, "Error merging audio files.", 1)
+            raise e
         return pj_outputs
 
     def register_api_endpoint(self, api) -> Any:

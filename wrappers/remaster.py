@@ -36,32 +36,38 @@ class Remaster(BaseWrapper):
         callback(0, f"Remastering {len(inputs)} audio files", len(inputs))
         callback_step = 0
         pj_outputs = []
-        for project in inputs:
-            outputs = []
-            if use_source_track_as_reference:
-                reference_file = project.src_file
-            output_folder = os.path.join(project.project_dir, "remastered")
-            os.makedirs(output_folder, exist_ok=True)
-            input_files, _ = self.filter_inputs(project, "audio")
-            for input_file in input_files:
-                logger.info(f"Remastering {input_file}")
-                callback(callback_step, f"Remastering {input_file}", len(inputs))
-                inputs_name, inputs_ext = os.path.splitext(os.path.basename(input_file))
-                output_file = os.path.join(output_folder, f"{inputs_name}_remastered{inputs_ext}")
-                mg.process(
-                    # The track you want to master
-                    target=input_file,
-                    # Some "wet" reference track
-                    reference=reference_file,
-                    # Where and how to save your results
-                    results=[
-                        mg.pcm24(output_file),
-                    ],
-                )
-                outputs.append(output_file)
-                callback_step += 1
-            project.add_output("remaster", outputs)
-            pj_outputs.append(project)
+        try:
+            for project in inputs:
+                outputs = []
+                if use_source_track_as_reference:
+                    reference_file = project.src_file
+                output_folder = os.path.join(project.project_dir, "remastered")
+                os.makedirs(output_folder, exist_ok=True)
+                input_files, _ = self.filter_inputs(project, "audio")
+                for input_file in input_files:
+                    logger.info(f"Remastering {input_file}")
+                    callback(callback_step, f"Remastering {input_file}", len(inputs))
+                    inputs_name, inputs_ext = os.path.splitext(os.path.basename(input_file))
+                    output_file = os.path.join(output_folder, f"{inputs_name}_remastered{inputs_ext}")
+                    mg.process(
+                        # The track you want to master
+                        target=input_file,
+                        # Some "wet" reference track
+                        reference=reference_file,
+                        # Where and how to save your results
+                        results=[
+                            mg.pcm24(output_file),
+                        ],
+                    )
+                    outputs.append(output_file)
+                    callback_step += 1
+                project.add_output("remaster", outputs)
+                pj_outputs.append(project)
+        except Exception as e:
+            logger.error(f"Error remastering audio: {e}")
+            if callback is not None:
+                callback(1, "Error remastering audio")
+            raise e
         return pj_outputs
 
     def register_api_endpoint(self, api) -> Any:

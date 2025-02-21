@@ -52,4 +52,13 @@ class ProjectFiles:
             self.file_dict[process] = []
         self.file_dict[process].extend(outputs)
 
+    def all_outputs(self) -> List[str]:
+        output_list = []
+        for key in self.file_dict:
+            if key != "merge" and key != "convert":
+                for file in self.file_dict[key]:
+                    if os.path.exists(file) and file not in output_list:
+                        output_list.append(file)
+        return output_list
+
 

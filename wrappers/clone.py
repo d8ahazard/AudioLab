@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Any, Dict, List
 
@@ -6,6 +7,8 @@ from modules.rvc.configs.config import Config
 from modules.rvc.infer.modules.vc.pipeline import VC
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
+
+logger = logging.getLogger(__name__)
 
 
 def list_speakers():
@@ -61,11 +64,28 @@ class Clone(BaseWrapper):
             type=bool,
             gradio_type="Checkbox",
         ),
+        "pitch_correction": TypedInput(
+            default=True,
+            description="Apply pitch correction (Auto-Tune) to the cloned vocals. Try this if there are artifacts in the cloned output.",
+            type=bool,
+            gradio_type="Checkbox",
+        ),
+        "pitch_correction_humanize": TypedInput(
+            default=0.95,
+            description="How much to humanize the pitch correction. 0=robotic, 1=human-like.",
+            type=float,
+            gradio_type="Slider",
+            ge=0,
+            le=1,
+            step=0.01,
+        ),
         "pitch_shift": TypedInput(
             default=0,
-            description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down).",
+            ge=-24,
+            le=24,
+            description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down). Adjust this if the cloned voice is higher or lower than the input vocals.",
             type=int,
-            gradio_type="Number",
+            gradio_type="Slider",
         ),
         "clone_stereo": TypedInput(
             default=False,
@@ -88,16 +108,15 @@ class Clone(BaseWrapper):
             gradio_type="Number",
         ),
         "pitch_extraction_method": TypedInput(
-            default="harvest",
-            description="Pitch extraction algorithm. 'harvest' allows more features (e.g. smoothing).",
+            default="hybrid",
+            description="Pitch extraction algorithm. 'harvest' offers smoothing and additional features. 'crepe' is faster but less accurate. 'rmvpe' is the most accurate but slower. 'hybrid' is a combination of 'crepe' and 'rmvpe'.",
             type=str,
-            choices=["pm", "harvest", "crepe", "rmvpe"],
+            choices=["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe", "crepe-tiny", "mangio-crepe", "mangio-crepe-tiny"],
             gradio_type="Dropdown",
         ),
         "volume_mix_rate": TypedInput(
             default=1,
-            description="Mix ratio for volume envelope. 1=original input audio volume; "
-                        "lower values blend with the new RMS shape.",
+            description="Mix ratio for volume envelope. 1=original input audio volume; lower values blend with the new RMS shape.",
             type=float,
             gradio_type="Slider",
             ge=0,
@@ -106,8 +125,7 @@ class Clone(BaseWrapper):
         ),
         "accent_strength": TypedInput(
             default=0.25,
-            description="A stronger accent strength makes the voice more like the target speaker, "
-                        "but can introduce artifacts.",
+            description="A stronger accent strength makes the voice more like the target speaker, but can introduce artifacts.",
             type=float,
             gradio_type="Slider",
             ge=0,
@@ -115,9 +133,8 @@ class Clone(BaseWrapper):
             step=0.01,
         ),
         "filter_radius": TypedInput(
-            default=7,
-            description="Median filter radius for 'harvest' pitch recognition. "
-                        "Higher values reduce 'auto-tune' artifacts but may lose detail.",
+            default=4,
+            description="Median filter radius for 'harvest' pitch recognition. Higher values reduce auto-tune artifacts but may lose detail.",
             type=int,
             gradio_type="Slider",
             ge=0,
@@ -132,6 +149,32 @@ class Clone(BaseWrapper):
             ge=0,
             le=1,
             step=0.01,
+        ),
+        "merge_type": TypedInput(
+            default="median",
+            description="Merge strategy for hybrid pitch extraction. 'median' computes the median of multiple pitch estimates, while 'mean' takes the average.",
+            type=str,
+            choices=["median", "mean"],
+            gradio_type="Dropdown",
+        ),
+        "crepe_hop_length": TypedInput(
+            default=160,
+            description="Hop length for CREPE-based pitch extraction. Lower values improve temporal resolution at the cost of processing speed.",
+            type=int,
+            gradio_type="Number",
+        ),
+        "f0_autotune": TypedInput(
+            default=False,
+            description="Automatically apply autotune to the extracted pitch values to smooth rapid variations.",
+            type=bool,
+            gradio_type="Checkbox",
+        ),
+        "rmvpe_onnx": TypedInput(
+            default=False,
+            description="Use the ONNX version of the RMVPE model for pitch extraction if available. May improve performance on supported hardware.",
+            type=bool,
+            gradio_type="Checkbox",
+            render=False
         )
     }
 
@@ -168,61 +211,81 @@ class Clone(BaseWrapper):
         index_rate = filtered_kwargs.get("index_rate", 1)
         filter_radius = filtered_kwargs.get("filter_radius", 5)
         clone_stereo = filtered_kwargs.get("clone_stereo", False)
+        pitch_correction = filtered_kwargs.get("pitch_correction", False)
+        pitch_correction_humanize = filtered_kwargs.get("pitch_correction_humanize", 0.5)
+        merge_type = filtered_kwargs.get("merge_type", "median")
+        crepe_hop_length = filtered_kwargs.get("crepe_hop_length", 160)
+        f0_autotune = filtered_kwargs.get("f0_autotune", False)
+        rmvpe_onnx = filtered_kwargs.get("rmvpe_onnx", False)
 
         outputs = []
         total_steps = len(inputs)
         if clone_bg_vocals:
             total_steps *= 2
+        if pitch_correction:
+            total_steps *= 2
         # For the callback
         self.vc.total_steps = total_steps
+        try:
+            for project in inputs:
 
-        for project in inputs:
+                project_name = os.path.basename(project.project_dir)
 
-            project_name = os.path.basename(project.project_dir)
+                def project_callback(step, message, steps=total_steps):
+                    if callback is not None:
+                        callback(step, f"({project_name}) {message}", steps)
 
-            def project_callback(step, message, steps=total_steps):
-                if callback is not None:
-                    callback(step, f"({project_name}) {message}", steps)
+                last_outputs = project.last_outputs
+                # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
+                filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals" in p]
+                if not filtered_inputs:
+                    filtered_inputs = [project.src_file]
 
-            last_outputs = project.last_outputs
-            # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
-            filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals" in p]
-            if not filtered_inputs:
-                filtered_inputs = [project.src_file]
+                if not clone_bg_vocals:
+                    # Exclude any "(BG_Vocals" if user doesn't want to clone them
+                    filtered_inputs = [p for p in filtered_inputs if "(BG_Vocals" not in p]
 
-            if not clone_bg_vocals:
-                # Exclude any "(BG_Vocals" if user doesn't want to clone them
-                filtered_inputs = [p for p in filtered_inputs if "(BG_Vocals" not in p]
-
-            # Perform the voice conversion
-            clone_outputs = self.vc.vc_multi(
-                model=selected_voice,
-                sid=spk_id,
-                paths=filtered_inputs,
-                f0_up_key=pitch_shift,
-                f0_method=f0method,
-                index_rate=index_rate,
-                filter_radius=filter_radius,
-                rms_mix_rate=rms_mix_rate,
-                protect=protect,
-                clone_stereo=clone_stereo,
-                project_dir=project.project_dir,
-                callback=project_callback
-            )
-            # Append (selected_voice) and (pitch_extraction_method) to the output file name
-            for output in clone_outputs:
-                base_name, ext = os.path.splitext(os.path.basename(output))
-                selected_voice_base_name, _ = os.path.splitext(os.path.basename(selected_voice))
-                new_name = os.path.join(os.path.dirname(output), f"{base_name}({selected_voice_base_name}_{f0method}){ext}")
-                if os.path.exists(new_name):
-                    os.remove(new_name)
-                os.rename(output, new_name)
-                clone_outputs[clone_outputs.index(output)] = new_name
-            # Store results
-            project.add_output("cloned", clone_outputs)
-            # Update the last_outputs so we don't lose references to unprocessed files
-            project.last_outputs = clone_outputs + [p for p in last_outputs if p not in filtered_inputs]
-            outputs.append(project)
+                # Perform the voice conversion with the new pitch extraction parameters
+                clone_outputs = self.vc.vc_multi(
+                    model=selected_voice,
+                    sid=spk_id,
+                    paths=filtered_inputs,
+                    f0_up_key=pitch_shift,
+                    f0_method=f0method,
+                    index_rate=index_rate,
+                    filter_radius=filter_radius,
+                    rms_mix_rate=rms_mix_rate,
+                    protect=protect,
+                    merge_type=merge_type,
+                    crepe_hop_length=crepe_hop_length,
+                    f0_autotune=f0_autotune,
+                    rmvpe_onnx=rmvpe_onnx,
+                    clone_stereo=clone_stereo,
+                    pitch_correction=pitch_correction,
+                    pitch_correction_humanize=pitch_correction_humanize,
+                    project_dir=project.project_dir,
+                    callback=project_callback
+                )
+                # Append (selected_voice) and (pitch_extraction_method) to the output file name
+                for output in clone_outputs:
+                    base_name, ext = os.path.splitext(os.path.basename(output))
+                    selected_voice_base_name, _ = os.path.splitext(os.path.basename(selected_voice))
+                    new_name = os.path.join(os.path.dirname(output),
+                                            f"{base_name}({selected_voice_base_name}_{f0method}){ext}")
+                    if os.path.exists(new_name):
+                        os.remove(new_name)
+                    os.rename(output, new_name)
+                    clone_outputs[clone_outputs.index(output)] = new_name
+                # Store results
+                project.add_output("cloned", clone_outputs)
+                # Update the last_outputs so we don't lose references to unprocessed files
+                project.last_outputs = clone_outputs + [p for p in last_outputs if p not in filtered_inputs]
+                outputs.append(project)
+        except Exception as e:
+            logger.error(f"Error cloning vocals: {e}")
+            if callback is not None:
+                callback(1, f"Error: {e}")
+            raise e
 
         return outputs
 

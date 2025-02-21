@@ -48,7 +48,8 @@ class Separate(BaseWrapper):
             ge=1,
             description="Number of background vocal layers to separate.",
             type=int,
-            gradio_type="Slider"
+            gradio_type="Slider",
+            render=False
         ),
         "vocals_only": TypedInput(
             default=True,

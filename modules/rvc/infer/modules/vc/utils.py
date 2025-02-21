@@ -26,8 +26,11 @@ def get_index_path_from_model(sid):
 
 
 def load_hubert(config):
+    hubert_base = os.path.join(model_path, "rvc", "hubert_base.pt")
+    if not os.path.exists(hubert_base):
+        raise FileNotFoundError(f"Hubert model not found at {hubert_base}")
     models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
-        [os.path.join(model_path, "rvc", "hubert_base.pt")],
+        [hubert_base],
         suffix="",
     )
     hubert_model = models[0]
