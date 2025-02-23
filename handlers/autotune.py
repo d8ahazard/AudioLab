@@ -36,26 +36,47 @@ def group_pitch_shift_factors(time_axis, shift_factors, tolerance=0.02):
 
 def detect_key(audio, sr):
     """
-    Detects the key of an audio signal using its chromagram.
-    Computes the chroma_stft, averages it over time, and selects the key corresponding
-    to the maximum mean chroma value.
+    Detects the key and scale of an audio signal using a Krumhansl–Schmuckler–style algorithm.
+    Computes the chroma_stft, averages it over time, and then compares the result against rotated
+    major and minor key profiles to choose the best match.
 
     Parameters:
-      audio: np.array, the audio signal.
+      audio: np.array, the final corrected audio signal.
       sr: int, sample rate of the audio.
 
     Returns:
-      estimated_key: The detected key as a string.
-      scale: The detected scale (defaulted to "major").
+      best_key: The detected key (e.g. 'C', 'G#', etc.).
+      best_scale: The detected scale ('major' or 'minor').
     """
-    import librosa  # in case not imported here
-    chromagram = librosa.feature.chroma_stft(y=audio, sr=sr)
-    mean_chroma = np.mean(chromagram, axis=1)
-    chroma_to_key = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    estimated_key_index = np.argmax(mean_chroma)
-    estimated_key = chroma_to_key[estimated_key_index]
-    logger.info(f"Detected Key: {estimated_key}")
-    return estimated_key, "major"
+    chroma = librosa.feature.chroma_stft(y=audio, sr=sr)
+    chroma_mean = np.mean(chroma, axis=1)
+
+    # Krumhansl–Schmuckler key profiles (from Krumhansl & Kessler, 1982)
+    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 2.88, 2.75])
+    keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+    best_corr = -np.inf
+    best_key = None
+    best_scale = None
+
+    # For each possible key (by rotating the profile) check both major and minor correlations.
+    for i in range(12):
+        major_rot = np.roll(major_profile, i)
+        minor_rot = np.roll(minor_profile, i)
+        corr_major = np.corrcoef(chroma_mean, major_rot)[0, 1]
+        corr_minor = np.corrcoef(chroma_mean, minor_rot)[0, 1]
+        if corr_major > best_corr:
+            best_corr = corr_major
+            best_key = keys[i]
+            best_scale = "major"
+        if corr_minor > best_corr:
+            best_corr = corr_minor
+            best_key = keys[i]
+            best_scale = "minor"
+
+    logger.info(f"Detected Key: {best_key}, Scale: {best_scale} (corr={best_corr:.3f})")
+    return best_key, best_scale
 
 
 def process_channel(channel_audio, orig_sr, extractor, f0_method, strength=0.5, humanize=False):
@@ -66,7 +87,7 @@ def process_channel(channel_audio, orig_sr, extractor, f0_method, strength=0.5, 
       3. Auto-tune the f0 and optionally add natural humanization.
       4. Compute per-frame pitch shift factors and segment the track accordingly.
       5. For each segment, apply CPU-based pitch shifting (via librosa) and blend the result.
-      6. Perform key detection using a chromagram-based approach.
+      6. Detect key and scale using a Krumhansl–Schmuckler algorithm.
     """
     # Step 1: Resample for pitch extraction at 16000 Hz.
     target_extraction_sr = 16000
@@ -92,7 +113,7 @@ def process_channel(channel_audio, orig_sr, extractor, f0_method, strength=0.5, 
         f0_max=1100
     )
 
-    # Step 3: Autotune f0 and optionally humanize.
+    # Step 3: Auto-tune f0 and optionally humanize.
     if f0_autotune_flag:
         tuned_f0 = autotune_f0(original_f0)
     else:
@@ -136,9 +157,9 @@ def process_channel(channel_audio, orig_sr, extractor, f0_method, strength=0.5, 
                   + strength * shifted_segment
         corrected_audio[start_sample:end_sample] = blended
 
-    # Step 6: Detect key using the final corrected audio.
-    detected_key, scale = detect_key(corrected_audio, orig_sr)
-    return corrected_audio, detected_key, scale
+    # Step 6: Detect key and scale using the KS algorithm.
+    detected_key, detected_scale = detect_key(corrected_audio, orig_sr)
+    return corrected_audio, detected_key, detected_scale
 
 
 def auto_tune_track(audio, tgt_sr, strength=0.5, humanize=False, f0_method="rmvpe", extractor_config=None):
@@ -157,7 +178,7 @@ def auto_tune_track(audio, tgt_sr, strength=0.5, humanize=False, f0_method="rmvp
     Returns:
       corrected_audio: np.array with the same shape and sample rate as input.
       detected_key: Detected musical key.
-      scale: Detected scale ("major" or "minor").
+      detected_scale: Detected musical scale.
     """
     logger.info("Starting advanced auto-tune process (CPU-based pitch shifting).")
 
@@ -178,24 +199,25 @@ def auto_tune_track(audio, tgt_sr, strength=0.5, humanize=False, f0_method="rmvp
 
     # Process each channel independently.
     if audio.ndim == 1:
-        corrected_channel, detected_key, scale = process_channel(audio, tgt_sr, extractor, f0_method, strength,
-                                                                 humanize)
+        corrected_channel, detected_key, detected_scale = process_channel(audio, tgt_sr, extractor, f0_method, strength,
+                                                                          humanize)
         corrected_audio = corrected_channel
     elif audio.ndim == 2:
         corrected_channels = []
         keys = []
         scales = []
         for ch in audio:
-            corr, key, scl = process_channel(ch, tgt_sr, extractor, f0_method, strength, humanize)
+            corr, key, scale = process_channel(ch, tgt_sr, extractor, f0_method, strength, humanize)
             corrected_channels.append(corr)
             keys.append(key)
-            scales.append(scl)
+            scales.append(scale)
         corrected_audio = np.vstack(corrected_channels)
+        # Choose the most common key/scale among channels.
         detected_key = Counter(keys).most_common(1)[0][0]
-        scale = Counter(scales).most_common(1)[0][0]
+        detected_scale = Counter(scales).most_common(1)[0][0]
     else:
         logger.error("Audio input must be a 1D or 2D numpy array.")
         return audio, "N/A", "N/A"
 
     logger.info("Advanced auto-tune process complete (CPU-based).")
-    return corrected_audio, detected_key, scale
+    return corrected_audio, detected_key, detected_scale

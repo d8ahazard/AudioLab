@@ -28,6 +28,7 @@ pesq
 phonemizer>=3.3.0
 praat-parselmouth>=0.4.4
 progressbar
+psola
 pydub>=0.25.1
 pyloudnorm>=0.1.1
 pyyaml

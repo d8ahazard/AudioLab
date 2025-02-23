@@ -236,33 +236,17 @@ class FeatureExtractor:
             if method not in self.f0_method_dict:
                 raise Exception(f"Method {method} not found.")
             f0 = self.f0_method_dict[method](**params)
-            try:
-                shape_str = f0.shape
-            except AttributeError:
-                shape_str = "N/A"
-            try:
-                f0_min_val = np.min(f0)
-            except Exception:
-                f0_min_val = "N/A"
-            try:
-                f0_max_val = np.max(f0)
-            except Exception:
-                f0_max_val = "N/A"
-            #logger.info(f"Method {method} raw f0 stats: shape: {shape_str}, min: {f0_min_val}, max: {f0_max_val}")
-
+            self.vis.add_f0(f0, method)
             # Fix: ensure filter_radius is an odd integer before medfilt (for 'harvest' only)
             filter_radius_local = params.get("filter_radius", 3)
-            if method == 'harvest' and filter_radius_local > 2:
+            if filter_radius_local > 2:
                 filter_radius_local = int(filter_radius_local)
                 if filter_radius_local % 2 == 0:
                     filter_radius_local += 1
                 f0 = signal.medfilt(f0, filter_radius_local)
                 f0 = f0[1:]  # Get rid of first frame.
+                self.vis.add_f0(f0, f"{method}_filtered")
 
-            try:
-                shape_str = f0.shape
-            except AttributeError:
-                shape_str = "N/A"
             try:
                 f0_min_val = np.min(f0)
             except Exception:
@@ -274,7 +258,6 @@ class FeatureExtractor:
             if np.isnan(f0_max_val) or np.isnan(f0_min_val):
                 logger.warning(f"Method {method} produced NaN values.")
                 return None
-            self.vis.add_f0(f0, method)
             return f0
 
         if threaded:

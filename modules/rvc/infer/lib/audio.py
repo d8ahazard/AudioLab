@@ -1,5 +1,6 @@
 import base64
 import io
+import math
 import os
 import zlib
 from typing import Union
@@ -231,141 +232,100 @@ def autotune_f0(f0, threshold=0.):
     return np.array(autotuned_f0, dtype="float32")
 
 
+def _compute_local_medians(log2_array, window_size):
+    """
+    Compute a local median in log2 space for each frame, ignoring NaNs.
+    Naive O(N*window_size) implementation for clarity.
+    """
+    n = len(log2_array)
+    local_medians = np.full_like(log2_array, np.nan, dtype=np.float32)
+
+    for i in range(n):
+        start = max(0, i - window_size)
+        end = min(n, i + window_size + 1)
+        window_vals = log2_array[start:end]
+        # Filter out NaNs
+        window_vals = window_vals[~np.isnan(window_vals)]
+        if len(window_vals) > 0:
+            local_medians[i] = np.median(window_vals)
+        else:
+            # If no valid frames, just leave NaN
+            local_medians[i] = np.nan
+
+    return local_medians
+
+
 def remap_f0(
-    f0,
-    octave_range=2,
-    mad_multiplier=2.0,
-    local_window=3,
-    local_octave_margin=0.25
+        f0,
+        window_size=4,
+        outlier_thresh=0.5,
+        octave_range=1
 ):
     """
-    Remap octave outliers in f0 by:
-      1) Detecting global outliers in log2 space (median + MAD).
-      2) For each outlier, looking at a small local neighborhood (±local_window).
-         We find the local pitch range (in log2 space) and see if shifting by ±1..±octave_range
-         can bring the note into that local range (±local_octave_margin around the local median).
-      3) If local shifting doesn't fix it, fall back to a global shift that brings it closer
-         to the global median. Otherwise, leave as-is.
+    Remap octave outliers using local context:
+      1) Convert f0 to log2 space, ignoring unvoiced frames (f0 <= 0).
+      2) Compute a local median of log2 pitches for each frame in a +/- window_size neighborhood.
+      3) Any frame that differs from its local median by > outlier_thresh (in log2) is considered an outlier.
+      4) For outliers, try shifting by ±1..±octave_range octaves to see if it lands within outlier_thresh
+         of the local median. If yes, adopt that shift. Otherwise, leave it.
 
     Parameters:
-      f0 (np.array): Pitch array (floats). 0 or negative means unvoiced.
-      octave_range (int): How many octaves up/down to attempt for outlier correction.
-      mad_multiplier (float): Outlier threshold multiplier for the MAD in log2 space.
-      local_window (int): How many frames on each side to consider for local context.
-      local_octave_margin (float): Local range half-width in log2 space, e.g. 0.25 is ±1/4 octave.
+      f0 (np.array): Array of pitches in Hz. 0 or negative => unvoiced.
+      window_size (int): Radius of the local neighborhood to compute the median.
+      outlier_thresh (float): How far (in log2 space) from the local median is considered outlier.
+                              e.g. 0.5 => ±0.5 octaves from local median.
+      octave_range (int): Max number of octaves up/down to try for outlier correction.
 
     Returns:
-      np.array: The remapped pitch array.
+      np.array: Remapped pitch array of the same shape.
     """
     f0 = np.array(f0, dtype=np.float32)
+    n = len(f0)
 
-    # Identify global median + MAD in log2 space for outlier detection
-    nonzero = f0[f0 > 0]
-    if len(nonzero) == 0:
-        return f0  # Nothing to do
+    # Convert to log2, store NaN for unvoiced
+    log2_f0 = np.full_like(f0, np.nan, dtype=np.float32)
+    voiced_mask = (f0 > 0)
+    log2_f0[voiced_mask] = np.log2(f0[voiced_mask])
 
-    log2_nonzero = np.log2(nonzero)
-    median_log2 = np.median(log2_nonzero)
-    abs_devs = np.abs(log2_nonzero - median_log2)
-    mad_log2 = np.median(abs_devs) if len(abs_devs) > 0 else 0.0
+    # Compute local medians ignoring NaNs
+    local_medians = _compute_local_medians(log2_f0, window_size)
 
-    # If there's effectively no variation, just return
-    if mad_log2 < 1e-9:
-        return f0
+    # Output array
+    remapped = np.copy(f0)
 
-    outlier_thresh = mad_multiplier * mad_log2
-
-    # We'll store results here
-    remapped = []
-    n_frames = len(f0)
-
-    for i, freq in enumerate(f0):
-        # Unvoiced or invalid
-        if freq <= 0:
-            remapped.append(freq)
+    for i in range(n):
+        if not voiced_mask[i]:
+            # Unvoiced => skip
             continue
 
-        freq_log2 = np.log2(freq)
-        diff_global = abs(freq_log2 - median_log2)
+        freq_log2 = log2_f0[i]
+        local_med = local_medians[i]
 
-        # If not a global outlier, leave as-is
-        if diff_global <= outlier_thresh:
-            remapped.append(freq)
+        # If local median is NaN (no neighbors?), skip
+        if math.isnan(local_med):
             continue
 
-        # Otherwise, we have a global outlier; attempt local fix
-        start_idx = max(0, i - local_window)
-        end_idx = min(n_frames, i + local_window + 1)
-        local_region = f0[start_idx:end_idx]
-        local_nonzero = local_region[local_region > 0]
-
-        # If local region has no voiced frames, just do a global fallback
-        if len(local_nonzero) == 0:
-            best_candidate = freq
-            best_diff = diff_global
-            # Try shifting globally
-            for shift in range(-octave_range, octave_range + 1):
-                if shift == 0:
-                    continue
-                candidate_log2 = freq_log2 + shift
-                candidate_diff = abs(candidate_log2 - median_log2)
-                if candidate_diff < best_diff:
-                    best_diff = candidate_diff
-                    best_candidate = 2 ** candidate_log2
-            # If that global shift is no longer an outlier, adopt it
-            if best_diff <= outlier_thresh:
-                remapped.append(best_candidate)
-            else:
-                remapped.append(freq)
+        diff = abs(freq_log2 - local_med)
+        if diff <= outlier_thresh:
+            # Not an outlier
             continue
 
-        # We have some local pitched frames
-        local_log2 = np.log2(local_nonzero)
-        local_median_log2 = np.median(local_log2)
-        # Define local range around that median
-        local_lower = local_median_log2 - local_octave_margin
-        local_upper = local_median_log2 + local_octave_margin
-
-        # 1) Try local shifting first
-        best_candidate = freq
-        best_diff_local = float("inf")
+        # It's an outlier => try shifting
+        best_candidate = freq_log2
+        best_diff = diff
 
         for shift in range(-octave_range, octave_range + 1):
             if shift == 0:
                 continue
             candidate_log2 = freq_log2 + shift
-            # If candidate is within the local "reasonable" range, consider it
-            if local_lower <= candidate_log2 <= local_upper:
-                # measure difference from local median
-                candidate_diff = abs(candidate_log2 - local_median_log2)
-                if candidate_diff < best_diff_local:
-                    best_diff_local = candidate_diff
-                    best_candidate = 2 ** candidate_log2
+            candidate_diff = abs(candidate_log2 - local_med)
+            if candidate_diff < best_diff:
+                best_diff = candidate_diff
+                best_candidate = candidate_log2
 
-        # If we found a local shift that puts freq in the local range
-        if best_diff_local < float("inf"):
-            remapped.append(best_candidate)
-            continue
+        # If the best shift gets us within outlier_thresh, adopt it
+        if best_diff <= outlier_thresh:
+            remapped[i] = 2 ** best_candidate
+        # else keep original
 
-        # 2) If no local shift fixed it, do the old global approach
-        best_candidate = freq
-        best_diff_global = diff_global
-
-        for shift in range(-octave_range, octave_range + 1):
-            if shift == 0:
-                continue
-            candidate_log2 = freq_log2 + shift
-            candidate_diff = abs(candidate_log2 - median_log2)
-            if candidate_diff < best_diff_global:
-                best_diff_global = candidate_diff
-                best_candidate = 2 ** candidate_log2
-
-        # If that global shift is no longer an outlier, adopt it
-        if best_diff_global <= outlier_thresh:
-            remapped.append(best_candidate)
-        else:
-            # Keep original if neither local nor global shift helps
-            remapped.append(freq)
-
-    return np.array(remapped, dtype=np.float32)
-
+    return remapped
