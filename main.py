@@ -28,6 +28,8 @@ from wrappers.base_wrapper import BaseWrapper
 import logging
 
 logger = logging.getLogger(__name__)
+# Set TF_ENABLE_ONEDNN_OPTS=0
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
     _init_dll_path()

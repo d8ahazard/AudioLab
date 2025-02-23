@@ -25,7 +25,7 @@ class FeatureInput(object):
         self.f0_mel_max = 1127 * np.log(1 + self.f0_max / 700)
 
     def compute_f0(self, audio_path, f0_method):
-        audio = load_audio(audio_path, self.fs)
+        audio, _ = load_audio(audio_path, self.fs)
         p_len = audio.shape[0] // self.hop
         if f0_method == "pm":
             time_step = 160 / self.fs * 1000

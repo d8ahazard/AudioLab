@@ -113,16 +113,19 @@ class PreProcess:
 
     def pipeline(self, path, idx0, callback: Callable = None):
         try:
-            audio = load_audio(path, self.sr)
+            audio, sr = load_audio(path, self.sr)
+            # Convert audio to float64 to match filter coefficients from butter()
+            audio = audio.astype(np.float64)
             audio = signal.lfilter(self.bh, self.ah, audio)
 
-            slices = list(self.slicer.slice(audio))  # Convert to list to get total steps
+            slices = list(self.slicer.slice(audio))
             total_steps = sum(
-                max(1, int(len(audio) / (self.sr * (self.per - self.overlap)))) for audio in slices
-            )  # Count total norm_write calls
+                max(1, int(len(audio) / (self.sr * (self.per - self.overlap))))
+                for audio in slices
+            )
 
             idx1 = 0
-            processed_steps = 0  # Track how many norm_write calls we've made
+            processed_steps = 0
 
             for audio in slices:
                 i = 0
@@ -131,30 +134,23 @@ class PreProcess:
                     i += 1
                     if len(audio[start:]) > self.tail * self.sr:
                         tmp_audio = audio[start: start + int(self.per * self.sr)]
-
-                        # Call the callback before norm_write
                         if callback is not None:
                             progress = processed_steps / total_steps
                             callback(progress, f"Processing chunk {idx1}", total_steps)
-
                         self.norm_write(tmp_audio, idx0, idx1)
                         idx1 += 1
                         processed_steps += 1
-
                     else:
                         tmp_audio = audio[start:]
                         idx1 += 1
                         break
 
-                # Call the callback before the last norm_write in this slice
                 if callback is not None:
                     progress = processed_steps / total_steps
                     callback(progress, f"Processing chunk {idx1}", total_steps)
-
                 self.norm_write(tmp_audio, idx0, idx1)
                 processed_steps += 1
 
-            # Ensure final progress callback at 100%
             if callback is not None:
                 callback(1.0, "Processing complete", total_steps)
 

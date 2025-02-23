@@ -75,8 +75,6 @@ def remix_audio(input_audio, target_sr=None, norm=False, to_int16=False, resampl
     audio = np.array(input_audio[0], dtype="float32")
     if target_sr is None: target_sr = input_audio[1]
 
-    print(
-        f"before remix: shape={audio.shape}, max={audio.max()}, min={audio.min()}, mean={audio.mean()} sr={input_audio[1]}")
     if resample or input_audio[1] != target_sr:
         audio = librosa.core.resample(np.array(input_audio[0], dtype="float32"), orig_sr=input_audio[1],
                                       target_sr=target_sr, **kwargs)
@@ -88,8 +86,6 @@ def remix_audio(input_audio, target_sr=None, norm=False, to_int16=False, resampl
     if audio_max > 1: audio = audio / audio_max
 
     if to_int16: audio = np.clip(audio * MAX_INT16, a_min=-MAX_INT16 + 1, a_max=MAX_INT16 - 1).astype("int16")
-    print(
-        f"after remix: shape={audio.shape}, max={audio.max()}, min={audio.min()}, mean={audio.mean()}, sr={target_sr}")
 
     return audio, target_sr
 

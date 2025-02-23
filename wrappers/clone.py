@@ -59,8 +59,7 @@ class Clone(BaseWrapper):
         ),
         "clone_bg_vocals": TypedInput(
             default=False,
-            description="Clone background vocals in addition to the main vocals. "
-                        "(Be aware that layered harmonies may cause artifacts.)",
+            description="Clone background vocals in addition to the main vocals. (Be aware that layered harmonies may cause artifacts.)",
             type=bool,
             gradio_type="Checkbox",
         ),
@@ -108,15 +107,16 @@ class Clone(BaseWrapper):
             gradio_type="Number",
         ),
         "pitch_extraction_method": TypedInput(
-            default="hybrid",
-            description="Pitch extraction algorithm. 'harvest' offers smoothing and additional features. 'crepe' is faster but less accurate. 'rmvpe' is the most accurate but slower. 'hybrid' is a combination of 'crepe' and 'rmvpe'.",
+            default="rmvpe+",
+            description="Pitch extraction algorithm. 'harvest' offers smoothing; 'rmvpe' is more accurate; 'hybrid' combines methods.",
             type=str,
-            choices=["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe", "crepe-tiny", "mangio-crepe", "mangio-crepe-tiny"],
+            choices=["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe", "crepe-tiny",
+                     "mangio-crepe", "mangio-crepe-tiny"],
             gradio_type="Dropdown",
         ),
         "volume_mix_rate": TypedInput(
-            default=1,
-            description="Mix ratio for volume envelope. 1=original input audio volume; lower values blend with the new RMS shape.",
+            default=0.9,
+            description="Mix ratio for volume envelope. 1=original input volume; lower values blend with the new RMS shape.",
             type=float,
             gradio_type="Slider",
             ge=0,
@@ -124,7 +124,7 @@ class Clone(BaseWrapper):
             step=0.01,
         ),
         "accent_strength": TypedInput(
-            default=0.25,
+            default=0.2,
             description="A stronger accent strength makes the voice more like the target speaker, but can introduce artifacts.",
             type=float,
             gradio_type="Slider",
@@ -133,7 +133,7 @@ class Clone(BaseWrapper):
             step=0.01,
         ),
         "filter_radius": TypedInput(
-            default=4,
+            default=3,
             description="Median filter radius for 'harvest' pitch recognition. Higher values reduce auto-tune artifacts but may lose detail.",
             type=int,
             gradio_type="Slider",
@@ -152,26 +152,26 @@ class Clone(BaseWrapper):
         ),
         "merge_type": TypedInput(
             default="median",
-            description="Merge strategy for hybrid pitch extraction. 'median' computes the median of multiple pitch estimates, while 'mean' takes the average.",
+            description="Merge strategy for hybrid pitch extraction. 'median' computes the median of multiple estimates, while 'mean' takes the average.",
             type=str,
             choices=["median", "mean"],
             gradio_type="Dropdown",
         ),
         "crepe_hop_length": TypedInput(
             default=160,
-            description="Hop length for CREPE-based pitch extraction. Lower values improve temporal resolution at the cost of processing speed.",
+            description="Hop length for CREPE-based pitch extraction. Lower values improve temporal resolution at the cost of speed.",
             type=int,
             gradio_type="Number",
         ),
         "f0_autotune": TypedInput(
-            default=False,
+            default=True,  # UPDATED from False
             description="Automatically apply autotune to the extracted pitch values to smooth rapid variations.",
             type=bool,
             gradio_type="Checkbox",
         ),
         "rmvpe_onnx": TypedInput(
             default=False,
-            description="Use the ONNX version of the RMVPE model for pitch extraction if available. May improve performance on supported hardware.",
+            description="Use the ONNX version of the RMVPE model for pitch extraction if available.",
             type=bool,
             gradio_type="Checkbox",
             render=False

@@ -14,7 +14,7 @@ from handlers.config import model_path
 from handlers.spectrogram import F0Visualizer
 from modules.rvc.infer.lib.audio import pad_audio, autotune_f0, remap_f0
 from modules.rvc.infer.lib.rmvpe import RMVPE
-from modules.rvc.utils import get_optimal_threads, get_merge_func, gc_collect
+from modules.rvc.utils import get_merge_func, gc_collect
 
 logger = logging.getLogger(__name__)
 
@@ -324,10 +324,10 @@ class FeatureExtractor:
         else:
             f0 = self.f0_method_dict[f0_method](**params)
 
-        if f0_autotune:
-            f0 = autotune_f0(f0)
+        # if f0_autotune:
+        #     f0 = autotune_f0(f0)
 
-        f0 = remap_f0(f0)
+        #f0 = remap_f0(f0)
         self.vis.add_f0(f0, "remapped")
 
         f0 *= pow(2, f0_up_key / 12)

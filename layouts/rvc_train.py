@@ -679,7 +679,7 @@ def render():
                     maximum=2000,
                     step=5,
                     label="Total Training Epochs",
-                    value=125,
+                    value=300,
                     interactive=True,
                     elem_classes="hintitem", elem_id="rvc_total_epochs"
                 )
@@ -741,8 +741,10 @@ def render():
                     )
                     pitch_extraction_method = gr.Radio(
                         label="Pitch Extraction Method",
-                        choices=["pm", "harvest", "dio", "rmvpe", "rmvpe_gpu"],
-                        value="rmvpe_gpu",
+                        choices=["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe",
+                                 "crepe-tiny",
+                                 "mangio-crepe", "mangio-crepe-tiny"],
+                        value="rmvpe+",
                         interactive=True,
                         elem_classes="hintitem", elem_id="rvc_pitch_extraction"
                     )

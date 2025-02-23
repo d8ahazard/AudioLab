@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 input_audio_path2wav = {}
 
 # Global debug cloning settings
-DEBUG_CLONE = False
+DEBUG_CLONE = True
 DEBUG_STEP_NO = 0
 
 
