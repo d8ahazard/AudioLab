@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -5,7 +6,7 @@ import time
 import torch
 from TTS.api import TTS
 
-from handlers.config import output_path
+from handlers.config import output_path, model_path
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class TTSHandler:
         self.tts_models = self.model_dict.get("tts_models", {})
         self.tts_languages = [key for key in self.tts_models.keys() if key != "multilingual"]
         self.selected_model = None
+        self.default_model = "multilingual/xtts_v2"
         self.tts = None
         self.model_data = {}
 
@@ -82,13 +84,39 @@ class TTSHandler:
         return self.tts_languages
 
     def available_speakers(self):
+        speaker_config_file = None
+        if self.selected_model is not None:
+            model = os.path.join(self.selected_model.split("/")[0], self.selected_model.split("/")[1])
+            speaker_config_file = os.path.join(model_path, "tts", model, "speakers.json")
+        if self.default_model is not None:
+            model = os.path.join(self.default_model.split("/")[0], self.default_model.split("/")[1])
+            speaker_config_file = os.path.join(model_path, "tts", model, "speakers.json")
+        if speaker_config_file and os.path.exists(speaker_config_file):
+            try:
+                with open(speaker_config_file, "r") as f:
+                    speakers = json.load(f)
+                return speakers
+            except Exception as e:
+                logger.error(f"Error fetching speakers: {e}")
+        else:
+            logger.info(f"Loading default model for speaker fetch.")
+            self.load_model(self.default_model)
         if self.tts and getattr(self.tts, "is_multi_speaker", False):
             speakers = getattr(self.tts, "speakers", None)
             if speakers:
+                os.makedirs(os.path.dirname(speaker_config_file), exist_ok=True)
+                with open(speaker_config_file, "w") as f:
+                    f.write(json.dumps(speakers))
+                logger.info(f"Saved speakers to {speaker_config_file}")
                 return speakers
             else:
                 try:
                     speakers = list(self.tts.synthesizer.tts_model.speaker_manager.name_to_id)
+                    if len(speakers) > 0:
+                        os.makedirs(os.path.dirname(speaker_config_file), exist_ok=True)
+                        with open(speaker_config_file, "w") as f:
+                            f.write(json.dumps(speakers))
+                        logger.info(f"Saved speakers to {speaker_config_file}")
                     return speakers
                 except Exception as e:
                     logger.error(f"Error fetching speakers: {e}")

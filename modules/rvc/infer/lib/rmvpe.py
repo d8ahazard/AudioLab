@@ -1,9 +1,12 @@
+import logging
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from librosa.util import pad_center, tiny, normalize
 from scipy.signal import get_window
+
+logger = logging.getLogger(__name__)
 
 
 def window_sumsquare(
@@ -555,7 +558,6 @@ class MelSpectrogram(torch.nn.Module):
 class RMVPE:
     def __init__(self, model_path, is_half, onnx=False, device=None):
         self.resample_kernel = {}
-        self.resample_kernel = {}
         self.is_half = is_half
         self.onnx = onnx
         if device is None:
@@ -576,19 +578,38 @@ class RMVPE:
             ckpt = torch.load(model_path, map_location="cpu")
             model.load_state_dict(ckpt)
             model.eval()
-            if is_half == True:
+            if is_half:
                 model = model.half()
             self.model = model
             self.model = self.model.to(device)
         cents_mapping = 20 * np.arange(360) + 1997.3794084376191
         self.cents_mapping = np.pad(cents_mapping, (4, 4))  # 368
 
+    def __del__(self):
+        # For torch-based models, move to CPU and delete model
+        if hasattr(self, "model") and self.model is not None:
+            if not self.onnx:
+                logger.debug("Moving model to CPU.")
+                self.model.cpu()
+            else:
+                if hasattr(self.model, "close"):
+                    logger.debug("Closing onnx model.")
+                    self.model.close()
+            del self.model
+            self.model = None
+            logger.debug("Model deleted.")
+        # Delete mel_extractor
+        if hasattr(self, "mel_extractor") and self.mel_extractor is not None:
+            logger.debug("Deleting mel_extractor.")
+            del self.mel_extractor
+            self.mel_extractor = None
+            logger.debug("Mel extractor deleted.")
+
     def mel2hidden(self, mel):
         with torch.no_grad():
             n_frames = mel.shape[-1]
             padding = min(32 * ((n_frames - 1) // 32 + 1) - n_frames, n_frames)
             mel = F.pad(mel, (0, padding), mode="reflect")
-            # if "privateuseone" in str(self.device):
             if self.onnx:
                 onnx_input_name = self.model.get_inputs()[0].name
                 onnx_outputs_names = self.model.get_outputs()[0].name
@@ -604,42 +625,34 @@ class RMVPE:
         cents_pred = self.to_local_average_cents(hidden, thred=thred)
         f0 = 10 * (2 ** (cents_pred / 1200))
         f0[f0 == 10] = 0
-        # f0 = np.array([10 * (2 ** (cent_pred / 1200)) if cent_pred else 0 for cent_pred in cents_pred])
         return f0
 
     def infer_from_audio(self, audio, thred=0.03):
-        if self.onnx == False:
+        if not self.onnx:
             audio = torch.from_numpy(audio).float().to(self.device).unsqueeze(0)
             mel = self.mel_extractor(audio, center=True)
             hidden = self.mel2hidden(mel)
             hidden = hidden.squeeze(0).cpu().numpy()
-            if self.is_half == True:
+            if self.is_half:
                 hidden = hidden.astype("float32")
             f0 = self.decode(hidden, thred=thred)
             return f0
         else:
-            # torch.cuda.synchronize()
             t0 = ttime()
             mel = self.mel_extractor(
                 torch.from_numpy(audio).float().to(self.device).unsqueeze(0), center=True
             )
-            # print(123123123,mel.device.type)
-            # torch.cuda.synchronize()
             t1 = ttime()
             hidden = self.mel2hidden(mel)
-            # torch.cuda.synchronize()
             t2 = ttime()
-            # print(234234,hidden.device.type)
             if not self.onnx:
                 hidden = hidden.squeeze(0).cpu().numpy()
             else:
                 hidden = hidden[0]
-            if self.is_half == True:
+            if self.is_half:
                 hidden = hidden.astype("float32")
             f0 = self.decode(hidden, thred=thred)
-            # torch.cuda.synchronize()
             t3 = ttime()
-            # print("hmvpe:%s\t%s\t%s\t%s"%(t1-t0,t2-t1,t3-t2,t3-t0))
             return f0
 
     def infer_from_audio_with_pitch(self, audio, thred=0.03, f0_min=50, f0_max=1100):
@@ -647,17 +660,15 @@ class RMVPE:
         mel = self.mel_extractor(audio, center=True)
         hidden = self.mel2hidden(mel)
         hidden = hidden.squeeze(0).cpu().numpy()
-        if self.is_half == True:
+        if self.is_half:
             hidden = hidden.astype("float32")
         f0 = self.decode(hidden, thred=thred)
         f0[(f0 < f0_min) | (f0 > f0_max)] = 0
         return f0
 
     def to_local_average_cents(self, salience, thred=0.05):
-        # t0 = ttime()
-        center = np.argmax(salience, axis=1)  # 帧长#index
-        salience = np.pad(salience, ((0, 0), (4, 4)))  # 帧长,368
-        # t1 = ttime()
+        center = np.argmax(salience, axis=1)
+        salience = np.pad(salience, ((0, 0), (4, 4)))
         center += 4
         todo_salience = []
         todo_cents_mapping = []
@@ -666,15 +677,11 @@ class RMVPE:
         for idx in range(salience.shape[0]):
             todo_salience.append(salience[:, starts[idx]: ends[idx]][idx])
             todo_cents_mapping.append(self.cents_mapping[starts[idx]: ends[idx]])
-        # t2 = ttime()
-        todo_salience = np.array(todo_salience)  # 帧长，9
-        todo_cents_mapping = np.array(todo_cents_mapping)  # 帧长，9
+        todo_salience = np.array(todo_salience)
+        todo_cents_mapping = np.array(todo_cents_mapping)
         product_sum = np.sum(todo_salience * todo_cents_mapping, 1)
-        weight_sum = np.sum(todo_salience, 1)  # 帧长
-        divided = product_sum / weight_sum  # 帧长
-        # t3 = ttime()
-        maxx = np.max(salience, axis=1)  # 帧长
+        weight_sum = np.sum(todo_salience, 1)
+        divided = product_sum / weight_sum
+        maxx = np.max(salience, axis=1)
         divided[maxx <= thred] = 0
-        # t4 = ttime()
-        # print("decode:%s\t%s\t%s\t%s" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
         return divided

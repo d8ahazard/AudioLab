@@ -15,6 +15,7 @@ from scipy import signal
 from handlers.autotune import auto_tune_track
 from handlers.config import model_path, output_path
 from handlers.noise_removal import restore_silence
+from handlers.spectrogram import F0Visualizer
 from handlers.stereo import stereo_to_mono_ms, resample_side, mono_to_stereo_ms
 from modules.rvc.infer.lib.audio import load_audio_advanced
 from modules.rvc.infer.lib.infer_pack.models import (
@@ -30,6 +31,7 @@ from modules.rvc.infer.modules.vc.utils import (
     get_index_path_from_model,
     load_hubert,
 )
+from modules.rvc.utils import gc_collect
 from util.audio_track import shift_pitch
 
 logger = logging.getLogger(__name__)
@@ -105,7 +107,6 @@ class Pipeline(object):
 
     def get_f0(
             self,
-            input_audio_path,
             x,
             p_len,
             f0_up_key,
@@ -135,6 +136,8 @@ class Pipeline(object):
             f0_min=f0_min,
             f0_max=f0_max,
         )
+        del fe
+        gc_collect()
         # Ensure f0 arrays have the expected length
         pitch = pitch[:p_len]
         pitchf = pitchf[:p_len]
@@ -226,7 +229,6 @@ class Pipeline(object):
             net_g,
             sid,
             audio,
-            input_audio_path,
             times,
             f0_up_key,
             f0_method,
@@ -243,6 +245,8 @@ class Pipeline(object):
             rms_mix_rate,
             version,
             protect,
+            pitch_correction,
+            pitch_correction_humanize,
             f0_file=None,
     ):
         # Get FAISS index if available
@@ -296,7 +300,7 @@ class Pipeline(object):
         pitch, pitchf = None, None
         if if_f0 == 1:
             pitch, pitchf = self.get_f0(
-                input_audio_path, audio_pad, p_len, f0_up_key, f0_method, filter_radius, inp_f0,
+                audio_pad, p_len, f0_up_key, f0_method, filter_radius, inp_f0,
                 merge_type=merge_type, crepe_hop_length=crepe_hop_length, f0_autotune=f0_autotune, rmvpe_onnx=rmvpe_onnx
             )
         t2 = ttime()
@@ -352,6 +356,10 @@ class Pipeline(object):
         final_seg = final_seg[self.t_pad_tgt: -self.t_pad_tgt]
         audio_opt.append(final_seg)
         audio_opt = np.concatenate(audio_opt)
+        if pitch_correction:
+            logger.info("Applying pitch correction...")
+            audio_opt, detected_key, scale = auto_tune_track(audio_opt, tgt_sr, strength=0.5, humanize=pitch_correction_humanize, f0_method=f0_method)
+            debug_clone_audio(audio_opt, tgt_sr, "after_pitch_correction")
         audio_opt = librosa.resample(audio_opt, orig_sr=tgt_sr, target_sr=og_sr)
 
         debug_clone_audio(audio_opt, og_sr, "after_vc_concat")
@@ -533,7 +541,6 @@ class VC:
                     self.net_g,
                     sid,
                     track_resampled,
-                    input_audio_path,
                     [0, 0, 0],  # times placeholder
                     f0_up_key,
                     f0_method,
@@ -550,9 +557,12 @@ class VC:
                     rms_mix_rate,
                     self.version,
                     protect,
+                    pitch_correction,
+                    pitch_correction_humanize,
                     f0_file,
                 )
                 return processed, proc_sr
+
 
             # (E) Process based on input channel configuration.
             if audio_float.ndim == 2 and audio_float.shape[1] == 2:
@@ -566,14 +576,11 @@ class VC:
                     side = 0.5 * (left - right)
                     debug_clone_audio(mid, og_sr, "vc_single_mid_channel")
 
-                    # Process just the MID channel
                     mid_opt, proc_sr = process_track(mid, "mid")
 
                     # Resample side channel if needed
-                    if og_sr != proc_sr:
-                        side_resampled = librosa.resample(side, orig_sr=og_sr, target_sr=proc_sr)
-                    else:
-                        side_resampled = side
+                    side_resampled = (librosa.resample(side, orig_sr=og_sr, target_sr=proc_sr)
+                                      if og_sr != proc_sr else side)
 
                     # Trim both to the same length
                     min_len = min(len(mid_opt), len(side_resampled))
@@ -597,23 +604,12 @@ class VC:
                     # --- Non-clone stereo: convert to mono (keeping side info) and process.
                     mono_og, side_og, orig_len = stereo_to_mono_ms(audio_float)
                     debug_clone_audio(mono_og, og_sr, "vc_single_mono_converted")
+
                     processed_mono, proc_sr = process_track(mono_og, "mono")
-                    if pitch_correction:
-                        if callback is not None:
-                            callback(
-                                self.global_step / self.total_steps,
-                                "Applying pitch correction...",
-                                self.total_steps)
-                        processed_mono, detected_key, scale_type = auto_tune_track(
-                            processed_mono, proc_sr, 0.5, pitch_correction_humanize, f0_method=f0_method)
-                        logger.info(f"Pitch correction applied: {detected_key} {scale_type}")
 
                     # Reconstruct stereo using resampled side information
                     new_len = len(processed_mono)
-                    if new_len != orig_len:
-                        side_resampled = resample_side(side_og, orig_len, new_len)
-                    else:
-                        side_resampled = side_og
+                    side_resampled = resample_side(side_og, orig_len, new_len) if new_len != orig_len else side_og
                     final_float = mono_to_stereo_ms(processed_mono, side_resampled)
 
                     # --- Volume adjustment: match the RMS of the original mono
@@ -623,31 +619,20 @@ class VC:
                     final_float *= volume_adjust
             else:
                 # Mono input
-                if audio_float.ndim == 1:
-                    mono = audio_float
-                else:
-                    mono = audio_float.mean(axis=1)
+                mono = audio_float if audio_float.ndim == 1 else audio_float.mean(axis=1)
                 debug_clone_audio(mono, og_sr, "vc_single_mono_ready")
                 processed_mono, proc_sr = process_track(mono, "mono")
-                # (G) Apply pitch correction if enabled
-                if pitch_correction:
-                    if callback is not None:
-                        callback(
-                            self.global_step / self.total_steps,
-                            "Applying pitch correction...",
-                            self.total_steps)
-                    processed_mono, detected_key, scale_type = auto_tune_track(
-                        processed_mono, proc_sr, 0.5, pitch_correction_humanize, f0_method=f0_method)
-                    logger.info(f"Pitch correction applied: {detected_key} {scale_type}")
-
                 final_float = processed_mono.reshape(-1, 1)
-                debug_clone_audio(final_float, proc_sr, "vc_single_after_pitch_correction")
 
             # (F) Optional: Call silence restoration if needed.
             final_float = restore_silence(audio_float, final_float, og_sr, proc_sr)
             debug_clone_audio(final_float, proc_sr, "vc_single_after_silence_restore")
-
+            visualizer = F0Visualizer()
+            output_file = os.path.join(output_path, "spec.png")
+            visualizer.visualize(output_file, sr=proc_sr, hop_length=crepe_hop_length)
+            logger.info(f"Visualized: {output_file}")
             self.global_step += 1
+
             return f"Success. Processing time: {[0, 0, 0]}", (og_sr, final_float)
         except Exception as e:
             info = traceback.format_exc()
@@ -703,6 +688,8 @@ class VC:
             # Ensure model is loaded
             if self.pipeline is None:
                 self.get_vc(model)
+            clone_params_file = os.path.join(opt_root, "clone_params.json")
+
             for path in paths:
                 if callback is not None:
                     callback(self.global_step / self.total_steps,
@@ -712,7 +699,6 @@ class VC:
                 model_base, _ = os.path.splitext(os.path.basename(model))
                 cloned_name = f"{base_name}(Cloned)({model_base}_{f0_method}).wav"
                 output_file = os.path.join(opt_root, cloned_name)
-                clone_params_file = os.path.join(opt_root, "clone_params.json")
                 param_match = False
                 if os.path.exists(clone_params_file):
                     # Load and compare
@@ -723,8 +709,6 @@ class VC:
                     logger.info(f"Skipping {path} as {output_file} already exists.")
                     outputs.append(output_file)
                     continue
-                with open(clone_params_file, "w") as f:
-                    json.dump(clone_params, f, indent=4)
 
                 info, opt = self.vc_single(
                     model,
@@ -756,6 +740,10 @@ class VC:
                 else:
                     logger.error(f"Failed to process {path}: {info}")
                     raise Exception(f"Failed to process {path}: {info}")
+
+            with open(clone_params_file, "w") as f:
+                json.dump(clone_params, f, indent=4)
+
             return outputs
         except Exception:
             traceback.print_exc()

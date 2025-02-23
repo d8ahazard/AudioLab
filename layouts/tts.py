@@ -13,7 +13,7 @@ OUTPUT_AUDIO: gr.Audio = None
 def render_tts():
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
     tts_handler = TTSHandler()
-    tts_handler.load_model("multilingual/multi-dataset/xtts_v2")
+    #tts_handler.load_model("multilingual/multi-dataset/xtts_v2")
 
     def update_tts_model(language):
         tts_handler.language = language
