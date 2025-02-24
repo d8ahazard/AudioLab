@@ -12,6 +12,39 @@ from wrappers.base_wrapper import BaseWrapper, TypedInput
 logger = logging.getLogger(__name__)
 
 
+def normalize_segment(src_track: str, segment: AudioSegment, prevent_clipping: bool = True) -> AudioSegment:
+    import math
+    # Load the original track to determine target loudness.
+    original_segment = AudioSegment.from_file(src_track)
+    target_dBFS = original_segment.dBFS
+
+    # Normalize the merged segment.
+    merged_segment = effects.normalize(segment)
+    current_dBFS = merged_segment.dBFS
+
+    # Calculate the gain change required to match the original's dBFS.
+    gain_change = target_dBFS - current_dBFS
+
+    if prevent_clipping:
+        # Calculate maximum possible amplitude for the segment.
+        max_possible_amplitude = float(1 << ((merged_segment.sample_width * 8) - 1))
+        # Get the current peak amplitude.
+        peak_amp = merged_segment.max
+        # Compute the current peak level in dBFS.
+        if peak_amp == 0:
+            current_peak_dBFS = -float('inf')
+        else:
+            current_peak_dBFS = 20 * math.log10(peak_amp / max_possible_amplitude)
+        # Determine how much gain we can add without clipping (i.e. peak should not exceed 0 dBFS).
+        allowed_gain = -current_peak_dBFS  # Since 0 dBFS is the maximum
+        # Limit the gain change if it would cause clipping.
+        if gain_change > allowed_gain:
+            gain_change = allowed_gain
+
+    # Apply the calculated gain change.
+    return merged_segment.apply_gain(gain_change)
+
+
 class Merge(BaseWrapper):
     title = "Merge"
     description = "Merge multiple audio files into a single track."
@@ -26,14 +59,35 @@ class Merge(BaseWrapper):
             gradio_type="Number",
             render=False
         ),
+        "prevent_clipping": TypedInput(
+            default=True,
+            description="Prevent clipping in the output audio by normalizing the final mix.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+        "selected_voice": TypedInput(
+            default="Vocals",
+            description="Select the voice to be processed.",
+            type=str,
+            gradio_type="Text",
+            render=False
+        ),
+        "pitch_extraction_method": TypedInput(
+            default="rmvpe+",
+            description="Select the pitch extraction method.",
+            type=str,
+            gradio_type="Text",
+            render=False
+        ),
     }
 
-    def process_audio(self, pj_inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[
-        ProjectFiles]:
+    def process_audio(self, pj_inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pj_outputs = []
 
         filtered_kwargs = {key: value for key, value in kwargs.items() if key in self.allowed_kwargs}
         pitch_shift = filtered_kwargs.get("pitch_shift", 0)
+        selected_voice = filtered_kwargs.get("selected_voice", None)
+        pitch_extraction_method = filtered_kwargs.get("pitch_extraction_method", "rmvpe+")
         try:
             for project in pj_inputs:
                 logger.info(f"Processing project: {os.path.basename(project.project_dir)}")
@@ -57,7 +111,8 @@ class Merge(BaseWrapper):
                             logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
                             stem_name, ext = os.path.splitext(os.path.basename(stem_path))
                             src_name = stem_name.replace("(Vocals)", "")
-                            reverb_stem_path = os.path.join(project.project_dir, "stems", f"{stem_name}(Re-Reverb){ext}")
+                            reverb_stem_path = os.path.join(project.project_dir, "stems",
+                                                            f"{stem_name}(Re-Reverb){ext}")
                             reverb_stem = apply_reverb(stem_path, ir_file, reverb_stem_path)
                             seg = AudioSegment.from_file(reverb_stem)
                         else:
@@ -77,8 +132,12 @@ class Merge(BaseWrapper):
                 else:
                     _, file_ext = os.path.splitext(os.path.basename(new_inputs[0]))
                     first_ext = file_ext.lower() if file_ext else ".wav"
-
-                output_file = os.path.join(output_folder, f"{src_name}(Merged){first_ext}")
+                name_str = ""
+                if selected_voice is not None and selected_voice != "":
+                    name_str = f"({selected_voice}_{pitch_extraction_method})"
+                if name_str in src_name:
+                    name_str = ""
+                output_file = os.path.join(output_folder, f"{src_name}{name_str}(Merged){first_ext}")
                 if os.path.exists(output_file):
                     os.remove(output_file)
 
@@ -86,9 +145,8 @@ class Merge(BaseWrapper):
                 for seg in new_inputs[1:]:
                     merged_segment = merged_segment.overlay(seg)
 
-                # Normalize final mix.
-                merged_segment = effects.normalize(merged_segment)
-
+                merged_segment = normalize_segment(project.src_file, merged_segment,
+                                                   prevent_clipping=filtered_kwargs.get("prevent_clipping", True))
                 # Export final output.
                 export_format = first_ext.lstrip(".")
                 merged_segment.export(

@@ -63,8 +63,29 @@ class Clone(BaseWrapper):
             type=bool,
             gradio_type="Checkbox",
         ),
-        "pitch_correction": TypedInput(
+        "pitch_shift": TypedInput(
+            default=0,
+            ge=-24,
+            le=24,
+            description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down). Adjust this if the cloned voice is higher or lower than the input vocals.",
+            type=int,
+            gradio_type="Slider",
+        ),
+        "pitch_shift_vocals_only": TypedInput(
+            default=False,
+            description="Apply pitch shift to vocals only, not the entire track. Not recommended for most use cases.",
+            type=bool,
+            gradio_type="Checkbox",
+        ),
+        "clone_stereo": TypedInput(
             default=True,
+            description="When enabled, side-channel (audio panning) information is cloned. This can improve the stereo effect but may not work in all cases.",
+            type=bool,
+            gradio_type="Checkbox"
+        ),
+
+        "pitch_correction": TypedInput(
+            default=False,
             description="Apply pitch correction (Auto-Tune) to the cloned vocals. Try this if there are artifacts in the cloned output.",
             type=bool,
             gradio_type="Checkbox",
@@ -77,20 +98,6 @@ class Clone(BaseWrapper):
             ge=0,
             le=1,
             step=0.01,
-        ),
-        "pitch_shift": TypedInput(
-            default=0,
-            ge=-24,
-            le=24,
-            description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down). Adjust this if the cloned voice is higher or lower than the input vocals.",
-            type=int,
-            gradio_type="Slider",
-        ),
-        "clone_stereo": TypedInput(
-            default=False,
-            description="When enabled, side-channel (audio panning) information is cloned. This can improve the stereo effect but may not work in all cases.",
-            type=bool,
-            gradio_type="Checkbox"
         ),
         "stereo_processing": TypedInput(
             default="mono",

@@ -1,5 +1,11 @@
+import os
+import tempfile
 import xml.etree.ElementTree as ET
+from typing import Union, Tuple
 
+import ffmpeg
+import numpy as np
+import soundfile as sf
 from pydub import AudioSegment
 
 
@@ -598,135 +604,95 @@ class AudioTrack:
         return audio_track_elem
 
 
-from typing import Union, Tuple
-import numpy as np
-import torch
-import torchaudio.functional as AF
-from pydub import AudioSegment
-
-
 def shift_pitch(audio: Union[AudioSegment, Tuple[np.ndarray, int]], pitch_shift: int) -> Union[
     AudioSegment, Tuple[np.ndarray, int]]:
     """
-    Pitch shift audio by a given number of semitones WITHOUT altering its speed,
-    using torchaudio.functional.pitch_shift.
+    Pitch shift audio by a given number of semitones WITHOUT altering its duration,
+    using FFmpeg’s rubberband filter.
+
+    This approach is intended to provide quality comparable to Ableton’s “Complex Pro”
+    warping. It relies on FFmpeg being compiled with rubberband support.
 
     If the input is an AudioSegment, the output will be an AudioSegment.
     If the input is a tuple (ndarray, sample_rate), the output will be a tuple (ndarray, sample_rate).
 
     Requirements:
-     - torchaudio >= 2.1 (which includes pitch_shift)
-     - PyTorch installed (version matching torchaudio)
+      - ffmpeg and ffmpeg-python installed
+      - A FFmpeg build with rubberband support
     """
+    import os
+    import tempfile
+    import ffmpeg
+    import numpy as np
+    import soundfile as sf
+    from pydub import AudioSegment
+
     if pitch_shift == 0:
         return audio
 
-    # Branch based on input type
-    if isinstance(audio, AudioSegment):
-        # === AudioSegment branch ===
-        sample_rate = audio.frame_rate
-        channels = audio.channels
-        sample_width = audio.sample_width
+    # Calculate the pitch ratio: a semitone is a factor of 2^(1/12)
+    pitch_ratio = 2 ** (pitch_shift / 12.0)
 
-        # Convert AudioSegment to float32 NumPy array
-        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
-        max_val = float(1 << (8 * sample_width - 1))
-        samples = samples / max_val
+    # Prepare temporary file paths.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, "input.wav")
+        output_path = os.path.join(tmpdir, "output.wav")
 
-        # Reshape to [channels, num_frames] for torchaudio
-        if channels > 1:
-            samples = samples.reshape(-1, channels).T  # shape: (channels, n_frames)
-        else:
-            samples = np.expand_dims(samples, axis=0)  # shape: (1, n_frames)
-
-        waveform = torch.from_numpy(samples)
-
-        # Pitch shift with torchaudio.functional.pitch_shift
-        pitched_wf = AF.pitch_shift(
-            waveform,
-            sample_rate=sample_rate,
-            n_steps=pitch_shift,
-            bins_per_octave=12
-        )
-
-        # Convert back to NumPy and transpose to (n_frames, channels)
-        pitched_np = pitched_wf.numpy().transpose(1, 0)
-        pitched_np = pitched_np * max_val
-
-        # Determine dtype based on sample_width
-        if sample_width == 1:
-            dtype = np.int8
-        elif sample_width == 2:
-            dtype = np.int16
-        elif sample_width == 4:
-            dtype = np.int32
-        else:
-            dtype = np.int16  # fallback
-
-        min_val, max_allow = -max_val, max_val - 1
-        pitched_np = np.clip(pitched_np, min_val, max_allow).astype(dtype)
-
-        # Flatten for pydub’s raw byte layout and spawn a new AudioSegment
-        pitched_flat = pitched_np.flatten()
-        return audio._spawn(pitched_flat.tobytes())
-
-    elif isinstance(audio, tuple) and len(audio) == 2:
-        # === Tuple branch: (ndarray, sample_rate) ===
-        samples, sample_rate = audio
-
-        # Determine audio shape: assume 1D array is mono, 2D is (n_frames, channels)
-        if samples.ndim == 1:
-            channels = 1
-            waveform_np = np.expand_dims(samples, axis=0)  # shape: (1, n_frames)
-        elif samples.ndim == 2:
-            channels = samples.shape[1]
-            waveform_np = samples.T  # shape: (channels, n_frames)
-        else:
-            raise ValueError("Input ndarray must be 1D or 2D.")
-
-        # Check if data is integer type; if so, normalize it
-        if np.issubdtype(samples.dtype, np.integer):
-            sample_width = samples.dtype.itemsize
-            max_val = float(1 << (8 * sample_width - 1))
-            waveform_np = waveform_np.astype(np.float32) / max_val
-            is_integer = True
-        else:
-            # Assume float data already in [-1, 1]
-            max_val = 1.0
-            sample_width = 4
-            is_integer = False
-
-        waveform = torch.from_numpy(waveform_np)
-
-        # Pitch shift
-        pitched_wf = AF.pitch_shift(
-            waveform,
-            sample_rate=sample_rate,
-            n_steps=pitch_shift,
-            bins_per_octave=12
-        )
-
-        # Convert back to NumPy and transpose to (n_frames, channels)
-        pitched_np = pitched_wf.numpy().transpose(1, 0)
-
-        if is_integer:
-            pitched_np = pitched_np * max_val
-            if sample_width == 1:
-                dtype = np.int8
-            elif sample_width == 2:
-                dtype = np.int16
-            elif sample_width == 4:
-                dtype = np.int32
+        if isinstance(audio, AudioSegment):
+            # Export the AudioSegment to a WAV file.
+            audio.export(input_path, format="wav")
+            sample_rate = audio.frame_rate
+            # For AudioSegment, we'll rely on the file header to preserve sample width.
+            codec = "pcm_s16le"  # Typically AudioSegment uses 16-bit PCM.
+        elif isinstance(audio, tuple) and len(audio) == 2:
+            samples, sample_rate = audio
+            # Determine proper codec and dtype based on input array.
+            orig_dtype = samples.dtype
+            if np.issubdtype(orig_dtype, np.int16):
+                codec = "pcm_s16le"
+                read_dtype = "int16"
+            elif np.issubdtype(orig_dtype, np.int32):
+                codec = "pcm_s32le"
+                read_dtype = "int32"
+            elif np.issubdtype(orig_dtype, np.uint8):
+                codec = "pcm_u8"
+                read_dtype = "uint8"
+            elif np.issubdtype(orig_dtype, np.float32):
+                codec = "pcm_f32le"
+                read_dtype = "float32"
+            elif np.issubdtype(orig_dtype, np.float64):
+                codec = "pcm_f64le"
+                read_dtype = "float64"
             else:
-                dtype = np.int16
-            min_val, max_allow = -max_val, max_val - 1
-            pitched_np = np.clip(pitched_np, min_val, max_allow).astype(dtype)
+                codec = "pcm_s16le"
+                read_dtype = "int16"
+            # Write using soundfile.
+            sf.write(input_path, samples, sample_rate)
+        else:
+            raise TypeError("Input audio must be either an AudioSegment or a tuple of (ndarray, sample_rate).")
 
-        # If original was mono (1D), return 1D array
-        if samples.ndim == 1:
-            pitched_np = pitched_np.flatten()
+        # Build the FFmpeg filter string. The rubberband filter takes a pitch factor.
+        filter_str = f"rubberband=pitch={pitch_ratio}"
 
-        return pitched_np, sample_rate
+        # Run FFmpeg to process the file.
+        try:
+            (
+                ffmpeg
+                .input(input_path)
+                .output(output_path, af=filter_str, acodec=codec, ar=sample_rate)
+                .overwrite_output()
+                .run(quiet=True)
+            )
+        except ffmpeg.Error as e:
+            raise RuntimeError(f"FFmpeg error: {e.stderr.decode()}")
 
-    else:
-        raise TypeError("Input audio must be either an AudioSegment or a tuple of (ndarray, sample_rate).")
+        # Load the processed audio in the same type as the input.
+        if isinstance(audio, AudioSegment):
+            shifted_audio = AudioSegment.from_file(output_path, format="wav")
+            return shifted_audio
+        else:
+            shifted_samples, out_sr = sf.read(output_path, dtype=read_dtype)
+            # Ensure that mono audio remains 1D.
+            if shifted_samples.ndim == 2 and shifted_samples.shape[1] == 1:
+                shifted_samples = shifted_samples.flatten()
+            return shifted_samples, out_sr

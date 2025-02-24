@@ -1,10 +1,6 @@
-import re
-
-import yt_dlp
-
-import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 import argparse
 import importlib
+import logging
 import os
 import sys
 import traceback
@@ -15,17 +11,17 @@ from typing import List, Tuple
 import gradio as gr
 from torchaudio._extension import _init_dll_path
 
+import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 from handlers.args import ArgHandler
-from handlers.config import model_path, output_path
+from handlers.config import model_path
 from handlers.download import download_files
-from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
 from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
     listen as music_listen
+from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.zonos import render_zonos, register_descriptions as zonos_register_descriptions, listen as zonos_listen
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
-import logging
 
 logger = logging.getLogger(__name__)
 # Set TF_ENABLE_ONEDNN_OPTS=0
@@ -163,13 +159,18 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     inputs = [ProjectFiles(file_path) for file_path in inputs]
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
+    pitch_shift_vocals_only = settings.get("Clone", {}).get("pitch_shift_vocals_only", False)
+    clone_voice = settings.get("Clone", {}).get("selected_voice", None)
+    f0_method = settings.get("Clone", {}).get("pitch_extraction_method", "rmvpe+")
     for idx, processor_title in enumerate(processors):
         tgt_processor = get_processor(processor_title)
         processor_key = tgt_processor.title.replace(' ', '')
         processor_settings = settings.get(processor_key, {}) if settings else {}
         # If the processor is 'merge', set the pitch_shift to the last clone pitch shift
         if processor_title == 'Merge' or processor_title == "Export":
-            processor_settings['pitch_shift'] = clone_pitch_shift
+            processor_settings['pitch_shift'] = clone_pitch_shift if pitch_shift_vocals_only else 0
+            processor_settings['selected_voice'] = clone_voice
+            processor_settings['pitch_extraction_method'] = f0_method
         if len(processor_settings):
             logger.info(f"Processor settings for {processor_title}:")
             logger.info("---------------------------------------------------------------------")

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 input_audio_path2wav = {}
 
 # Global debug cloning settings
-DEBUG_CLONE = True
+DEBUG_CLONE = False
 DEBUG_STEP_NO = 0
 
 
@@ -495,12 +495,14 @@ class VC:
             audio_float, og_sr = load_audio_advanced(
                 file=input_audio_path, sr=None, mono=False, return_sr=True
             )
+            debug_clone_audio(audio_float, og_sr, "vc_single_loaded_audio")
+
             if f0_up_key != 0:
                 # Pitch shift audio_float and set f0_up_key to 0.
                 audio_float, og_sr = shift_pitch((audio_float, og_sr), f0_up_key)
+                debug_clone_audio(audio_float, og_sr, "vc_single_pitch_shifted")
                 f0_up_key = 0
 
-            debug_clone_audio(audio_float, og_sr, "vc_single_loaded_audio")
             if callback is not None:
                 callback(
                     self.global_step / self.total_steps,

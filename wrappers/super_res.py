@@ -52,13 +52,8 @@ def lr_filter(audio, cutoff, filter_type, order=12, sr=48000):
 class SuperResolution(BaseWrapper):
     title = "Super Resolution"
     description = "Upscale audio files to a higher sample rate using a pre-trained Super Resolution model."
-    priority = 3
+    priority = 8
     allowed_kwargs = {
-        "vocals_only": TypedInput(
-            description="When enabled, the model will only upscale the vocals in the audio file.",
-            default=True,
-            type=bool
-        ),
         "ddim_steps": TypedInput(
             description="The number of diffusion steps used during inference. A higher number provides better quality results but increases processing time.",
             default=50,
@@ -147,7 +142,6 @@ class SuperResolution(BaseWrapper):
         seed = filtered_kwargs.get("seed", -1)
         if seed == -1:
             seed = np.random.randint(0, 10000)
-        vocals_only = filtered_kwargs.get("vocals_only", True)
         guidance_scale = filtered_kwargs.get("guidance_scale", 3.5)
         ddim_steps = filtered_kwargs.get("ddim_steps", 50)
         tgt_ensemble = filtered_kwargs.get("tgt_ensemble", False)
@@ -168,9 +162,6 @@ class SuperResolution(BaseWrapper):
                     os.remove(os.path.join(temp_dir, temp_file))
                 pj_inputs, _ = self.filter_inputs(project, "audio")
                 outputs = []
-                if vocals_only:
-                    outputs = [file for file in pj_inputs if "(Vocals)" not in file]
-                    pj_inputs = [file for file in pj_inputs if "(Vocals)" in file]
                 for tgt_file in pj_inputs:
                     print(f"Processing {tgt_file}")
                     tgt_name, _ = os.path.splitext(os.path.basename(tgt_file))
@@ -284,7 +275,7 @@ class SuperResolution(BaseWrapper):
                     else:
                         output = reconstructed_audio[0]
                     update_progress(100, "Processing", total_chunks)
-                    output_file = os.path.join(output_folder, f"super_res_{tgt_name}.wav")
+                    output_file = os.path.join(output_folder, f"{tgt_name}(Super_Res).wav")
                     sf.write(output_file, output, self.sr, format="WAV", subtype="PCM_16")
 
                     for temp_file in os.listdir(temp_dir):

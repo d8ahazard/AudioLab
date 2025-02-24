@@ -48,7 +48,7 @@ class Remaster(BaseWrapper):
                     logger.info(f"Remastering {input_file}")
                     callback(callback_step, f"Remastering {input_file}", len(inputs))
                     inputs_name, inputs_ext = os.path.splitext(os.path.basename(input_file))
-                    output_file = os.path.join(output_folder, f"{inputs_name}_remastered{inputs_ext}")
+                    output_file = os.path.join(output_folder, f"{inputs_name}(Remastered){inputs_ext}")
                     mg.process(
                         # The track you want to master
                         target=input_file,
