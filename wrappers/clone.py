@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from handlers.config import model_path
 from modules.rvc.configs.config import Config
@@ -302,9 +302,80 @@ class Clone(BaseWrapper):
         """
         return {"value": "", "__type__": "update"}
 
-    def register_api_endpoint(self, api):
+    def register_api_endpoint(self, api) -> Any:
         """
-        Register the API endpoints for external usage.
+        Register FastAPI endpoint for voice cloning.
+        
+        Args:
+            api: FastAPI application instance
+            
+        Returns:
+            The registered endpoint route
         """
-        api.add_route("/convert", self.process_audio, methods=["POST"])
-        api.add_route("/change_choices", self.change_choices, methods=["GET"])
+        from fastapi import File, UploadFile, HTTPException
+        from fastapi.responses import FileResponse
+        from pydantic import BaseModel, create_model
+        from typing import List, Optional
+        import tempfile
+        from pathlib import Path
+
+        # Create Pydantic model for settings
+        fields = {}
+        for key, value in self.allowed_kwargs.items():
+            field_type = value.type
+            if value.field.default == ...:
+                field_type = Optional[field_type]
+            fields[key] = (field_type, value.field)
+        
+        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+
+        @api.post("/api/v1/process/clone")
+        async def process_clone(
+            files: List[UploadFile] = File(...),
+            settings: Optional[SettingsModel] = None
+        ):
+            """
+            Clone vocals using RVC voice models.
+            
+            Args:
+                files: List of audio files to process
+                settings: Voice cloning settings
+                
+            Returns:
+                List of processed audio files
+            """
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Save uploaded files
+                    input_files = []
+                    for file in files:
+                        file_path = Path(temp_dir) / file.filename
+                        with file_path.open("wb") as f:
+                            content = await file.read()
+                            f.write(content)
+                        input_files.append(ProjectFiles(str(file_path)))
+                    
+                    # Process files
+                    settings_dict = settings.dict() if settings else {}
+                    processed_files = self.process_audio(input_files, **settings_dict)
+                    
+                    # Return processed files
+                    output_files = []
+                    for project in processed_files:
+                        for output in project.last_outputs:
+                            output_path = Path(output)
+                            if output_path.exists():
+                                output_files.append(FileResponse(output))
+                    
+                    return output_files
+                    
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # Also register the voice list endpoint
+        @api.get("/api/v1/clone/voices")
+        async def list_available_voices():
+            """Get list of available voice models"""
+            return {"voices": list_speakers()}
+
+        return process_clone

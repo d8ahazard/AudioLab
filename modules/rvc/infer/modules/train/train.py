@@ -10,6 +10,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import shutil
 
 from modules.rvc.infer.lib.infer_pack import commons
 from modules.rvc.infer.lib.train import utils
@@ -225,6 +226,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
             logger,
             None,
             cache,
+            progress,
         )
         scheduler_g.step()
         scheduler_d.step()
@@ -240,7 +242,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
             break
 
 
-def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache):
+def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache, progress):
     net_g, net_d = nets
     optim_g, optim_d = optims
     train_loader, eval_loader = loaders
@@ -253,11 +255,27 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     net_g.train()
     net_d.train()
 
+    total_epochs = hps.train.epochs
+    total_steps = len(train_loader)
+    current_epoch = epoch - 1  # Convert to 0-based for progress calculation
+    
+    # Calculate overall progress percentage
+    def update_progress(batch_idx):
+        if rank == 0:
+            epoch_progress = batch_idx / total_steps
+            overall_progress = (current_epoch + epoch_progress) / total_epochs
+            progress_msg = f"Training: Epoch {epoch}/{total_epochs} - {epoch_progress*100:.1f}%"
+            return overall_progress, progress_msg
+        return None, None
+
     # Prepare data iterator (with caching and TQDM)
     if hps.if_cache_data_in_gpu:
         if not cache:
             if rank == 0:
                 for batch_idx, info in tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch} (caching)"):
+                    progress_val, msg = update_progress(batch_idx)
+                    if progress_val is not None:
+                        progress(progress_val, msg)
                     if hps.if_f0 == 1:
                         (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid) = info
                     else:
@@ -281,6 +299,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                         cache.append((batch_idx, (phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid)))
             else:
                 for batch_idx, info in enumerate(train_loader):
+                    progress_val, msg = update_progress(batch_idx)
+                    if progress_val is not None:
+                        progress(progress_val, msg)
                     if hps.if_f0 == 1:
                         (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid) = info
                     else:
@@ -316,11 +337,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     epoch_recorder = EpochRecorder()
     for batch_idx, info in data_iterator:
-        # Check global step limit
-        # if global_step >= hps.train.total_steps:
-        #     if rank == 0:
-        #         data_iterator.close()
-        #     break
+        progress_val, msg = update_progress(batch_idx)
+        if progress_val is not None:
+            progress(progress_val, msg)
 
         if hps.if_f0 == 1:
             (phone, phone_lengths, pitch, pitch_f, spec, spec_lengths, wave, wave_lengths, sid) = info
@@ -424,6 +443,48 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 epoch,
                 os.path.join(hps.model_dir, "saves", "D_{}.pth".format(global_step)),
             )
+            # Save full model for interim testing
+            if hasattr(net_g, "module"):
+                ckpt = net_g.module.state_dict()
+            else:
+                ckpt = net_g.state_dict()
+            logger.info(
+                "saving interim ckpt %s_e%s:%s"
+                % (
+                    hps.name,
+                    epoch,
+                    savee(
+                        ckpt,
+                        hps.sample_rate,
+                        hps.if_f0,
+                        f"{hps.name}_e{epoch}",
+                        epoch,
+                        hps.version,
+                        hps,
+                    ),
+                )
+            )
+            # Find index file in hps.model_dir
+            index_path = None
+            for file in os.listdir(hps.model_dir):
+                if file.endswith(".index"):
+                    index_path = os.path.join(hps.model_dir, file)
+                    break
+            if index_path is not None and os.path.exists(index_path):
+                # Get the model file path that was just saved
+                model_path = savee(
+                    ckpt,
+                    hps.sample_rate,
+                    hps.if_f0,
+                    f"{hps.name}_e{epoch}",
+                    epoch,
+                    hps.version,
+                    hps,
+                )
+                # Create matching index path by replacing .pth with .index
+                target_index = model_path.replace(".pth", ".index")
+                shutil.copy2(index_path, target_index)
+                logger.info(f"Copied index file to {target_index}")
         else:
             utils.save_checkpoint(
                 net_g,
@@ -438,27 +499,6 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 hps.train.learning_rate,
                 epoch,
                 os.path.join(hps.model_dir, "saves", "D_{}.pth".format(2333333)),
-            )
-        if rank == 0 and hps.save_every_weights == "1":
-            if hasattr(net_g, "module"):
-                ckpt = net_g.module.state_dict()
-            else:
-                ckpt = net_g.state_dict()
-            logger.info(
-                "saving ckpt %s_e%s:%s"
-                % (
-                    hps.name,
-                    epoch,
-                    savee(
-                        ckpt,
-                        hps.sample_rate,
-                        hps.if_f0,
-                        hps.name + "_e%s_s%s" % (epoch, global_step),
-                        epoch,
-                        hps.version,
-                        hps,
-                    ),
-                )
             )
 
     if epoch >= hps.train.epochs and rank == 0:

@@ -16,6 +16,7 @@ import torch
 import torchaudio
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
+import librosa
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path, app_path
@@ -227,6 +228,55 @@ def extract_f0_feature(num_processors, extract_method, use_pitch_guidance, exp_d
     extract_feature_print(config.device, exp_dir, project_version, config.is_half)
 
 
+def analyze_pitch_range(audio_files, progress=gr.Progress()):
+    """Analyze the pitch range of the input audio files."""
+    progress(0, "Analyzing pitch range of input files...")
+    min_pitch = float('inf')
+    max_pitch = float('-inf')
+    avg_pitches = []
+    
+    for idx, file in enumerate(audio_files):
+        progress((idx + 1) / len(audio_files), f"Analyzing pitch for file {idx + 1}/{len(audio_files)}")
+        try:
+            y, sr = librosa.load(file)
+            pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+            
+            # Filter out pitches with low magnitude
+            pitches_filtered = pitches[magnitudes > np.median(magnitudes)]
+            if len(pitches_filtered) > 0:
+                file_min = np.min(pitches_filtered)
+                file_max = np.max(pitches_filtered)
+                file_avg = np.mean(pitches_filtered)
+                
+                min_pitch = min(min_pitch, file_min)
+                max_pitch = max(max_pitch, file_max)
+                avg_pitches.append(file_avg)
+        except Exception as e:
+            logger.error(f"Error analyzing pitch for {file}: {e}")
+            continue
+    
+    if min_pitch == float('inf') or max_pitch == float('-inf'):
+        return None
+        
+    avg_pitch = np.mean(avg_pitches) if avg_pitches else 0
+    return {
+        'min_pitch': min_pitch,
+        'max_pitch': max_pitch,
+        'avg_pitch': avg_pitch,
+        'pitch_range': max_pitch - min_pitch
+    }
+
+
+def get_dataset_length(index_file):
+    """Get the total length of the dataset from the index file."""
+    try:
+        index = faiss.read_index(index_file)
+        return index.ntotal
+    except Exception as e:
+        logger.error(f"Error reading index file: {e}")
+        return 0
+
+
 def click_train(
         voice_name,
         resume_training,
@@ -431,6 +481,9 @@ def train_index(project_name, model_version):
         infos.append(f"Linked index to external location: {outside_index_root}")
     except Exception:
         infos.append(f"Failed to link index to external location: {outside_index_root}")
+    dataset_length = get_dataset_length(os.path.join(index_root, f"{os.path.basename(exp_dir)}.index"))
+    infos.append(f"Dataset contains {dataset_length} total vectors")
+
     yield "\n".join(infos)
 
 
@@ -486,6 +539,17 @@ def train1key(
     if num_cpus == 0:
         num_cpus = 1
 
+    # Analyze pitch range before processing
+    yield get_info_str("Step 1: Analyzing pitch range of input files...")
+    pitch_info = analyze_pitch_range(inputs, progress)
+    if pitch_info:
+        yield get_info_str(f"Pitch Analysis Results:")
+        yield get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz")
+        yield get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz")
+        yield get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz")
+        yield get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz")
+
+    # Continue with preprocessing and training
     gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
     feature_dir = os.path.join(exp_dir, "3_feature256" if project_version == "v1" else "3_feature768")
     f0_dir = os.path.join(exp_dir, "2a_f0")
@@ -543,6 +607,11 @@ def train1key(
         logger.error(error_msg, exc_info=True)
         yield get_info_str(error_msg)
         return
+
+    # First build the index
+    yield get_info_str("Step 2: Building initial index...")
+    [get_info_str(_) for _ in train_index(project_name, project_version)]
+
 
     # Training model
     try:
@@ -676,7 +745,7 @@ def render():
                     refresh_button.click(fn=list_voice_projects_ui, outputs=[existing_project])
                 total_epochs = gr.Slider(
                     minimum=2,
-                    maximum=2000,
+                    maximum=4000,
                     step=5,
                     label="Total Training Epochs",
                     value=300,
@@ -771,8 +840,8 @@ def render():
                     )
                     save_latest_only = gr.Radio(
                         label="Save Only Latest Checkpoint",
-                        choices=[True, False],
-                        value=True,
+                        choices=["Yes", "No"],
+                        value="Yes",
                         interactive=True,
                         elem_classes="hintitem", elem_id="rvc_save_latest_only"
                     )

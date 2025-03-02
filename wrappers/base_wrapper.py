@@ -122,6 +122,15 @@ class BaseWrapper:
 
     @abstractmethod
     def register_api_endpoint(self, api) -> Any:
+        """
+        Register FastAPI endpoint for this wrapper.
+        
+        Args:
+            api: FastAPI application instance
+            
+        Returns:
+            The registered endpoint route
+        """
         pass
 
     def render_options(self, container: gr.Column):

@@ -70,7 +70,79 @@ class Export(BaseWrapper):
     """
 
     def register_api_endpoint(self, api) -> Any:
-        pass
+        """
+        Register FastAPI endpoint for project export.
+        
+        Args:
+            api: FastAPI application instance
+            
+        Returns:
+            The registered endpoint route
+        """
+        from fastapi import File, UploadFile, HTTPException
+        from fastapi.responses import FileResponse
+        from pydantic import BaseModel, create_model
+        from typing import List, Optional
+        import tempfile
+        from pathlib import Path
+
+        # Create Pydantic model for settings
+        fields = {}
+        for key, value in self.allowed_kwargs.items():
+            field_type = value.type
+            if value.field.default == ...:
+                field_type = Optional[field_type]
+            fields[key] = (field_type, value.field)
+        
+        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+
+        @api.post("/api/v1/process/export")
+        async def process_export(
+            files: List[UploadFile] = File(...),
+            settings: Optional[SettingsModel] = None
+        ):
+            """
+            Export audio files to DAW project.
+            
+            Args:
+                files: List of audio files to process
+                settings: Export settings including project format
+                
+            Returns:
+                Exported project file (zip)
+            """
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Save uploaded files
+                    input_files = []
+                    for file in files:
+                        file_path = Path(temp_dir) / file.filename
+                        with file_path.open("wb") as f:
+                            content = await file.read()
+                            f.write(content)
+                        input_files.append(ProjectFiles(str(file_path)))
+                    
+                    # Process files
+                    settings_dict = settings.dict() if settings else {}
+                    processed_files = self.process_audio(input_files, **settings_dict)
+                    
+                    # Return project file
+                    output_files = []
+                    for project in processed_files:
+                        for output in project.last_outputs:
+                            output_path = Path(output)
+                            if output_path.exists() and output_path.suffix == '.zip':
+                                output_files.append(FileResponse(output))
+                    
+                    if not output_files:
+                        raise HTTPException(status_code=500, detail="No project file generated")
+                    
+                    return output_files[0]  # Return the first (and should be only) project file
+                    
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        return process_export
 
     title = "Export to Ableton Live"
     description = "Export stems to an Ableton Live project file (.als)"

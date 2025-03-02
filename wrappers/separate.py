@@ -3,7 +3,7 @@ import json
 import os
 import shutil
 import threading
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 import logging
 
 from handlers.config import output_path
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Separate(BaseWrapper):
     """
-    A slimmed‐down wrapper that simply passes the user’s file and option settings
+    A slimmed‐down wrapper that simply passes the user's file and option settings
     to the main separation model.
     """
     title = "Separate"
@@ -120,7 +120,76 @@ class Separate(BaseWrapper):
     }
 
     def register_api_endpoint(self, api) -> Any:
-        pass
+        """
+        Register FastAPI endpoint for audio separation.
+        
+        Args:
+            api: FastAPI application instance
+            
+        Returns:
+            The registered endpoint route
+        """
+        from fastapi import File, UploadFile, HTTPException
+        from fastapi.responses import FileResponse
+        from pydantic import BaseModel, create_model
+        from typing import List, Optional
+        import tempfile
+        from pathlib import Path
+
+        # Create Pydantic model for settings
+        fields = {}
+        for key, value in self.allowed_kwargs.items():
+            field_type = value.type
+            if value.field.default == ...:
+                field_type = Optional[field_type]
+            fields[key] = (field_type, value.field)
+        
+        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+
+        @api.post("/api/v1/process/separate")
+        async def process_separate(
+            files: List[UploadFile] = File(...),
+            settings: Optional[SettingsModel] = None
+        ):
+            """
+            Separate audio files into stems.
+            
+            Args:
+                files: List of audio files to separate
+                settings: Separation settings including stem types and processing options
+                
+            Returns:
+                List of separated audio stems
+            """
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Save uploaded files
+                    input_files = []
+                    for file in files:
+                        file_path = Path(temp_dir) / file.filename
+                        with file_path.open("wb") as f:
+                            content = await file.read()
+                            f.write(content)
+                        input_files.append(ProjectFiles(str(file_path)))
+                    
+                    # Process files
+                    settings_dict = settings.dict() if settings else {}
+                    processed_files = self.process_audio(input_files, **settings_dict)
+                    
+                    # Return separated files
+                    output_files = []
+                    for project in processed_files:
+                        for output in project.last_outputs:
+                            output_path = Path(output)
+                            if output_path.exists():
+                                output_files.append(FileResponse(output))
+                    
+                    return output_files
+                    
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        return process_separate
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, any]) -> List[ProjectFiles]:
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}

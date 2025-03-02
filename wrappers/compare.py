@@ -166,4 +166,66 @@ class Compare:
         return pj_outputs
 
     def register_api_endpoint(self, api) -> Any:
-        pass
+        """
+        Register FastAPI endpoint for audio comparison.
+        
+        Args:
+            api: FastAPI application instance
+            
+        Returns:
+            The registered endpoint route
+        """
+        from fastapi import File, UploadFile, HTTPException
+        from fastapi.responses import FileResponse
+        from pydantic import BaseModel
+        from typing import List
+        import tempfile
+        from pathlib import Path
+
+        @api.post("/api/v1/process/compare")
+        async def process_compare(
+            files: List[UploadFile] = File(...)
+        ):
+            """
+            Compare two audio files and generate visualization.
+            
+            Args:
+                files: List of exactly 2 audio files to compare
+                
+            Returns:
+                Comparison visualization image
+            """
+            if len(files) != 2:
+                raise HTTPException(status_code=400, detail="Exactly 2 files must be provided for comparison")
+
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Save uploaded files
+                    input_files = []
+                    for file in files:
+                        file_path = Path(temp_dir) / file.filename
+                        with file_path.open("wb") as f:
+                            content = await file.read()
+                            f.write(content)
+                        input_files.append(ProjectFiles(str(file_path)))
+                    
+                    # Process files
+                    processed_files = self.process_audio(input_files)
+                    
+                    # Return comparison image
+                    output_files = []
+                    for project in processed_files:
+                        for output in project.last_outputs:
+                            output_path = Path(output)
+                            if output_path.exists():
+                                output_files.append(FileResponse(output))
+                    
+                    if not output_files:
+                        raise HTTPException(status_code=500, detail="No comparison output generated")
+                    
+                    return output_files[0]  # Return the first (and should be only) comparison image
+                    
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        return process_compare
