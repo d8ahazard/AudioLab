@@ -508,25 +508,27 @@ def train1key(
         save_weights_every,
         project_version,
         gpus_rmvpe,
+        pause_after_separation=False,
         progress=gr.Progress()
 ):
     infos = []
     resuming_training = False
     if (not project_name or project_name == "") and (not existing_project_name or existing_project_name == ""):
-        return "Please provide a project name."
+        return ("Please provide a project name.", gr.update(visible=False))
     if project_name and existing_project_name:
-        return "Please provide only one project name."
+        return ("Please provide only one project name.", gr.update(visible=False))
     if (not project_name or project_name == "") and existing_project_name:
         logger.info("Using existing project name")
         project_name = existing_project_name
         resuming_training = True
         input_dir = os.path.join(output_path, "voices", project_name, "raw")
         if not os.path.exists(input_dir):
-            return f"Project {project_name} does not exist. Please provide a valid project name."
+            return (f"Project {project_name} does not exist. Please provide a valid project name.", 
+                   gr.update(visible=False))
         input_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir)]
         inputs = input_files
     if not inputs:
-        return "Please provide input files."
+        return ("Please provide input files.", gr.update(visible=False))
 
     def get_info_str(strr):
         infos.append(strr)
@@ -540,14 +542,14 @@ def train1key(
         num_cpus = 1
 
     # Analyze pitch range before processing
-    yield get_info_str("Step 1: Analyzing pitch range of input files...")
+    yield (get_info_str("Step 1: Analyzing pitch range of input files..."), gr.update(visible=False))
     pitch_info = analyze_pitch_range(inputs, progress)
     if pitch_info:
-        yield get_info_str(f"Pitch Analysis Results:")
-        yield get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz")
-        yield get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz")
-        yield get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz")
-        yield get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz")
+        yield (get_info_str(f"Pitch Analysis Results:"), gr.update(visible=False))
+        yield (get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz"), gr.update(visible=False))
+        yield (get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz"), gr.update(visible=False))
+        yield (get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz"), gr.update(visible=False))
+        yield (get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz"), gr.update(visible=False))
 
     # Continue with preprocessing and training
     gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
@@ -562,17 +564,25 @@ def train1key(
     # Preprocess
     try:
         if not resuming_training or len(missing_dirs) > 0:
-            yield get_info_str("Step1: Preprocessing data.")
+            yield (get_info_str("Step1: Preprocessing data."), gr.update(visible=False))
             vocal_files = inputs
             if separate_vocals:
                 vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
-                yield get_info_str(f"Separated vocals from {len(vocal_files)} files.")
+                yield (get_info_str(f"Separated vocals from {len(vocal_files)} files."), gr.update(visible=False))
+            
+            # Process each file
             for index, f in enumerate(vocal_files):
                 progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
                 try:
                     current_dir = os.path.dirname(f)
                     base_name, ext = os.path.splitext(os.path.basename(f))
                     output_file = os.path.join(data_dir, f"{base_name}.wav")
+                    
+                    # Skip if file already exists in raw folder and we're not in a fresh project
+                    if os.path.exists(output_file) and not (not resuming_training and len(missing_dirs) > 0):
+                        logger.info(f"Skipping existing file: {output_file}")
+                        continue
+                        
                     if os.path.exists(output_file):
                         f = output_file
                     audio, samplerate = torchaudio.load(f)
@@ -586,37 +596,44 @@ def train1key(
                 except Exception as e:
                     traceback.print_exc()
                     logger.error(f"Error processing file {f}: {e}")
+            
+            if pause_after_separation:
+                yield (get_info_str("Vocal separation complete. Click Resume to continue processing."), 
+                       gr.update(visible=True))
+                return (get_info_str("Vocal separation complete. Click Resume to continue processing."), 
+                       gr.update(visible=True))
+                
             preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
         else:
             progress(0.25, "Skipping pitch feature extraction.")
-            yield get_info_str("Step1: Data already preprocessed.")
-            yield get_info_str("Step2: Pitch features already extracted.")
+            yield (get_info_str("Step1: Data already preprocessed."), gr.update(visible=False))
+            yield (get_info_str("Step2: Pitch features already extracted."), gr.update(visible=False))
+
     except Exception as e:
         error_msg = f"Error during preprocessing: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield get_info_str(error_msg)
-        return
+        yield (get_info_str(error_msg), gr.update(visible=False))
+        return (get_info_str(error_msg), gr.update(visible=False))
 
     # Extract pitch features
     try:
-        yield get_info_str("Step2: Extracting pitch features.")
+        yield (get_info_str("Step2: Extracting pitch features."), gr.update(visible=False))
         progress(0.25, "Extracting pitch features.")
         extract_f0_feature(num_cpus, extraction_method, use_pitch_guidance, exp_dir, project_version, gpus_rmvpe)
     except Exception as e:
         error_msg = f"Error during pitch feature extraction: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield get_info_str(error_msg)
-        return
+        yield (get_info_str(error_msg), gr.update(visible=False))
+        return (get_info_str(error_msg), gr.update(visible=False))
 
     # First build the index
-    yield get_info_str("Step 2: Building initial index...")
+    yield (get_info_str("Step 2: Building initial index..."), gr.update(visible=False))
     [get_info_str(_) for _ in train_index(project_name, project_version)]
-
 
     # Training model
     try:
         progress(0.5, "Training model.")
-        yield get_info_str("Step3: Training model.")
+        yield (get_info_str("Step3: Training model."), gr.update(visible=False))
         click_train(
             project_name,
             resuming_training,
@@ -638,25 +655,85 @@ def train1key(
     except Exception as e:
         error_msg = f"Error during model training: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield get_info_str(error_msg)
-        return
+        yield (get_info_str(error_msg), gr.update(visible=False))
+        return (get_info_str(error_msg), gr.update(visible=False))
 
     # Index building
     try:
         index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
         if not os.path.exists(index_file):
             progress(0.75, "Building index")
-            yield get_info_str("Step4: Training complete, now building index.")
+            yield (get_info_str("Step4: Training complete, now building index."), gr.update(visible=False))
             [get_info_str(_) for _ in train_index(project_name, project_version)]
         else:
-            yield get_info_str("Step4: Index already exists.")
+            yield (get_info_str("Step4: Index already exists."), gr.update(visible=False))
     except Exception as e:
         error_msg = f"Error during index building: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield get_info_str(error_msg)
-        return
+        yield (get_info_str(error_msg), gr.update(visible=False))
+        return (get_info_str(error_msg), gr.update(visible=False))
 
-    yield get_info_str("Processing complete!")
+    yield (get_info_str("Processing complete!"), gr.update(visible=False))
+    return (get_info_str("Processing complete!"), gr.update(visible=False))
+
+
+def resume_training(
+        project_name,
+        existing_project_name,
+        tgt_sample_rate,
+        use_pitch_guidance,
+        spk_id,
+        num_cpus,
+        extraction_method,
+        epoch_save_freq,
+        train_epochs,
+        batch_size,
+        save_latest,
+        generator,
+        discriminator,
+        tgt_gpus,
+        cache_to_gpu,
+        save_weights_every,
+        project_version,
+        gpus_rmvpe,
+        progress=gr.Progress()
+):
+    if (not project_name or project_name == "") and (not existing_project_name or existing_project_name == ""):
+        return ("Please provide a project name.", gr.update(visible=False))
+    if project_name and existing_project_name:
+        project_name = existing_project_name
+    
+    exp_dir = os.path.join(output_path, "voices", project_name)
+    data_dir = os.path.join(output_path, "voices", project_name, "raw")
+    
+    if not os.path.exists(data_dir):
+        return ("Project data directory not found. Please start training from the beginning.", gr.update(visible=False))
+        
+    for output in train1key(
+        project_name,
+        existing_project_name,
+        False,  # separate_vocals
+        tgt_sample_rate,
+        use_pitch_guidance,
+        None,  # inputs
+        spk_id,
+        num_cpus,
+        extraction_method,
+        epoch_save_freq,
+        train_epochs,
+        batch_size,
+        save_latest,
+        generator,
+        discriminator,
+        tgt_gpus,
+        cache_to_gpu,
+        save_weights_every,
+        project_version,
+        gpus_rmvpe,
+        False,  # pause_after_separation
+        progress
+    ):
+        yield output
 
 
 def do_train_index(project_name, existing_project, project_version, progress=gr.Progress()):
@@ -765,6 +842,11 @@ def render():
                     label="Separate Vocals",
                     value=True,
                     elem_classes="hintitem", elem_id="rvc_separate_vocals"
+                )
+                pause_after_separation = gr.Checkbox(
+                    label="Pause After Separation",
+                    value=False,
+                    elem_classes="hintitem", elem_id="rvc_pause_after_separation"
                 )
                 with gr.Accordion(label="Advanced", open=False):
                     sample_rate = gr.Radio(
@@ -915,6 +997,11 @@ def render():
                         "Train",
                         elem_classes="hintitem", elem_id="rvc_start_train", variant="primary"
                     )
+                    resume_train = gr.Button(
+                        "Resume",
+                        elem_classes="hintitem", elem_id="rvc_resume_train", variant="primary",
+                        visible=False
+                    )
                     train_index = gr.Button(
                         "Build Index",
                         elem_classes="hintitem", elem_id="rvc_train_index", variant="secondary",
@@ -953,10 +1040,35 @@ def render():
                         cache_dataset_to_gpu,
                         save_weights_each_ckpt,
                         model_version,
+                        gpus_rmvpe,
+                        pause_after_separation
+                    ],
+                    [info3, resume_train],
+                    api_name="train_start_all",
+                )
+                resume_train.click(
+                    resume_training,
+                    [
+                        voice_name,
+                        existing_project,
+                        sample_rate,
+                        use_pitch_guidance,
+                        speaker_id,
+                        num_cpu_processes,
+                        pitch_extraction_method,
+                        save_epoch_frequency,
+                        total_epochs,
+                        train_batch_size,
+                        save_latest_only,
+                        pretrained_generator,
+                        pretrained_discriminator,
+                        more_gpu_ids,
+                        cache_dataset_to_gpu,
+                        save_weights_each_ckpt,
+                        model_version,
                         gpus_rmvpe
                     ],
-                    info3,
-                    api_name="train_start_all",
+                    [info3, resume_train],
                 )
                 train_index.click(
                     do_train_index,
@@ -1002,6 +1114,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "total_epochs": "Set the total number of training epochs. More epochs generally improve quality.",
         "train_batch_size": "Adjust the batch size per GPU. Higher values require more VRAM but train faster.",
         "separate_vocals": "Check this box to separate vocals from instrumentals before training.",
+        "pause_after_separation": "Check this box to pause processing after vocal separation is complete. Useful if you need to further refine the vocal tracks before training.",
         "sample_rate": "Select the target sample rate for the model (40k or 48k).",
         "pitch_guidance": "Choose whether to use pitch guidance for training. Helps with vocal accuracy.",
         "model_version": "Select the RVC model version (v1 or v2).",
@@ -1017,6 +1130,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "pretrained_discriminator": "Path to the pretrained discriminator model used for training.",
         "gpu_ids": "Specify GPU IDs for multi-GPU training, separated by dashes (e.g., 0-1-2).",
         "start_train": "Click to begin training the voice model with the selected settings.",
+        "resume_train": "Click to continue processing after vocal separation is complete.",
         "cancel_train": "Click to cancel the training process if needed.",
         "output_info": "Displays logs and training progress information.",
         "train_index": "Click to build or re-build the index for the trained voice model.",
