@@ -41,10 +41,14 @@ def download_model():
     model_dir = os.path.join(model_path, "zonos")
     if not os.path.exists(model_dir):
         logger.info("Downloading Zonos model...")
-    os.makedirs(model_dir, exist_ok=True)
-    # Download config.json and model.pth
-    _ = hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=model_dir)
-    _ = hf_hub_download(repo_id=repo_id, filename="model.safetensors", local_dir=model_dir)
+        os.makedirs(model_dir, exist_ok=True)
+        # Download config.json and model.pth
+        try:
+            _ = hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=model_dir)
+            _ = hf_hub_download(repo_id=repo_id, filename="model.safetensors", local_dir=model_dir)
+        except Exception as e:
+            logger.error(f"Error downloading Zonos model: {e}")
+            raise e
     return model_dir
 
 

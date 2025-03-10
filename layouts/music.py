@@ -174,6 +174,49 @@ def render(arg_handler: ArgHandler):
                     interactive=False
                 )
 
+                # Function to dynamically select the Stage 1 model
+                def update_model_selection(model_language, use_audio_prompt):
+                    model_type = "icl" if use_audio_prompt else "cot"
+                    return STAGE1_MODELS[model_language][model_type]
+
+                # Function to generate music
+                def generate_callback(
+                        model_language, use_audio_prompt, genre_txt, lyrics_txt,
+                        audio_prompt_path, prompt_start_time, prompt_end_time,
+                        max_new_tokens, run_n_segments, stage2_batch_size,
+                        keep_intermediate, disable_offload_model, cuda_idx, rescale, seed,
+                        progress=gr.Progress
+                ):
+                    fetch_and_extxract_models()
+                    if seed != -1:
+                        seed_everything(seed)
+                    else:
+                        seed_everything(random.randint(0, 4294967295))
+                        
+                    stage1_model = update_model_selection(model_language, use_audio_prompt)
+                    output_paths = generate_music(
+                        stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
+                        audio_prompt_path.name if audio_prompt_path else "",
+                        prompt_start_time, prompt_end_time, max_new_tokens,
+                        run_n_segments, stage2_batch_size, keep_intermediate,
+                        disable_offload_model, cuda_idx, rescale,
+                        top_p=0.93, temperature=1.0, repetition_penalty=1.2,
+                        callback=progress
+                    )
+                    return output_paths
+
+                # Start button click event
+                start_button.click(
+                    generate_callback,
+                    inputs=[
+                        model_language, use_audio_prompt, genre_txt, lyrics_txt,
+                        audio_prompt_path, prompt_start_time, prompt_end_time,
+                        max_new_tokens, run_n_segments, stage2_batch_size,
+                        keep_intermediate, disable_offload_model, cuda_idx, rescale, seed
+                    ],
+                    outputs=[OUTPUT_MIX, output_vocal, output_inst]
+                )
+
     return app
 
 

@@ -171,10 +171,11 @@ class Clone(BaseWrapper):
             gradio_type="Number",
         ),
         "f0_autotune": TypedInput(
-            default=True,  # UPDATED from False
+            default=False,
             description="Automatically apply autotune to the extracted pitch values to smooth rapid variations.",
             type=bool,
             gradio_type="Checkbox",
+            render=False
         ),
         "rmvpe_onnx": TypedInput(
             default=False,
