@@ -185,7 +185,7 @@ def render(arg_handler: ArgHandler):
                         audio_prompt_path, prompt_start_time, prompt_end_time,
                         max_new_tokens, run_n_segments, stage2_batch_size,
                         keep_intermediate, disable_offload_model, cuda_idx, rescale, seed,
-                        progress=gr.Progress
+                        progress=gr.Progress()
                 ):
                     fetch_and_extxract_models()
                     if seed != -1:
@@ -194,6 +194,10 @@ def render(arg_handler: ArgHandler):
                         seed_everything(random.randint(0, 4294967295))
                         
                     stage1_model = update_model_selection(model_language, use_audio_prompt)
+                    
+                    def progress_callback(current, desc, total):
+                        progress(current / total, desc)
+                        
                     output_paths = generate_music(
                         stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
                         audio_prompt_path.name if audio_prompt_path else "",
@@ -201,7 +205,7 @@ def render(arg_handler: ArgHandler):
                         run_n_segments, stage2_batch_size, keep_intermediate,
                         disable_offload_model, cuda_idx, rescale,
                         top_p=0.93, temperature=1.0, repetition_penalty=1.2,
-                        callback=progress
+                        callback=progress_callback
                     )
                     return output_paths
 
