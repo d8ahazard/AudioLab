@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import uuid
+import copy
 from collections import Counter
 from typing import Callable
 
