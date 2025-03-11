@@ -111,11 +111,11 @@ if __name__ == '__main__':
             process_listen()
 
         # Launch both FastAPI and Gradio
-        favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
         ui.queue()  # Enable queuing for better handling of concurrent requests
 
         # Mount Gradio app into FastAPI at the root path
-        app = gr.mount_gradio_app(app, ui, path="/")
+        favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
+        app = gr.mount_gradio_app(app, ui, path="/", favicon_path=favicon_path)
 
         # Start the combined server
         logger.info(f"Server running on http://{server_name}:{server_port}")
