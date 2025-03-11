@@ -1,4 +1,4 @@
-import copy
+import logging
 import os
 import re
 import uuid
@@ -21,6 +21,9 @@ from modules.yue.inference.xcodec_mini_infer.models.soundstream_hubert_new impor
 from modules.yue.inference.xcodec_mini_infer.post_process_audio import replace_low_freq_with_energy_matched
 from modules.yue.inference.xcodec_mini_infer.vocoder import build_codec_model
 from modules.yue.inference.xcodec_mini_infer.vocoder import process_audio
+
+logger = logging.getLogger("ADLB")
+
 
 codectool = None
 codectool_stage2 = None
@@ -49,9 +52,31 @@ def load_audio_mono(filepath, sampling_rate=16000):
 
 
 def split_lyrics(lyrics):
-    pattern = r"\[(\w+)\](.*?)\n(?=\[|\Z)"
-    segments = re.findall(pattern, lyrics, re.DOTALL)
-    structured_lyrics = [f"[{seg[0]}]\n{seg[1].strip()}\n\n" for seg in segments]
+    """Split lyrics into sections based on [section] markers.
+    
+    Args:
+        lyrics (str): Input lyrics with sections marked like [verse], [chorus], etc.
+        
+    Returns:
+        list: List of formatted section strings
+    """
+    # Add a newline at the end if not present to help with regex
+    if not lyrics.endswith('\n'):
+        lyrics += '\n'
+        
+    # Match sections including their content up to the next section or end
+    pattern = r'\[(\w+)\]([\s\S]*?)(?=\[|$)'
+    segments = re.findall(pattern, lyrics)
+    
+    # Format each section with proper spacing
+    structured_lyrics = []
+    for section, content in segments:
+        # Clean up the content: remove extra whitespace but preserve line breaks
+        cleaned_content = '\n'.join(line.strip() for line in content.strip().split('\n'))
+        formatted_section = f'[{section}]\n{cleaned_content}\n\n'
+        structured_lyrics.append(formatted_section)
+        
+    print(f"Structured lyrics: {structured_lyrics}")
     return structured_lyrics
 
 
@@ -367,6 +392,7 @@ def generate_music(
             continue
 
         section_text = p.replace("[start_of_segment]", "").replace("[end_of_segment]", "")
+        print(f"Section text: {section_text}")
         guidance_scale = 1.5 if i <= 1 else 1.2
 
         if i == 1:
@@ -450,7 +476,6 @@ def generate_music(
 
     if use_audio_prompt:
         print("Offloading codec model from GPU to CPU...")
-        codec_model.to("cpu")
         codec_model.eval()
         torch.cuda.empty_cache()
 

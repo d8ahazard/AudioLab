@@ -4,6 +4,25 @@ import os
 import sys
 from pathlib import Path
 
+# Configure logging and fix formatting so time, name, level, are each in []
+logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s',level=logging.DEBUG)
+
+# Silence other loggers except our app logger
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("fsspec").setLevel(logging.WARNING)
+logging.getLogger("onnx2torch").setLevel(logging.WARNING)
+logging.getLogger("tensorflow").setLevel(logging.WARNING)
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("root").setLevel(logging.WARNING)
+logging.getLogger("python_multipart").setLevel(logging.WARNING)
+
+# Keep our app logger at DEBUG level
+logger = logging.getLogger("ADLB")
+logger.setLevel(logging.DEBUG)
+
 import gradio as gr
 import uvicorn
 from torchaudio._extension import _init_dll_path
@@ -20,8 +39,6 @@ from layouts.rvc_train import render as rvc_render, register_descriptions as rvc
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.zonos import render_zonos, register_descriptions as zonos_register_descriptions, listen as zonos_listen
 
-logger = logging.getLogger(__name__)
-# Set TF_ENABLE_ONEDNN_OPTS=0
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):

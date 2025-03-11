@@ -10,7 +10,9 @@ from handlers.args import ArgHandler
 from handlers.config import model_path
 from modules.yue.inference.infer import generate_music
 from modules.yue.inference.xcodec_mini_infer.utils.utils import seed_everything
+import logging
 
+logger = logging.getLogger(__name__)
 SEND_TO_PROCESS_BUTTON: gr.Button = None
 OUTPUT_MIX: gr.Audio = None
 arg_handler = ArgHandler()
@@ -154,6 +156,12 @@ def render(arg_handler: ArgHandler):
                         variant="secondary",
                         elem_classes="hintitem", elem_id="yue_send_to_process", key="yue_send_to_process"
                     )
+                output_info = gr.Textbox(
+                    label="Output Info",
+                    value="",
+                    max_lines=10,
+                    elem_classes="hintitem", elem_id="yue_output_info", key="yue_output_info"
+                )
                 OUTPUT_MIX = gr.Audio(
                     label="Final Mix",
                     elem_classes="hintitem", elem_id="yue_output_mix", key="yue_output_mix",
@@ -187,27 +195,74 @@ def render(arg_handler: ArgHandler):
                         keep_intermediate, disable_offload_model, cuda_idx, rescale, seed,
                         progress=gr.Progress()
                 ):
-                    fetch_and_extxract_models()
-                    if seed != -1:
-                        seed_everything(seed)
-                    else:
-                        seed_everything(random.randint(0, 4294967295))
+                    status_updates = []
+                    def add_status(msg):
+                        status_updates.append(msg)
+                        yield [gr.update()] * 3 + [gr.update(value="\n".join(status_updates))]
+
+                    try:
+                        # Initial validation
+                        if not any(char in lyrics_txt for char in ['[', ']']):
+                            return add_status("Error: No [verse] or [chorus] labels found in lyrics, please add at least one.")
+
+                        # Model setup
+                        add_status("Setting up models...")
+                        fetch_and_extxract_models()
+                        if seed != -1:
+                            seed_everything(seed)
+                            add_status(f"Using provided seed: {seed}")
+                        else:
+                            new_seed = random.randint(0, 4294967295)
+                            seed_everything(new_seed)
+                            add_status(f"Using random seed: {new_seed}")
                         
-                    stage1_model = update_model_selection(model_language, use_audio_prompt)
-                    
-                    def progress_callback(current, desc, total):
-                        progress(current / total, desc)
+                        stage1_model = update_model_selection(model_language, use_audio_prompt)
+                        add_status(f"Selected Stage 1 model: {stage1_model}")
                         
-                    output_paths = generate_music(
-                        stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
-                        audio_prompt_path.name if audio_prompt_path else "",
-                        prompt_start_time, prompt_end_time, max_new_tokens,
-                        run_n_segments, stage2_batch_size, keep_intermediate,
-                        disable_offload_model, cuda_idx, rescale,
-                        top_p=0.93, temperature=1.0, repetition_penalty=1.2,
-                        callback=progress_callback
-                    )
-                    return output_paths
+                        def progress_callback(current, desc, total):
+                            progress(current / total, desc)
+                            if desc:
+                                add_status(f"Progress: {desc} ({current}/{total})")
+                        
+                        add_status("Starting music generation...")
+                        output_paths = generate_music(
+                            stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
+                            audio_prompt_path.name if audio_prompt_path else "",
+                            prompt_start_time, prompt_end_time, max_new_tokens,
+                            run_n_segments, stage2_batch_size, keep_intermediate,
+                            disable_offload_model, cuda_idx, rescale,
+                            top_p=0.93, temperature=1.0, repetition_penalty=1.2,
+                            callback=progress_callback
+                        )
+                        
+                        if not output_paths:
+                            logger.error("No output paths returned from generate_music")
+                            return add_status("Error: No output paths returned from generate_music")
+                        
+                        # Validate outputs
+                        add_status("Validating generated files...")
+                        for path in output_paths:
+                            if not os.path.exists(path):
+                                logger.error(f"Generated file not found: {path}")
+                                return add_status(f"Error: Generated file not found: {path}")
+                        
+                        # Success case
+                        add_status("✅ Music generation completed successfully!")
+                        add_status(f"Mix file: {output_paths[0]}")
+                        add_status(f"Vocal file: {output_paths[1]}")
+                        add_status(f"Instrumental file: {output_paths[2]}")
+                        
+                        return [
+                            gr.update(value=output_paths[0]),
+                            gr.update(value=output_paths[1]),
+                            gr.update(value=output_paths[2]),
+                            gr.update(value="\n".join(status_updates))
+                        ]
+                    except Exception as e:
+                        error_msg = str(e)
+                        logger.exception("Error in music generation")  # This logs the full traceback
+                        add_status(f"❌ Error during music generation: {error_msg}")
+                        return [gr.update()] * 3 + [gr.update(value="\n".join(status_updates))]
 
                 # Start button click event
                 start_button.click(
@@ -218,7 +273,7 @@ def render(arg_handler: ArgHandler):
                         max_new_tokens, run_n_segments, stage2_batch_size,
                         keep_intermediate, disable_offload_model, cuda_idx, rescale, seed
                     ],
-                    outputs=[OUTPUT_MIX, output_vocal, output_inst]
+                    outputs=[OUTPUT_MIX, output_vocal, output_inst, output_info]
                 )
 
     return app
@@ -244,7 +299,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "model_language": "Select the language of the model to use for generation.",
         "use_audio_prompt": "Check this box if you want to use an audio reference for generation.",
         "genre_txt": "Enter genre tags to guide the music generation. Use spaces to separate multiple tags.",
-        "lyrics_txt": "Enter structured lyrics with [verse], [chorus], [bridge] labels. Separate lines with '\\n'.",
+        "lyrics_txt": "Enter structured lyrics with [verse], [chorus], [bridge] labels. Separate lines with newlines.",
         "audio_prompt_path": "Upload an audio file to use as a reference for generation.",
         "prompt_start_time": "Specify the start time in seconds for the audio prompt.",
         "prompt_end_time": "Specify the end time in seconds for the audio prompt.",
