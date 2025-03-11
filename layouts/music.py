@@ -195,36 +195,38 @@ def render(arg_handler: ArgHandler):
                         keep_intermediate, disable_offload_model, cuda_idx, rescale, seed,
                         progress=gr.Progress()
                 ):
-                    status_updates = []
-                    def add_status(msg):
-                        status_updates.append(msg)
-                        yield [gr.update()] * 3 + [gr.update(value="\n".join(status_updates))]
-
                     try:
+                        # Calculate total steps: model setup + stage1 segments + stage2 processing + final processing
+                        total_steps = 3 + run_n_segments + 2 + 2
+                        current_step = 0
+
                         # Initial validation
                         if not any(char in lyrics_txt for char in ['[', ']']):
-                            return add_status("Error: No [verse] or [chorus] labels found in lyrics, please add at least one.")
+                            return [gr.update()] * 3 + [gr.update(value="Error: No [verse] or [chorus] labels found in lyrics")]
 
                         # Model setup
-                        add_status("Setting up models...")
+                        progress(current_step/total_steps, "Setting up models...")
                         fetch_and_extxract_models()
+                        current_step += 1
+
                         if seed != -1:
                             seed_everything(seed)
-                            add_status(f"Using provided seed: {seed}")
                         else:
-                            new_seed = random.randint(0, 4294967295)
-                            seed_everything(new_seed)
-                            add_status(f"Using random seed: {new_seed}")
+                            seed_everything(random.randint(0, 4294967295))
+                        current_step += 1
                         
                         stage1_model = update_model_selection(model_language, use_audio_prompt)
-                        add_status(f"Selected Stage 1 model: {stage1_model}")
+                        current_step += 1
+                        progress(current_step/total_steps, "Models initialized")
                         
                         def progress_callback(current, desc, total):
-                            progress(current / total, desc)
-                            if desc:
-                                add_status(f"Progress: {desc} ({current}/{total})")
+                            nonlocal current_step
+                            # Map the inner progress to our overall progress
+                            inner_progress = current/total if total > 0 else 0
+                            effective_progress = (current_step + inner_progress)/total_steps
+                            progress(effective_progress, desc)
                         
-                        add_status("Starting music generation...")
+                        progress(current_step/total_steps, "Starting music generation...")
                         output_paths = generate_music(
                             stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
                             audio_prompt_path.name if audio_prompt_path else "",
@@ -237,32 +239,28 @@ def render(arg_handler: ArgHandler):
                         
                         if not output_paths:
                             logger.error("No output paths returned from generate_music")
-                            return add_status("Error: No output paths returned from generate_music")
+                            return [gr.update()] * 3 + [gr.update(value="Error: No output paths returned from generate_music")]
                         
                         # Validate outputs
-                        add_status("Validating generated files...")
+                        current_step += 1
+                        progress(current_step/total_steps, "Validating generated files...")
                         for path in output_paths:
                             if not os.path.exists(path):
                                 logger.error(f"Generated file not found: {path}")
-                                return add_status(f"Error: Generated file not found: {path}")
+                                return [gr.update()] * 3 + [gr.update(value=f"Error: Generated file not found: {path}")]
                         
                         # Success case
-                        add_status("✅ Music generation completed successfully!")
-                        add_status(f"Mix file: {output_paths[0]}")
-                        add_status(f"Vocal file: {output_paths[1]}")
-                        add_status(f"Instrumental file: {output_paths[2]}")
-                        
+                        progress(1.0, "Generation complete!")
                         return [
                             gr.update(value=output_paths[0]),
                             gr.update(value=output_paths[1]),
                             gr.update(value=output_paths[2]),
-                            gr.update(value="\n".join(status_updates))
+                            gr.update(value="Generation complete!")
                         ]
                     except Exception as e:
                         error_msg = str(e)
-                        logger.exception("Error in music generation")  # This logs the full traceback
-                        add_status(f"❌ Error during music generation: {error_msg}")
-                        return [gr.update()] * 3 + [gr.update(value="\n".join(status_updates))]
+                        logger.exception("Error in music generation")
+                        return [gr.update()] * 3 + [gr.update(value=f"Error during music generation: {error_msg}")]
 
                 # Start button click event
                 start_button.click(
