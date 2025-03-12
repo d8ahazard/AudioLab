@@ -244,17 +244,29 @@ def render(arg_handler: ArgHandler):
                         # Validate outputs
                         current_step += 1
                         progress(current_step/total_steps, "Validating generated files...")
-                        for path in output_paths:
+                        
+                        # Log the returned paths to aid in debugging
+                        logger.info(f"Output paths returned: {output_paths}")
+                        
+                        # Check if required keys are in the dictionary
+                        required_keys = ["final", "vocal", "instrumental"]
+                        missing_keys = [key for key in required_keys if key not in output_paths]
+                        if missing_keys:
+                            logger.error(f"Missing keys in output_paths: {missing_keys}")
+                            return [gr.update()] * 3 + [gr.update(value=f"Error: Missing required output keys: {missing_keys}")]
+                        
+                        # Verify that all paths exist
+                        for key, path in output_paths.items():
                             if not os.path.exists(path):
-                                logger.error(f"Generated file not found: {path}")
-                                return [gr.update()] * 3 + [gr.update(value=f"Error: Generated file not found: {path}")]
+                                logger.error(f"Output file for '{key}' not found at path: {path}")
+                                return [gr.update()] * 3 + [gr.update(value=f"Error: Output file for '{key}' not found at path: {path}")]
                         
                         # Success case
                         progress(1.0, "Generation complete!")
                         return [
-                            gr.update(value=output_paths[0]),
-                            gr.update(value=output_paths[1]),
-                            gr.update(value=output_paths[2]),
+                            gr.update(value=output_paths["final"]),
+                            gr.update(value=output_paths["vocal"]),
+                            gr.update(value=output_paths["instrumental"]),
                             gr.update(value="Generation complete!")
                         ]
                     except Exception as e:
