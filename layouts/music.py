@@ -248,25 +248,41 @@ def render(arg_handler: ArgHandler):
                         # Log the returned paths to aid in debugging
                         logger.info(f"Output paths returned: {output_paths}")
                         
-                        # Check if required keys are in the dictionary
-                        required_keys = ["final", "vocal", "instrumental"]
-                        missing_keys = [key for key in required_keys if key not in output_paths]
-                        if missing_keys:
-                            logger.error(f"Missing keys in output_paths: {missing_keys}")
-                            return [gr.update()] * 3 + [gr.update(value=f"Error: Missing required output keys: {missing_keys}")]
+                        # Check if at least final output is available
+                        if "final" not in output_paths and len(output_paths) == 0:
+                            logger.error("No output paths returned")
+                            return [gr.update()] * 3 + [gr.update(value="Error: No output files were generated")]
                         
-                        # Verify that all paths exist
+                        # Make sure each path in output_paths exists
+                        valid_outputs = {}
                         for key, path in output_paths.items():
-                            if not os.path.exists(path):
-                                logger.error(f"Output file for '{key}' not found at path: {path}")
-                                return [gr.update()] * 3 + [gr.update(value=f"Error: Output file for '{key}' not found at path: {path}")]
+                            if os.path.exists(path):
+                                valid_outputs[key] = path
+                            else:
+                                logger.warning(f"Output file for '{key}' not found at path: {path}")
+                        
+                        # If we have no valid outputs, return an error
+                        if not valid_outputs:
+                            logger.error("No valid output files found")
+                            return [gr.update()] * 3 + [gr.update(value="Error: No valid output files found")]
+                        
+                        # Prepare outputs, ensuring final exists
+                        if "final" not in valid_outputs and len(valid_outputs) > 0:
+                            # Use the first available output as final
+                            first_key = next(iter(valid_outputs))
+                            valid_outputs["final"] = valid_outputs[first_key]
+                        
+                        # Create defaults for missing outputs
+                        final_output = valid_outputs.get("final", gr.update())
+                        vocal_output = valid_outputs.get("vocal", valid_outputs.get("final", gr.update()))
+                        instrumental_output = valid_outputs.get("instrumental", valid_outputs.get("final", gr.update()))
                         
                         # Success case
                         progress(1.0, "Generation complete!")
                         return [
-                            gr.update(value=output_paths["final"]),
-                            gr.update(value=output_paths["vocal"]),
-                            gr.update(value=output_paths["instrumental"]),
+                            gr.update(value=final_output),
+                            gr.update(value=vocal_output),
+                            gr.update(value=instrumental_output),
                             gr.update(value="Generation complete!")
                         ]
                     except Exception as e:
