@@ -665,10 +665,10 @@ def generate_music(
 
     for i, npy in enumerate(stage2_result):
         # Use predetermined paths
-        output_path = vocal_final_path if i == 0 else inst_final_path
+        output_file = vocal_final_path if i == 0 else inst_final_path
         output = process_audio(
             npy,
-            output_path,
+            output_file,
             rescale,
             inst_decoder,
             codec_model,
