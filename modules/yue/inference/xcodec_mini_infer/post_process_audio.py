@@ -1,6 +1,5 @@
 import os
 import sys
-import torch
 import torchaudio
 import torchaudio.functional as F
 import torchaudio.transforms as T

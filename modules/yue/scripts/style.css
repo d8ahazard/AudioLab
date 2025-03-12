@@ -1,0 +1,68 @@
+.download_button {
+    position: absolute;
+    top: 1%;
+    right: 3%;
+    transform: translate(50%,0%);
+    z-index: 11;
+  }
+
+.play_button {
+    position: absolute;
+    bottom: 50%;
+    right: 50%;
+    transform: translate(50%, 75%);
+    z-index: 11;
+}
+
+.download_button_container,
+.button_container {
+    position: relative;
+    width: 26px;
+    height: 26px;
+    z-index: 11;
+}
+
+.download_button_container {
+    width: 22px;
+    height: 22px;
+}
+
+.button_top {
+    width: 98%;
+    height: 98%;
+    left: 1%;
+    bottom: 1%;
+    position: absolute;
+    z-index: 11;
+    filter: invert(90%);
+}
+
+.button_top:hover {
+    filter: invert(60%);
+}
+
+.button_bottom {
+    position: absolute;
+    z-index: 11;
+}
+
+.time,
+.duration {
+  position: absolute;
+  z-index: 11;
+  top: 50%;
+  margin-top: -1px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.75);
+  padding: 2px;
+  color: #ddd;
+  user-select: none;
+  pointer-events: none;
+}
+.time {
+  left: 0;
+}
+.duration {
+  right: 0;
+}

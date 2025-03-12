@@ -16,8 +16,8 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
 
 from handlers.config import model_path, output_path
-from modules.yue.inference.codecmanipulator import CodecManipulator
-from modules.yue.inference.mmtokenizer import _MMSentencePieceTokenizer
+from modules.yue.source.yue.codecmanipulator import CodecManipulator
+from modules.yue.source.yue.mmtokenizer import _MMSentencePieceTokenizer
 from modules.yue.inference.xcodec_mini_infer.models.soundstream_hubert_new import SoundStream
 from modules.yue.inference.xcodec_mini_infer.post_process_audio import replace_low_freq_with_energy_matched
 from modules.yue.inference.xcodec_mini_infer.vocoder import build_codec_model

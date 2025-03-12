@@ -7,10 +7,7 @@ curl -L -o espeak-ng.msi https://github.com/espeak-ng/espeak-ng/releases/downloa
 )
 
 REM Install espeak-ng silently
-msiexec /i espeak-ng.msi /quiet /norestart || (
-    echo Error installing espeak-ng. Exiting.
-    exit /b 1
-)
+msiexec /i espeak-ng.msi /quiet /norestart
 
 REM Add "C:\Program Files\eSpeak NG\" to the *system* PATH
 REM (Requires running as Administrator; won't take effect in the current session)
@@ -22,7 +19,7 @@ REM Auto-detect CUDA driver version
 FOR /F "tokens=1-2 delims=." %%A IN ('nvidia-smi --query-gpu=driver_version --format=csv,noheader') DO (
     SET CUDA_VERSION=%%A.%%B
 )
-SET CUDA_URL=https://download.pytorch.org/whl/cu%CUDA_VERSION:.=%
+SET CUDA_URL=https://download.pytorch.org/whl/cu124
 
 REM Update pip
 echo Updating pip...
@@ -31,6 +28,19 @@ python -m pip install --upgrade pip==24.0 || (
     exit /b 1
 )
 
+REM create virtual environment
+if not exist venv (
+    python -m venv venv
+)
+
+REM activate virtual environment
+echo Activating virtual environment...
+call .\venv\Scripts\activate.bat || (
+    echo Error activating virtual environment. Exiting.
+    exit /b 1
+)
+
+echo Virtual environment activated, installing ninja...
 pip install ninja
 
 REM Install Torch and related libraries
@@ -74,6 +84,13 @@ IF EXIST requirements.txt (
     exit /b 1
 )
 
+REM install requirements_extra.txt
+echo Installing requirements_extra.txt...
+python -m pip install -r requirements_extra.txt || (
+    echo Error installing requirements_extra.txt.
+    exit /b 1
+)
+
 REM Install Python-Wrapper-for-World-Vocoder
 echo Cloning and installing Python-Wrapper-for-World-Vocoder...
 IF EXIST Python-Wrapper-for-World-Vocoder (
@@ -91,13 +108,15 @@ git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git &&
 )
 
 pip install TTS
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
+pip install torch==2.4.0 torchcrepe torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
 pip install omegaconf==2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl
 pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post9/triton-3.2.0-cp310-cp310-win_amd64.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl
-
+REM Fix issues with numpy/scipy/protobuf
+python -m pip install numpy==1.22.0 scipy onnxruntime protobuf setuptools pandas gradio --force-reinstall
+pip install faiss-cpu
 echo All dependencies installed successfully!
 pause

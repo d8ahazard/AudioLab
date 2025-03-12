@@ -25,19 +25,19 @@ logger.setLevel(logging.DEBUG)
 
 import gradio as gr
 import uvicorn
+from fastapi.staticfiles import StaticFiles
 from torchaudio._extension import _init_dll_path
 
 import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 from api import app
 from handlers.args import ArgHandler
 from handlers.config import model_path
-from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
-    listen as music_listen
 from layouts.process import render as render_process, register_descriptions as process_register_descriptions, \
     listen as process_listen
 from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.zonos import render_zonos, register_descriptions as zonos_register_descriptions, listen as zonos_listen
+from layouts.yue import YueUI, register_descriptions as yue_register_descriptions
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -74,10 +74,14 @@ if __name__ == '__main__':
         # Run only the FastAPI server
         uvicorn.run(app, host=server_name, port=server_port)
     else:
+        # Mount static files for YuE scripts
+        yue_scripts_dir = os.path.join(project_root, "modules", "yue", "scripts")
+        app.mount("/yue/scripts", StaticFiles(directory=yue_scripts_dir), name="yue_scripts")
+
         # Set up the UI
         arg_handler = ArgHandler()
         process_register_descriptions(arg_handler)
-        music_register_descriptions(arg_handler)
+        yue_register_descriptions(arg_handler)
         tts_register_descriptions(arg_handler)
         rvc_register_descriptions(arg_handler)
         zonos_register_descriptions(arg_handler)
@@ -99,14 +103,15 @@ if __name__ == '__main__':
                 with gr.Tab(label="Train", id="train"):
                     rvc_render()
                 with gr.Tab(label="Music", id="music"):
-                    render_music(arg_handler)
+                    yue_ui = YueUI()  # Create YueUI instance
+                    yue_ui.render(arg_handler)  # Render the YuE interface
                 with gr.Tab(label='TTS', id="tts"):
                     render_tts()
                 with gr.Tab(label='Zonos', id="zonos"):
                     render_zonos()
 
             tts_listen()
-            music_listen()
+            yue_ui.listen()  # Set up YuE event listeners
             zonos_listen()
             process_listen()
 

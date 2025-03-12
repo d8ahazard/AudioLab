@@ -140,6 +140,7 @@ AudioLab is powered by some fantastic open-source projects:
 - 📜 [WhisperX](https://github.com/m-bain/whisperX) – Audio transcription.
 - 🗣 [Coqui TTS](https://github.com/coqui-ai/TTS) – State-of-the-art TTS.
 - 🎼 [YuE](https://github.com/multimodal-art-projection/YuE) – Music generation.
+- 🎵 [YuE UI](https://github.com/joeljuvel/YuE-UI) - Because I'm lazy and his is cooler.
 - 🏆 [Zonos](https://github.com/Zyphra/Zonos) – High-quality TTS.
 
 ---
