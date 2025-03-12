@@ -254,17 +254,17 @@ def render(arg_handler: ArgHandler):
                             return [gr.update()] * 3 + [gr.update(value="Error: No output files were generated")]
                         
                         # Make sure each path in output_paths exists
-                        valid_outputs = {}
-                        for key, path in output_paths.items():
-                            if os.path.exists(path):
-                                valid_outputs[key] = path
-                            else:
-                                logger.warning(f"Output file for '{key}' not found at path: {path}")
+                        valid_outputs = output_paths
+                        # for key, path in output_paths.items():
+                        #     if os.path.exists(path):
+                        #         valid_outputs[key] = path
+                        #     else:
+                        #         logger.warning(f"Output file for '{key}' not found at path: {path}")
                         
-                        # If we have no valid outputs, return an error
-                        if not valid_outputs:
-                            logger.error("No valid output files found")
-                            return [gr.update()] * 3 + [gr.update(value="Error: No valid output files found")]
+                        # # If we have no valid outputs, return an error
+                        # if not valid_outputs:
+                        #     logger.error("No valid output files found")
+                        #     return [gr.update()] * 3 + [gr.update(value="Error: No valid output files found")]
                         
                         # Prepare outputs, ensuring final exists
                         if "final" not in valid_outputs and len(valid_outputs) > 0:
