@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+from handlers.config import model_path
 from random import randint, shuffle
 import gradio as gr
 import torch
