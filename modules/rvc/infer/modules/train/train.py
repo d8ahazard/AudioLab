@@ -469,7 +469,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             )
             
             # Save the model in trained directory
-            model_path = savee(
+            model_file = savee(
                 ckpt,
                 hps.sample_rate,
                 hps.if_f0,
@@ -490,11 +490,11 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     break
                     
             if index_path is not None and os.path.exists(index_path):
-                target_index = model_path.replace(".pth", ".index")
+                target_index = model_file.replace(".pth", ".index")
                 shutil.copy2(index_path, target_index)
                 logger.info(f"Copied index file to {target_index}")
             
-            logger.info(f"Saved checkpoint: {model_path}")
+            logger.info(f"Saved checkpoint: {model_file}")
             
         if epoch >= hps.train.epochs:
             logger.info("Training is done. The program is closed.")
