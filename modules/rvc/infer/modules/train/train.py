@@ -47,6 +47,7 @@ from time import time as ttime
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 global_step = 0
+last_saved_epoch = None  # Track the last saved epoch for cleanup
 
 
 class EpochRecorder:
@@ -251,6 +252,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     train_loader.batch_sampler.set_epoch(epoch)
     global global_step
+    global last_saved_epoch
 
     net_g.train()
     net_d.train()
@@ -427,85 +429,73 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         global_step += 1
 
-    if rank == 0 and (epoch % hps.save_every_epoch == 0):
-        if hps.if_latest == 0:
-            utils.save_checkpoint(
-                net_g,
-                optim_g,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "saves", "G_{}.pth".format(global_step)),
-            )
-            utils.save_checkpoint(
-                net_d,
-                optim_d,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "saves", "D_{}.pth".format(global_step)),
-            )
-            # Save full model for interim testing
+    if rank == 0:
+        # Save model if it's time for a periodic save or if training is complete
+        should_save = (epoch % hps.save_epoch_frequency == 0) or (epoch >= hps.train.epochs)
+        
+        if should_save:
+            # If save_latest_only is True and we have a previous save, clean up old checkpoints
+            if hps.save_latest_only and last_saved_epoch is not None:
+                # Clean up files from previous save in both directories
+                for save_dir in [os.path.join(model_path, "trained"), os.path.join(hps.model_dir, "saves")]:
+                    if os.path.exists(save_dir):
+                        for file in os.listdir(save_dir):
+                            if f"_e{last_saved_epoch}" in file and (file.endswith(".pth") or file.endswith(".index")):
+                                try:
+                                    os.remove(os.path.join(save_dir, file))
+                                except Exception as e:
+                                    logger.warning(f"Failed to remove old checkpoint {file} from {save_dir}: {e}")
+
+            # Get model state
             if hasattr(net_g, "module"):
                 ckpt = net_g.module.state_dict()
             else:
                 ckpt = net_g.state_dict()
-            logger.info(
-                "saving interim ckpt %s_e%s:%s"
-                % (
-                    hps.name,
-                    epoch,
-                    savee(
-                        ckpt,
-                        hps.sample_rate,
-                        hps.if_f0,
-                        f"{hps.name}_e{epoch}",
-                        epoch,
-                        hps.version,
-                        hps,
-                    ),
-                )
-            )
-            # Find index file in hps.model_dir
-            index_path = None
-            for file in os.listdir(hps.model_dir):
-                if file.endswith(".index"):
-                    index_path = os.path.join(hps.model_dir, file)
-                    break
-            if index_path is not None and os.path.exists(index_path):
-                # Get the model file path that was just saved
-                model_path = savee(
-                    ckpt,
-                    hps.sample_rate,
-                    hps.if_f0,
-                    f"{hps.name}_e{epoch}",
-                    epoch,
-                    hps.version,
-                    hps,
-                )
-                # Create matching index path by replacing .pth with .index
-                target_index = model_path.replace(".pth", ".index")
-                shutil.copy2(index_path, target_index)
-                logger.info(f"Copied index file to {target_index}")
-        else:
+            
+            # Save checkpoints in saves directory
             utils.save_checkpoint(
                 net_g,
                 optim_g,
                 hps.train.learning_rate,
                 epoch,
-                os.path.join(hps.model_dir, "saves", "G_{}.pth".format(2333333)),
+                os.path.join(hps.model_dir, "saves", f"G_e{epoch}.pth"),
             )
             utils.save_checkpoint(
                 net_d,
                 optim_d,
                 hps.train.learning_rate,
                 epoch,
-                os.path.join(hps.model_dir, "saves", "D_{}.pth".format(2333333)),
+                os.path.join(hps.model_dir, "saves", f"D_e{epoch}.pth"),
             )
-
-    if epoch >= hps.train.epochs and rank == 0:
-        logger.info("Training is done. The program is closed.")
-        if hasattr(net_g, "module"):
-            ckpt = net_g.module.state_dict()
-        else:
-            ckpt = net_g.state_dict()
-        logger.info("saving final ckpt:%s" % (savee(ckpt, hps.sample_rate, hps.if_f0, hps.name, epoch, hps.version, hps)))
-        return
+            
+            # Save the model in trained directory
+            model_path = savee(
+                ckpt,
+                hps.sample_rate,
+                hps.if_f0,
+                f"{hps.name}_e{epoch}" if epoch < hps.train.epochs else hps.name,
+                epoch,
+                hps.version,
+                hps,
+            )
+            
+            # Update last_saved_epoch for next cleanup
+            last_saved_epoch = epoch
+            
+            # Copy index file if it exists
+            index_path = None
+            for file in os.listdir(hps.model_dir):
+                if file.endswith(".index") and "added" in file:
+                    index_path = os.path.join(hps.model_dir, file)
+                    break
+                    
+            if index_path is not None and os.path.exists(index_path):
+                target_index = model_path.replace(".pth", ".index")
+                shutil.copy2(index_path, target_index)
+                logger.info(f"Copied index file to {target_index}")
+            
+            logger.info(f"Saved checkpoint: {model_path}")
+            
+        if epoch >= hps.train.epochs:
+            logger.info("Training is done. The program is closed.")
+            return

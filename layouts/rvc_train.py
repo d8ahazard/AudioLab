@@ -392,7 +392,7 @@ def click_train(
             config_loaded = json.load(f)
         hparams = HParams(**config_loaded)
         hparams.model_dir = hparams.experiment_dir = exp_dir
-        hparams.save_every_epoch = save_epoch_frequency
+        hparams.save_epoch_frequency = save_epoch_frequency
         hparams.name = voice_name
         hparams.total_epoch = total_epochs
         hparams.pretrainG = pretrained_generator
@@ -403,7 +403,7 @@ def click_train(
         hparams.train.epochs = total_epochs
         hparams.sample_rate = sample_rate
         hparams.if_f0 = 1 if use_pitch_guidance else 0
-        hparams.if_latest = 1 if save_latest_only else 0
+        hparams.save_latest_only = save_latest_only
         hparams.save_every_weights = 1 if save_weights_each_ckpt == "Yes" else 0
         hparams.if_cache_data_in_gpu = 1 if cache_dataset_to_gpu == "Yes" else 0
         hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
