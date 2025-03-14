@@ -486,7 +486,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             # Copy index file if it exists
             index_path = None
             for file in os.listdir(hps.model_dir):
-                if file.endswith(".index") and "added" in file:
+                if file.endswith(".index") and file.startswith("added_"):
                     index_path = os.path.join(hps.model_dir, file)
                     break
                     
