@@ -10,7 +10,7 @@ from einops import rearrange
 from stable_audio_tools.models.factory import create_model_from_config
 from stable_audio_tools.models.utils import load_ckpt_state_dict
 from stable_audio_tools.inference.generation import generate_diffusion_cond
-from handlers.config import model_path
+from handlers.config import model_path, output_path
 
 logger = logging.getLogger("ADLB.StableAudio")
 
@@ -26,7 +26,7 @@ class StableAudioModel:
         self.model_config = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model_folder = os.path.join(model_path, "stable_audio")
-        self.output_dir = os.path.join(model_path, "stable_audio_outputs")
+        self.output_dir = os.path.join(output_path, "stable_audio")
         os.makedirs(self.output_dir, exist_ok=True)
         
     def download_model_files(self):

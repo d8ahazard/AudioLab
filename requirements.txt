@@ -37,6 +37,7 @@ reathon
 scipy>=1.15.0
 segmentation_models_pytorch>=0.3.4
 soundfile>=0.13.0
+stable-audio-tools
 sudachidict-full>=20241021
 sudachipy>=0.6.10
 timm>=0.9.7

@@ -798,7 +798,8 @@ def list_project_weights(project_dir):
 
 def render():
     with gr.Blocks() as rvc_train:
-        gr.Markdown("## RVC Training")
+        gr.Markdown("# 🎤 Voice Model Training")
+        gr.Markdown("Train voice conversion models with 30-60 minutes of audio. Features automatic vocal separation, feature extraction, and customizable training parameters for creating personalized voice models.")
         with gr.Row():
             with gr.Column():
                 gr.Markdown("### 🔧 Settings")

@@ -40,6 +40,10 @@ OUTPUT_AUDIO = None
 OUTPUT_FILES = []
 arg_handler = ArgHandler()
 
+# Global dictionaries to store path mappings
+path_to_filename = {}
+filename_to_path = {}
+
 def get_random_prompt():
     """Return a random example prompt to help users get started."""
     return random.choice(EXAMPLE_PROMPTS)
@@ -48,30 +52,79 @@ def get_random_negative_prompt():
     """Return a random example negative prompt."""
     return random.choice(EXAMPLE_NEGATIVE_PROMPTS)
 
+def get_filename(file_path: str) -> str:
+    """Extract filename from a path."""
+    return os.path.basename(file_path)
+
+def update_path_mappings(file_paths: List[str]):
+    """Update the global path mappings dictionaries."""
+    global path_to_filename, filename_to_path
+    for path in file_paths:
+        if path:  # Only process non-empty paths
+            filename = get_filename(path)
+            # Handle duplicate filenames by appending a number
+            base_filename = filename
+            counter = 1
+            while filename in filename_to_path and filename_to_path[filename] != path:
+                name, ext = os.path.splitext(base_filename)
+                filename = f"{name}_{counter}{ext}"
+                counter += 1
+            path_to_filename[path] = filename
+            filename_to_path[filename] = path
+
 def update_output_info(results=None, error=None):
     """Update the output info display with multiple output support."""
     if error:
-        return f"Error: {error}", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), {}, gr.update(visible=False)
+        return f"Error: {error}", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), gr.update(visible=False)
     
     if results and len(results) > 0:
         global OUTPUT_FILES
         OUTPUT_FILES = [result["file_path"] for result in results]
         
-        # Create display names for each variation
-        display_names = [f"Variation {i+1}" for i in range(len(results))]
+        # Update path mappings
+        update_path_mappings(OUTPUT_FILES)
         
-        # Create mapping between display names and file paths
-        output_map = {display_names[i]: results[i]["file_path"] for i in range(len(results))}
+        # Create display choices using the mapped filenames
+        display_choices = [f"Variation {i+1}: {path_to_filename[path]}" for i, path in enumerate(OUTPUT_FILES)]
         
         # Show output selector only if we have multiple variations
         selector_visible = len(results) > 1
         download_all_visible = len(results) > 1
         
         # Return the first audio file as default
-        file_path = results[0]["file_path"]
-        return "Generation complete!", file_path, gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), gr.update(choices=display_names, value=display_names[0], visible=selector_visible), output_map, gr.update(visible=download_all_visible)
+        first_file_path = OUTPUT_FILES[0]
+        first_display_name = display_choices[0]
+        
+        return "Generation complete!", first_file_path, gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), gr.update(choices=display_choices, value=first_display_name, visible=selector_visible), gr.update(visible=download_all_visible), gr.update(value=OUTPUT_FILES, visible=True)
     
-    return "No output generated", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), {}, gr.update(visible=False)
+    return "No output generated", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), gr.update(visible=False), gr.update(visible=False)
+
+def update_audio_preview(selection):
+    """Update the audio preview based on the selected variation."""
+    if not selection:
+        return gr.update(value=None)
+    
+    # Extract variation number from the selection (format: "Variation X: filename")
+    try:
+        variation_idx = int(selection.split(':')[0].replace('Variation ', '').strip()) - 1
+        if 0 <= variation_idx < len(OUTPUT_FILES):
+            return gr.update(value=OUTPUT_FILES[variation_idx])
+    except (ValueError, IndexError):
+        pass
+        
+    # Fallback: try to extract the filename and look it up
+    try:
+        filename = selection.split(':', 1)[1].strip()
+        if filename in filename_to_path:
+            return gr.update(value=filename_to_path[filename])
+    except (IndexError, KeyError):
+        pass
+    
+    # If all else fails, return the first output file if available
+    if OUTPUT_FILES:
+        return gr.update(value=OUTPUT_FILES[0])
+    
+    return gr.update(value=None)
 
 def download_all_output_files():
     """Create a zip file of all output files and return the path to download."""
@@ -189,6 +242,17 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem"
                     )
                     
+                    # Add preview player for the reference audio
+                    init_audio_preview = gr.Audio(
+                        label="Reference Audio Preview",
+                        type="filepath",
+                        interactive=False,
+                        visible=False,
+                        elem_id="stable_audio_init_audio_preview",
+                        key="stable_audio_init_audio_preview",
+                        elem_classes="hintitem"
+                    )
+                    
                     init_noise_level = gr.Slider(
                         label="Reference Noise Level",
                         minimum=0.0,
@@ -285,18 +349,30 @@ def render(arg_handler: ArgHandler):
                     visible=False,
                     elem_id="stable_audio_output_selector",
                     key="stable_audio_output_selector",
+                    elem_classes="hintitem",
+                    interactive=True
+                )
+                
+                OUTPUT_AUDIO = gr.Audio(
+                    label="Generated Audio",
+                    type="filepath",
+                    interactive=False,
+                    elem_id="stable_audio_output",
+                    key="stable_audio_output",
                     elem_classes="hintitem"
                 )
                 
-                with gr.Row():
-                    OUTPUT_AUDIO = gr.Audio(
-                        label="Generated Audio",
-                        type="filepath",
-                        interactive=False,
-                        elem_id="stable_audio_output",
-                        key="stable_audio_output",
-                        elem_classes="hintitem"
-                    )
+                # Add output files component to show all generated files
+                output_files = gr.File(
+                    label="Generated Files",
+                    file_count="multiple",
+                    visible=False,
+                    interactive=False,
+                    elem_id="stable_audio_output_files",
+                    key="stable_audio_output_files",
+                    elem_classes="hintitem"
+                )
+                
                 with gr.Row():
                     download_btn = gr.Button(
                         "💾 Download", 
@@ -321,30 +397,71 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem"
                     )
                 
-                # Progress indicator
-                progress = gr.Progress()
                 
-                # Hidden state to store output mappings
-                output_map = gr.State({})
-    
     # Define functions for button actions
     def randomize_seed():
         return random.randint(0, 2147483647)
     
     def clear_outputs():
-        return "", get_random_negative_prompt(), 5.0, 1, 100, 7.0, -1, False, None, 0.7, "Ready to generate", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), {}, gr.update(visible=False)
+        """Clear all inputs and outputs, resetting the interface."""
+        return "", get_random_negative_prompt(), 5.0, 1, 100, 7.0, -1, False, None, 0.7, "Ready to generate", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), gr.update(visible=False), gr.update(visible=False)
     
     def toggle_init_audio(use_init):
-        return gr.update(visible=use_init)
+        """Toggle visibility of the init audio options and reset preview if disabled."""
+        if not use_init:
+            return gr.update(visible=False), gr.update(value=None, visible=False)
+        return gr.update(visible=True), gr.update(visible=False)  # Preview will be updated when file is selected
     
-    def use_output_as_reference(output_audio):
-        """Set the currently generated output as the reference input."""
-        if output_audio and os.path.exists(output_audio):
+    def update_init_audio_preview(init_audio_path):
+        """Update the preview of the reference audio file."""
+        if not init_audio_path:
+            return gr.update(value=None, visible=False)
+        
+        file_path = init_audio_path.name if hasattr(init_audio_path, 'name') else init_audio_path
+        
+        if file_path and os.path.exists(file_path):
+            return gr.update(value=file_path, visible=True)
+        return gr.update(value=None, visible=False)
+    
+    def use_output_as_reference(selected_variation):
+        """Set the currently selected output as the reference input."""
+        # Get the actual file path for the selected variation
+        file_path = None
+        if selected_variation:
+            print(f"Selected variation: {selected_variation}")
+            try:
+                variation_idx = int(selected_variation.split(':')[0].replace('Variation ', '').strip()) - 1
+                if 0 <= variation_idx < len(OUTPUT_FILES):
+                    file_path = OUTPUT_FILES[variation_idx]
+                    print(f"File path: {file_path}")
+            except (ValueError, IndexError):
+                pass
+            
+            # Fallback: try to extract the filename and look it up
+            if not file_path:
+                try:
+                    filename = selected_variation.split(':', 1)[1].strip()
+                    if filename in filename_to_path:
+                        file_path = filename_to_path[filename]
+                        print(f"File path: {file_path}")
+                    else:
+                        print(f"File path not found in filename_to_path: {filename}")
+                except (IndexError, KeyError):
+                    pass
+        
+        # If no selection or couldn't find file, use the first one if available
+        if not file_path and OUTPUT_FILES:
+            file_path = OUTPUT_FILES[0]
+            print(f"File path: {file_path}")
+        if file_path and os.path.exists(file_path):
+            print(f"File path exists: {file_path}")
+            # Enable the checkbox and set the file input with the correct format
             return (
-                gr.update(value=True), 
-                gr.update(value={"name": output_audio})
+                gr.update(value=True),
+                gr.update(value=file_path),
+                gr.update(value=file_path, visible=True)
             )
-        return gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(visible=False)
     
     def generate_audio(progress=gr.Progress(), prompt="", negative_prompt="", duration=5.0, 
                       num_waveforms=1, inference_steps=100, guidance_scale=7.0, seed=-1,
@@ -355,7 +472,7 @@ def render(arg_handler: ArgHandler):
             
             # Validate inputs
             if not prompt.strip():
-                return "Error: Please provide a text prompt", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), {}, gr.update(visible=False)
+                return "Error: Please provide a text prompt", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(choices=[], visible=False), gr.update(visible=False)
             
             # Process the audio generation
             progress(0.1, desc="Loading model...")
@@ -363,8 +480,12 @@ def render(arg_handler: ArgHandler):
             # Determine if we should use init audio
             init_audio_file = None
             if use_init_audio and init_audio_path:
-                # Get actual file path from the File component
-                init_audio_file = init_audio_path.name if init_audio_path else None
+                # Check if init_audio_path is a string or has a 'name' attribute (File component)
+                if isinstance(init_audio_path, str):
+                    init_audio_file = init_audio_path
+                elif hasattr(init_audio_path, 'name'):
+                    init_audio_file = init_audio_path.name
+                
                 if init_audio_file:
                     progress(0.2, desc="Processing reference audio...")
             
@@ -393,7 +514,7 @@ def render(arg_handler: ArgHandler):
         inputs=[prompt, negative_prompt, duration, num_waveforms, 
                 inference_steps, guidance_scale, seed,
                 use_init_audio, init_audio_path, init_noise_level],
-        outputs=[status, OUTPUT_AUDIO, download_btn, SEND_TO_PROCESS_BUTTON, use_as_reference_btn, output_selector, output_map, download_all_btn]
+        outputs=[status, OUTPUT_AUDIO, download_btn, SEND_TO_PROCESS_BUTTON, use_as_reference_btn, output_selector, download_all_btn, output_files]
     )
     
     clear_btn.click(
@@ -402,7 +523,7 @@ def render(arg_handler: ArgHandler):
         outputs=[prompt, negative_prompt, duration, num_waveforms, 
                 inference_steps, guidance_scale, seed,
                 use_init_audio, init_audio_path, init_noise_level,
-                status, OUTPUT_AUDIO, download_btn, SEND_TO_PROCESS_BUTTON, use_as_reference_btn, output_selector, output_map, download_all_btn]
+                status, OUTPUT_AUDIO, download_btn, SEND_TO_PROCESS_BUTTON, use_as_reference_btn, output_selector, download_all_btn, output_files, init_audio_preview]
     )
     
     randomize_btn.click(
@@ -415,7 +536,14 @@ def render(arg_handler: ArgHandler):
     use_init_audio.change(
         fn=toggle_init_audio,
         inputs=[use_init_audio],
-        outputs=[init_audio_options]
+        outputs=[init_audio_options, init_audio_preview]
+    )
+    
+    # Update preview when reference file is selected
+    init_audio_path.change(
+        fn=update_init_audio_preview,
+        inputs=[init_audio_path],
+        outputs=[init_audio_preview]
     )
     
     # Setup dataset example selection
@@ -434,14 +562,28 @@ def render(arg_handler: ArgHandler):
     # Add click handler for the "Use As Reference" button
     use_as_reference_btn.click(
         fn=use_output_as_reference,
-        inputs=[OUTPUT_AUDIO],
+        inputs=[output_selector],
         outputs=[use_init_audio, init_audio_path]
     )
     
     # Add change event for the output selector
     output_selector.change(
-        fn=lambda selection, output_map: gr.update(value=output_map.get(selection, None)),
-        inputs=[output_selector, output_map],
+        fn=update_audio_preview,
+        inputs=[output_selector],
+        outputs=[OUTPUT_AUDIO]
+    )
+
+    # Add click handler for the "Use As Reference" button - now properly updates all three components
+    use_as_reference_btn.click(
+        fn=use_output_as_reference,
+        inputs=[output_selector],
+        outputs=[use_init_audio, init_audio_path, init_audio_preview]
+    )
+    
+    # Add change event for the output selector
+    output_selector.change(
+        fn=update_audio_preview,
+        inputs=[output_selector],
         outputs=[OUTPUT_AUDIO]
     )
     
@@ -449,7 +591,7 @@ def render(arg_handler: ArgHandler):
     download_all_btn.click(
         fn=download_all_output_files,
         inputs=[],
-        outputs=[gr.File(label="Download")]
+        outputs=[output_files]
     )
     
     # Add Send to Process button click event directly here
@@ -457,7 +599,7 @@ def render(arg_handler: ArgHandler):
     if process_inputs:
         SEND_TO_PROCESS_BUTTON.click(
             fn=send_to_process, 
-            inputs=[OUTPUT_AUDIO, process_inputs], 
+            inputs=[output_selector, process_inputs], 
             outputs=[process_inputs]
         )
 
@@ -484,13 +626,36 @@ def listen():
     # The Send to Process button click is now handled in the render function
     pass
 
-def send_to_process(output_audio, process_inputs):
-    """Send the generated audio to the Process tab."""
-    if not output_audio or not os.path.exists(output_audio):
+def send_to_process(selected_variation, process_inputs):
+    """Send the selected audio variation to the Process tab."""
+    # Get the actual file path for the selected variation
+    file_path = None
+    if selected_variation:
+        try:
+            variation_idx = int(selected_variation.split(':')[0].replace('Variation ', '').strip()) - 1
+            if 0 <= variation_idx < len(OUTPUT_FILES):
+                file_path = OUTPUT_FILES[variation_idx]
+        except (ValueError, IndexError):
+            pass
+        
+        # Fallback: try to extract the filename and look it up
+        if not file_path:
+            try:
+                filename = selected_variation.split(':', 1)[1].strip()
+                if filename in filename_to_path:
+                    file_path = filename_to_path[filename]
+            except (IndexError, KeyError):
+                pass
+    
+    # If no selection or couldn't find file, use the first one if available
+    if not file_path and OUTPUT_FILES:
+        file_path = OUTPUT_FILES[0]
+        
+    if not file_path or not os.path.exists(file_path):
         return gr.update()
     
-    if output_audio in process_inputs:
+    if file_path in process_inputs:
         return gr.update()
         
-    process_inputs.append(output_audio)
+    process_inputs.append(file_path)
     return gr.update(value=process_inputs) 

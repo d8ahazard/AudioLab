@@ -296,7 +296,7 @@ def render_tts():
                 gr.update(visible=False),  # emotion_dropdown
                 gr.update(choices=speakers, value=speaker, visible=True)  # speaker_list
             )
-    
+
     def update_tts_model(language):
         """Update available models based on selected language (regular TTS)."""
         tts_handler.language = language
@@ -342,14 +342,15 @@ def render_tts():
                     )
                     return gr.update(value=spoken)
                 except Exception as e:
-                    logger.exception(f"Error in regular TTS generation with model {model}:")
-                    return f"Error: Could not generate speech with {model}: {str(e)}"
+                            logger.exception(f"Error in regular TTS generation with model {model}:")
+                            return f"Error: Could not generate speech with {model}: {str(e)}"
         except Exception as e:
             logger.exception("Error in TTS generation:")
             return f"Error: {str(e)}"
 
     with gr.Blocks() as tts:
-        gr.Markdown("## Text to Speech")
+        gr.Markdown("# 🗣️ Text to Speech")
+        gr.Markdown("Convert text to natural-sounding speech using Zonos for emotional synthesis or various TTS models. Supports voice cloning from audio references, multiple languages, and adjustable speech parameters.")
 
         with gr.Row():
             with gr.Column():

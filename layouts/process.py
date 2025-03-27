@@ -267,7 +267,8 @@ def load_project(project_name: str, input_files) -> gr.update:
 
 def render(arg_handler: ArgHandler):
     wrappers, enabled_wrappers = list_wrappers()
-    gr.Markdown("## Music Processing")
+    gr.Markdown("# 🔄 Audio Processing Pipeline")
+    gr.Markdown("Modular audio processing pipeline for separating vocals, cloning voices, enhancing quality, and converting formats. Chain multiple processors to create custom workflows for any audio transformation.")
     processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers,
                                       elem_id='processor_list', key="main_processor_list")
     progress_display = gr.HTML(label='Progress', value='')
@@ -313,13 +314,12 @@ def render(arg_handler: ArgHandler):
                 with gr.Column():
                     input_url_button = gr.Button(value='Load URL(s)', visible=True, interactive=True)
         with gr.Column():
-            gr.Markdown("### 🎶 Outputs")
-            
             gr.Markdown("### 🎮 Actions")
             with gr.Row():
                 start_processing = gr.Button(value='Start Processing', variant='primary')
                 cancel_processing = gr.Button(value='Cancel Processing', variant='secondary', visible=False)
-
+                
+            gr.Markdown("### 🎶 Outputs")
             output_select = gr.Dropdown(label='Select Output Preview', choices=[], value=None,
                                         visible=False, interactive=True, key="process_output_preview")
             output_audio = gr.Audio(label='Output Audio', value=None, visible=False,
@@ -329,6 +329,7 @@ def render(arg_handler: ArgHandler):
             output_files = gr.File(label='Output Files', file_count='multiple',
                                    file_types=['audio', 'video'],
                                    interactive=False, key="process_output_files")
+            progress_display = gr.HTML(label='Progress', value='')
 
     processor_list.input(
         fn=enforce_defaults,
