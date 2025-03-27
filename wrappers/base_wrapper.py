@@ -229,8 +229,29 @@ class BaseWrapper:
         filtered_inputs, outputs = [], []
         extensions = []
         inputs = project.last_outputs
+        
+        # If no previous outputs exist, add the source file 
         if not inputs:
-            inputs = [project.src_file]
+            # Check if a stems folder exists with files that match the naming convention
+            stem_dir = os.path.join(project.project_dir, "stems")
+            if os.path.exists(stem_dir):
+                # If we have a vocals file in the stems directory, use that
+                for f in os.listdir(stem_dir):
+                    if "(Vocals)" in f:
+                        vocals_file = os.path.join(stem_dir, f)
+                        inputs = [vocals_file]
+                        break
+                # If we didn't find a vocals file, just use all files in the stems directory
+                if not inputs:
+                    stem_files = [os.path.join(stem_dir, f) for f in os.listdir(stem_dir) 
+                                 if os.path.isfile(os.path.join(stem_dir, f)) and not f.endswith(".json")]
+                    if stem_files:
+                        inputs = stem_files
+            
+            # If we still have no inputs, use the source file
+            if not inputs:
+                inputs = [project.src_file]
+                
         match input_type:
             case "audio":
                 extensions = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]

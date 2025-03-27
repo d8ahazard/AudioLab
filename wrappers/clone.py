@@ -244,10 +244,29 @@ class Clone(BaseWrapper):
                         callback(step, f"({project_name}) {message}", steps)
 
                 last_outputs = project.last_outputs
-                # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
-                filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals" in p]
-                if not filtered_inputs:
-                    filtered_inputs = [project.src_file]
+                
+                # Check if we need to handle input directly (no prior separation)
+                if not last_outputs:
+                    # Look for vocal files in the stems directory first
+                    stems_dir = os.path.join(project.project_dir, "stems")
+                    if os.path.exists(stems_dir):
+                        vocal_files = [os.path.join(stems_dir, f) for f in os.listdir(stems_dir) 
+                                      if "(Vocals)" in f and os.path.isfile(os.path.join(stems_dir, f))]
+                        if vocal_files:
+                            filtered_inputs = vocal_files
+                        else:
+                            # If no vocals files found, try to use the source file directly
+                            logger.info(f"No vocal files found in stems directory - using source file directly: {project.src_file}")
+                            filtered_inputs = [project.src_file]
+                    else:
+                        # If no stems directory, use the source file
+                        logger.info(f"No stems directory found - using source file directly: {project.src_file}")
+                        filtered_inputs = [project.src_file]
+                else:
+                    # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
+                    filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals" in p]
+                    if not filtered_inputs:
+                        filtered_inputs = [project.src_file]
 
                 if not clone_bg_vocals:
                     # Exclude any "(BG_Vocals" if user doesn't want to clone them

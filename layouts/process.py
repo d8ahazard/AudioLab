@@ -147,6 +147,19 @@ def toggle_visibility(processors: List[str], all_wrappers: List[str], all_accord
     ]
 
 
+def check_processor_conflicts(processors: List[str]) -> gr.update:
+    """
+    Check for processor combinations that might cause issues and update warning visibility
+    """
+    is_clone_enabled = "Clone" in processors
+    is_separate_enabled = "Separate" in processors
+    
+    # Show warning if Clone is enabled but Separate is not
+    show_warning = is_clone_enabled and not is_separate_enabled
+    
+    return gr.update(visible=show_warning)
+
+
 def enforce_defaults(processors: List[str]):
     wrappers, _ = list_wrappers()
     required_wrappers = [wrapper for wrapper in wrappers if get_processor(wrapper).required]
@@ -166,6 +179,16 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     progress(0, f"Processing with {len(processors)} processors...")
     outputs = []
     all_outputs = []
+    
+    # Check for special directories in input files that should automatically skip separation
+    special_dirs = ["tts", "zonos", "stable_audio"]
+    has_special_files = any(any(special_dir in input_file for special_dir in special_dirs) for input_file in inputs)
+    has_tts_files = any(os.path.basename(input_file).startswith(("TTS_", "ZONOS_")) for input_file in inputs)
+    
+    # If we have special files but Separate is in processors, note it but continue
+    if (has_special_files or has_tts_files) and "Separate" in processors:
+        logger.info("Special files detected that would typically skip separation - continuing with user-selected processors")
+    
     inputs = [ProjectFiles(file_path) for file_path in inputs]
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
@@ -271,6 +294,16 @@ def render(arg_handler: ArgHandler):
     gr.Markdown("Modular audio processing pipeline for separating vocals, cloning voices, enhancing quality, and converting formats. Chain multiple processors to create custom workflows for any audio transformation.")
     processor_list = gr.CheckboxGroup(label='Processors', choices=wrappers, value=enabled_wrappers,
                                       elem_id='processor_list', key="main_processor_list")
+    
+    # Warning message for when Clone is enabled without Separate
+    separation_warning = gr.HTML(
+        value='<div style="background-color: #FFF3CD; color: #856404; padding: 10px; border-radius: 5px; margin: 10px 0;">'
+              '<strong>⚠️ Warning:</strong> Voice cloning requires separated vocals. '
+              'Disabling "Separate" may cause issues with the "Clone" processor. '
+              'Only disable separation for TTS or pre-separated audio files.</div>',
+        visible=False
+    )
+    
     progress_display = gr.HTML(label='Progress', value='')
 
     accordions = []
@@ -338,9 +371,15 @@ def render(arg_handler: ArgHandler):
     )
 
     processor_list.change(
-        fn=lambda processors: toggle_visibility(processors, wrappers, accordions),
+        fn=lambda processors: (
+            *toggle_visibility(processors, wrappers, accordions),
+            check_processor_conflicts(processors)
+        ),
         inputs=[processor_list],
-        outputs=[accordion for accordion in accordions]
+        outputs=[
+            *accordions,
+            separation_warning
+        ]
     )
 
     input_files.change(

@@ -22,7 +22,7 @@ class Separate(BaseWrapper):
     title = "Separate"
     priority = 1
     default = True
-    required = True
+    required = False
     description = (
         "Separate audio into distinct stems with optional background vocal splitting "
         "and audio transformations (reverb, echo, delay, crowd, noise removal)."
@@ -196,7 +196,7 @@ class Separate(BaseWrapper):
         final_projects = []
         to_separate = []  # Projects that need separation (no valid cache)
 
-        # First pass: Check cache for each project.
+        # First pass: Check cache for each project and handle special cases.
         for project in inputs:
             base_name = os.path.splitext(os.path.basename(project.src_file))[0]
             # Store base_name in project for mapping consistency
@@ -204,6 +204,33 @@ class Separate(BaseWrapper):
             out_dir = os.path.join(project.project_dir, "stems")
             os.makedirs(out_dir, exist_ok=True)
             cache_file = os.path.join(out_dir, "separation_info.json")
+
+            # Check if this is a special file that should skip separation:
+            # 1. Files starting with TTS_ or ZONOS_
+            # 2. Files from tts, zonos, or stable_audio directories
+            file_basename = os.path.basename(project.src_file)
+            file_dir = os.path.dirname(project.src_file)
+            special_dirs = ["tts", "zonos", "stable_audio"]
+            
+            is_special_file = (
+                file_basename.startswith("TTS_") or 
+                file_basename.startswith("ZONOS_") or
+                any(special_dir in file_dir for special_dir in special_dirs)
+            )
+            
+            if is_special_file:
+                # Handle like TTS files - copy to stems with (Vocals) suffix
+                stem_dir = os.path.join(project.project_dir, "stems")
+                base_name, ext = os.path.splitext(os.path.basename(project.src_file))
+                new_name = f"{base_name}(Vocals){ext}"
+                new_path = os.path.join(stem_dir, new_name)
+                if not os.path.exists(new_path):
+                    shutil.copyfile(project.src_file, new_path)
+                project_stems = [new_path]
+                project.add_output("stems", project_stems)
+                final_projects.append(project)
+                logger.info(f"Skipping separation for special file {project.src_file}")
+                continue
 
             current_config = {
                 "file": project.src_file,
@@ -257,15 +284,9 @@ class Separate(BaseWrapper):
             for proj, config in to_separate:
                 stem_dir = os.path.join(proj.project_dir, "stems")
                 os.makedirs(stem_dir, exist_ok=True)
-                if os.path.basename(proj.src_file).startswith("TTS_"):
-                    # Copy proj.src_file to stem_dir and append (Vocals) to the name
-                    base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
-                    new_name = f"{base_name}(Vocals){ext}"
-                    new_path = os.path.join(stem_dir, new_name)
-                    if not os.path.exists(new_path):
-                        shutil.copyfile(proj.src_file, new_path)
-                    project_map[base_name] = (proj, config)
-                    continue
+                
+                # TTS file handling has been moved to the first pass
+                
                 if stem_dir not in input_dict:
                     input_dict[stem_dir] = []
                 input_dict[stem_dir].append(proj.src_file)
@@ -292,17 +313,8 @@ class Separate(BaseWrapper):
 
             # For each project, move its outputs to its own stems folder and update cache.
             for base, (proj, config) in project_map.items():
-                if os.path.basename(proj.src_file).startswith("TTS_"):
-                    stem_dir = os.path.join(proj.project_dir, "stems")
-                    base_name, ext = os.path.splitext(os.path.basename(proj.src_file))
-                    new_name = f"{base_name}(Vocals){ext}"
-                    new_path = os.path.join(stem_dir, new_name)
-                    project_stems = [new_path]
-                    proj.add_output("stems", project_stems)
-                    final_projects.append(proj)
-                    logger.info(f"Skipping separation for TTS project {proj.src_file}")
-                    continue
-
+                # TTS file handling has been moved to the first pass
+                
                 if base not in separation_results:
                     logger.warning(f"No separation results found for project {proj.src_file}")
                     continue
