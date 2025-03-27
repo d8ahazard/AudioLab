@@ -19,6 +19,7 @@ AudioLab is an open-source powerhouse for voice-cloning and audio separation, bu
 - **🎼 Music Generation:** Create music from scratch or remix existing tracks using YuE.
 - **🗣️ Zonos Text-to-Speech:** High-quality TTS with deep learning.
 - **📢 Text-to-Speech:** Clone voices and generate natural-sounding speech with Coqui TTS.
+- **🔊 Text-to-Audio:** Generate sound effects and ambient audio from text descriptions using Stable Audio.
 - **🎛️ Audio Separation:** Isolate vocals, drums, bass, and other components from a track.
 - **🎤 Vocal Isolation:** Distinguish lead vocals from background.
 - **🔇 Noise Removal:** Get rid of echo, crowd noise, and unwanted sounds.
@@ -41,13 +42,13 @@ Before you dive in, make sure you have:
 1. **Python 3.10** – *Because match statements exist, and fairseq is allergic to 3.11.*
 2. **CUDA 12.4** – *Other versions? Maybe fine. Maybe not. Do you like surprises?*
 3. **Virtual Environment** – *Strongly recommended to avoid dependency chaos.*
-4. **Windows Users** – *You’re in for an adventure! Zonos/Triton can be a pain. Make sure to install MSVC and add these paths to your environment variables:*
+4. **Windows Users** – *You're in for an adventure! Zonos/Triton can be a pain. Make sure to install MSVC and add these paths to your environment variables:*
    ```plaintext
    C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64
    C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx86\x86
    ```
 
-> **Note:** This project assumes basic Python knowledge. If you’ve never set up a virtual environment before... now’s the time to learn! 🚀
+> **Note:** This project assumes basic Python knowledge. If you've never set up a virtual environment before... now's the time to learn! 🚀
 
 ---
 
@@ -129,6 +130,25 @@ If dependencies refuse to install on Windows, try the following:
 
 ---
 
+## 💻 Key Features
+
+### Sound Forge: Text-to-Audio Generation
+
+Generate high-quality sound effects, ambient audio, and musical samples from text descriptions:
+
+- **🔊 Text Prompting:** Create sounds by describing them in natural language.
+- **⏱️ Variable Duration:** Generate audio up to 47 seconds long.
+- **🎛️ Full Control:** Adjust parameters like inference steps and guidance scale.
+- **🎭 Negative Prompts:** Specify what to avoid in your generated audio.
+- **🎲 Multiple Variations:** Generate different versions of the same prompt.
+
+Example prompts:
+- "A peaceful forest ambience with birds chirping and leaves rustling"
+- "An electronic beat with pulsing bass at 120 BPM"
+- "A sci-fi spaceship engine humming"
+
+---
+
 ## 🤝 Acknowledgements
 
 AudioLab is powered by some fantastic open-source projects:
@@ -141,6 +161,7 @@ AudioLab is powered by some fantastic open-source projects:
 - 🗣 [Coqui TTS](https://github.com/coqui-ai/TTS) – State-of-the-art TTS.
 - 🎼 [YuE](https://github.com/multimodal-art-projection/YuE) – Music generation.
 - 🏆 [Zonos](https://github.com/Zyphra/Zonos) – High-quality TTS.
+- 🔈 [Stable Audio](https://stability.ai/blog/stable-audio-open-1-0-free-text-to-audio-model) – Text-to-audio generation.
 
 ---
 

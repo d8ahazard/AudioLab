@@ -84,7 +84,7 @@ def render_tts():
                     elem_classes="hintitem", elem_id="tts_infer_speaker_wav", key="tts_infer_speaker_wav"
                 )
             with gr.Column():
-                gr.Markdown("### 🎶 Outputs")
+                gr.Markdown("### 🎮 Actions")
                 with gr.Row():
                     start_tts = gr.Button(
                         value="Start TTS",
@@ -96,6 +96,8 @@ def render_tts():
                         variant="secondary",
                         elem_classes="hintitem", elem_id="tts_infer_send_to_process", key="tts_infer_send_to_process"
                     )
+                
+                gr.Markdown("### 🎶 Outputs")
                 OUTPUT_AUDIO = gr.Audio(
                     label="Output Audio",
                     elem_classes="hintitem", elem_id="tts_infer_output_audio", key="tts_infer_output_audio",

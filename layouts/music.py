@@ -15,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 SEND_TO_PROCESS_BUTTON: gr.Button = None
 OUTPUT_MIX: gr.Audio = None
+OUTPUT_FILES = []
 arg_handler = ArgHandler()
 # Language mapping for selecting the correct Stage 1 model
 STAGE1_MODELS = {
@@ -53,8 +54,33 @@ def fetch_and_extxract_models():
         os.remove(model_dl)
 
 
+def download_output_files(output_files):
+    """Create a zip file of all output files and return the path to download."""
+    if not output_files or len(output_files) == 0:
+        return None
+    
+    # Create a zip file with all the output files
+    output_dir = os.path.dirname(output_files[0])
+    zip_filename = os.path.join(output_dir, "music_outputs.zip")
+    
+    with zipfile.ZipFile(zip_filename, 'w') as zipf:
+        for file in output_files:
+            if os.path.exists(file):
+                # Add file to zip with just the filename, not the full path
+                zipf.write(file, os.path.basename(file))
+    
+    return zip_filename
+
+
+def update_output_preview(selected_file):
+    """Update the output preview when a file is selected."""
+    if not selected_file:
+        return gr.update(value=None)
+    return gr.update(value=selected_file)
+
+
 def render(arg_handler: ArgHandler):
-    global SEND_TO_PROCESS_BUTTON, OUTPUT_MIX
+    global SEND_TO_PROCESS_BUTTON, OUTPUT_MIX, OUTPUT_FILES
     with gr.Blocks() as app:
         gr.Markdown("## YuE Music Generation")
 
@@ -142,7 +168,7 @@ def render(arg_handler: ArgHandler):
 
             # Right Column - Start & Outputs
             with gr.Column():
-                gr.Markdown("### 🎶 Outputs")
+                gr.Markdown("### 🎮 Actions")
                 with gr.Row():
                     start_button = gr.Button(
                         "Generate Music",
@@ -150,6 +176,14 @@ def render(arg_handler: ArgHandler):
                         elem_id="yue_start_button",
                         key="yue_start_button",
                         variant="primary"
+                    )
+                    download_button = gr.Button(
+                        value="💾 Download All",
+                        variant="secondary",
+                        visible=False,
+                        elem_classes="hintitem", 
+                        elem_id="yue_download_button", 
+                        key="yue_download_button"
                     )
                     SEND_TO_PROCESS_BUTTON = gr.Button(
                         value="Send to Process",
@@ -162,24 +196,32 @@ def render(arg_handler: ArgHandler):
                     max_lines=10,
                     elem_classes="hintitem", elem_id="yue_output_info", key="yue_output_info"
                 )
+                
+                gr.Markdown("### 🎶 Outputs")
+                output_selector = gr.Dropdown(
+                    label="Select Output File",
+                    choices=["Final Mix", "Vocals", "Instrumental"],
+                    value="Final Mix",
+                    visible=False,
+                    elem_classes="hintitem", 
+                    elem_id="yue_output_selector", 
+                    key="yue_output_selector"
+                )
                 OUTPUT_MIX = gr.Audio(
-                    label="Final Mix",
+                    label="Audio Preview",
                     elem_classes="hintitem", elem_id="yue_output_mix", key="yue_output_mix",
                     type="filepath",
                     sources=None,
                     interactive=False
                 )
-                output_vocal = gr.Audio(
-                    label="Vocal Output",
-                    elem_classes="hintitem", elem_id="yue_output_vocal", key="yue_output_vocal",
-                    sources=None,
-                    interactive=False
-                )
-                output_inst = gr.Audio(
-                    label="Instrumental Output",
-                    elem_classes="hintitem", elem_id="yue_output_inst", key="yue_output_inst",
-                    sources=None,
-                    interactive=False
+                output_list = gr.File(
+                    label="All Generated Files",
+                    file_count="multiple",
+                    visible=False,
+                    interactive=False,
+                    elem_classes="hintitem", 
+                    elem_id="yue_output_list", 
+                    key="yue_output_list"
                 )
 
                 # Function to dynamically select the Stage 1 model
@@ -196,13 +238,14 @@ def render(arg_handler: ArgHandler):
                         progress=gr.Progress()
                 ):
                     try:
+                        global OUTPUT_FILES
                         # Calculate total steps: model setup + stage1 segments + stage2 processing + final processing
                         total_steps = 3 + run_n_segments + 2 + 2
                         current_step = 0
 
                         # Initial validation
                         if not any(char in lyrics_txt for char in ['[', ']']):
-                            return [gr.update()] * 3 + [gr.update(value="Error: No [verse] or [chorus] labels found in lyrics")]
+                            return [gr.update()] * 4 + [gr.update(value="Error: No [verse] or [chorus] labels found in lyrics")]
 
                         # Model setup
                         progress(current_step/total_steps, "Setting up models...")
@@ -239,7 +282,7 @@ def render(arg_handler: ArgHandler):
                         
                         if not output_paths:
                             logger.error("No output paths returned from generate_music")
-                            return [gr.update()] * 3 + [gr.update(value="Error: No output paths returned from generate_music")]
+                            return [gr.update()] * 5 + [gr.update(value="Error: No output paths returned from generate_music")]
                         
                         # Validate outputs
                         current_step += 1
@@ -251,20 +294,20 @@ def render(arg_handler: ArgHandler):
                         # Check if at least final output is available
                         if "final" not in output_paths and len(output_paths) == 0:
                             logger.error("No output paths returned")
-                            return [gr.update()] * 3 + [gr.update(value="Error: No output files were generated")]
+                            return [gr.update()] * 5 + [gr.update(value="Error: No output files were generated")]
                         
                         # Make sure each path in output_paths exists
-                        valid_outputs = output_paths
-                        # for key, path in output_paths.items():
-                        #     if os.path.exists(path):
-                        #         valid_outputs[key] = path
-                        #     else:
-                        #         logger.warning(f"Output file for '{key}' not found at path: {path}")
+                        valid_outputs = {}
+                        for key, path in output_paths.items():
+                            if os.path.exists(path):
+                                valid_outputs[key] = path
+                            else:
+                                logger.warning(f"Output file for '{key}' not found at path: {path}")
                         
-                        # # If we have no valid outputs, return an error
-                        # if not valid_outputs:
-                        #     logger.error("No valid output files found")
-                        #     return [gr.update()] * 3 + [gr.update(value="Error: No valid output files found")]
+                        # If we have no valid outputs, return an error
+                        if not valid_outputs:
+                            logger.error("No valid output files found")
+                            return [gr.update()] * 5 + [gr.update(value="Error: No valid output files were generated")]
                         
                         # Prepare outputs, ensuring final exists
                         if "final" not in valid_outputs and len(valid_outputs) > 0:
@@ -273,22 +316,55 @@ def render(arg_handler: ArgHandler):
                             valid_outputs["final"] = valid_outputs[first_key]
                         
                         # Create defaults for missing outputs
-                        final_output = valid_outputs.get("final", gr.update())
-                        vocal_output = valid_outputs.get("vocal", valid_outputs.get("final", gr.update()))
-                        instrumental_output = valid_outputs.get("instrumental", valid_outputs.get("final", gr.update()))
+                        final_output = valid_outputs.get("final", "")
+                        vocal_output = valid_outputs.get("vocal", "")
+                        instrumental_output = valid_outputs.get("instrumental", "")
+                        
+                        # Store paths in proper display format
+                        display_outputs = []
+                        output_map = {}
+                        
+                        if final_output:
+                            display_outputs.append("Final Mix")
+                            output_map["Final Mix"] = final_output
+                        
+                        if vocal_output:
+                            display_outputs.append("Vocals")
+                            output_map["Vocals"] = vocal_output
+                        
+                        if instrumental_output:
+                            display_outputs.append("Instrumental")
+                            output_map["Instrumental"] = instrumental_output
+                        
+                        # Store all valid output paths for download
+                        OUTPUT_FILES = list(valid_outputs.values())
                         
                         # Success case
                         progress(1.0, "Generation complete!")
+                        
+                        # Return updated components
                         return [
-                            gr.update(value=final_output),
-                            gr.update(value=vocal_output),
-                            gr.update(value=instrumental_output),
-                            gr.update(value="Generation complete!")
+                            gr.update(value=final_output),  # OUTPUT_MIX
+                            gr.update(choices=display_outputs, value=display_outputs[0] if display_outputs else None, visible=True),  # output_selector
+                            gr.update(value=OUTPUT_FILES, visible=len(OUTPUT_FILES) > 0),  # output_list
+                            gr.update(visible=len(OUTPUT_FILES) > 0),  # download_button
+                            gr.update(value="Generation complete!"),  # output_info
+                            output_map  # hidden output map
                         ]
                     except Exception as e:
                         error_msg = str(e)
                         logger.exception("Error in music generation")
-                        return [gr.update()] * 3 + [gr.update(value=f"Error during music generation: {error_msg}")]
+                        return [
+                            gr.update(),  # OUTPUT_MIX
+                            gr.update(visible=False),  # output_selector
+                            gr.update(visible=False),  # output_list
+                            gr.update(visible=False),  # download_button
+                            gr.update(value=f"Error during music generation: {error_msg}"),  # output_info
+                            {}  # empty output map
+                        ]
+                
+                # Hidden component to store output_map
+                output_map = gr.State({})
 
                 # Start button click event
                 start_button.click(
@@ -299,7 +375,21 @@ def render(arg_handler: ArgHandler):
                         max_new_tokens, run_n_segments, stage2_batch_size,
                         keep_intermediate, disable_offload_model, cuda_idx, rescale, seed
                     ],
-                    outputs=[OUTPUT_MIX, output_vocal, output_inst, output_info]
+                    outputs=[OUTPUT_MIX, output_selector, output_list, download_button, output_info, output_map]
+                )
+                
+                # Output selector change event
+                output_selector.change(
+                    fn=lambda selection, output_map: gr.update(value=output_map.get(selection, None)),
+                    inputs=[output_selector, output_map],
+                    outputs=[OUTPUT_MIX]
+                )
+                
+                # Download button click event
+                download_button.click(
+                    fn=download_output_files,
+                    inputs=[output_list],
+                    outputs=[gr.File(label="Download")]
                 )
 
     return app

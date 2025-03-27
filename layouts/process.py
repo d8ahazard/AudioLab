@@ -314,6 +314,8 @@ def render(arg_handler: ArgHandler):
                     input_url_button = gr.Button(value='Load URL(s)', visible=True, interactive=True)
         with gr.Column():
             gr.Markdown("### 🎶 Outputs")
+            
+            gr.Markdown("### 🎮 Actions")
             with gr.Row():
                 start_processing = gr.Button(value='Start Processing', variant='primary')
                 cancel_processing = gr.Button(value='Cancel Processing', variant='secondary', visible=False)

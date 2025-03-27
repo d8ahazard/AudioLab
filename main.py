@@ -38,6 +38,8 @@ from layouts.process import render as render_process, register_descriptions as p
 from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.zonos import render_zonos, register_descriptions as zonos_register_descriptions, listen as zonos_listen
+from layouts.stable_audio import render as render_stable_audio, register_descriptions as stable_audio_register_descriptions, \
+    listen as stable_audio_listen
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -81,6 +83,7 @@ if __name__ == '__main__':
         tts_register_descriptions(arg_handler)
         rvc_register_descriptions(arg_handler)
         zonos_register_descriptions(arg_handler)
+        stable_audio_register_descriptions(arg_handler)
 
         with open(project_root / 'css' / 'ui.css', 'r') as css_file:
             css = css_file.read()
@@ -104,11 +107,14 @@ if __name__ == '__main__':
                     render_tts()
                 with gr.Tab(label='Zonos', id="zonos"):
                     render_zonos()
+                with gr.Tab(label='Sound Forge', id="soundforge"):
+                    render_stable_audio(arg_handler)
 
             tts_listen()
             music_listen()
             zonos_listen()
             process_listen()
+            stable_audio_listen()
 
         # Launch both FastAPI and Gradio
         ui.queue()  # Enable queuing for better handling of concurrent requests

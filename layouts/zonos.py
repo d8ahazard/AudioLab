@@ -306,7 +306,7 @@ def render_zonos():
                     elem_classes="hintitem", elem_id="zonos_infer_speaker_wav", key="zonos_infer_speaker_wav"
                 )
             with gr.Column():
-                gr.Markdown("### 🎶 Outputs")
+                gr.Markdown("### 🎮 Actions")
                 with gr.Row():
                     start_tts = gr.Button(
                         value="Start Zonos",
@@ -319,6 +319,8 @@ def render_zonos():
                         elem_classes="hintitem", elem_id="zonos_infer_send_to_process",
                         key="zonos_infer_send_to_process"
                     )
+                
+                gr.Markdown("### 🎶 Outputs")
                 OUTPUT_AUDIO = gr.Audio(
                     label="Output Audio",
                     elem_classes="hintitem", elem_id="zonos_infer_output_audio", key="zonos_infer_output_audio",

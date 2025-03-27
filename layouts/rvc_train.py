@@ -977,25 +977,33 @@ def render():
                     outputs=[pitch_extraction_method, gpus_rmvpe, pretrained_generator, pretrained_discriminator],
                 )
             with gr.Column():
-                gr.Markdown("### 🎤 Input")
+                gr.Markdown("### 🎤 Inputs")
                 input_files = gr.File(
-                    label="Input Files",
-                    type="filepath",
-                    file_types=["audio"],
-                    file_count="multiple"
+                    label="Audio Files",
+                    file_count="multiple",
+                    file_types=["audio", "video"],
+                    elem_classes="hintitem", elem_id="rvc_input_files"
                 )
                 with gr.Row():
                     with gr.Column(scale=2):
-                        input_url = gr.Textbox(label='Input URL', placeholder='Enter URL', visible=True,
-                                               interactive=True, key="process_input_url")
+                        input_url = gr.Textbox(
+                            label="Audio URLs",
+                            placeholder="Enter URLs separated by a new line",
+                            elem_classes="hintitem", elem_id="rvc_input_url"
+                        )
                     with gr.Column():
-                        input_url_button = gr.Button(value='Load', visible=True, interactive=True)
+                        input_url_button = gr.Button(
+                            value='Load URLs',
+                            variant='secondary',
+                            elem_classes="hintitem", elem_id="rvc_input_url_button"
+                        )
+            
             with gr.Column():
-                gr.Markdown("### 🎶 Outputs")
+                gr.Markdown("### 🎮 Actions")
                 with gr.Row():
                     start_train = gr.Button(
-                        "Train",
-                        elem_classes="hintitem", elem_id="rvc_start_train", variant="primary"
+                        "Start Training",
+                        elem_classes="hintitem", elem_id="rvc_start_train", variant="primary",
                     )
                     resume_train = gr.Button(
                         "Resume",
@@ -1012,6 +1020,8 @@ def render():
                         visible=False,
                         elem_classes="hintitem", elem_id="rvc_cancel_train"
                     )
+                
+                gr.Markdown("### 🎶 Outputs")
                 info3 = gr.Textbox(
                     label="Output Info",
                     value="",
