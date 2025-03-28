@@ -8,8 +8,7 @@ curl -L -o espeak-ng.msi https://github.com/espeak-ng/espeak-ng/releases/downloa
 
 REM Install espeak-ng silently
 msiexec /i espeak-ng.msi /quiet /norestart || (
-    echo Error installing espeak-ng. Exiting.
-    exit /b 1
+    echo Error installing espeak-ng.
 )
 
 REM Add "C:\Program Files\eSpeak NG\" to the *system* PATH
@@ -51,7 +50,8 @@ python -m pip install https://github.com/bdashore3/flash-attention/releases/down
 
 REM Install torchlibrosa and librosa
 echo Installing torchlibrosa and librosa...
-python -m pip install torchlibrosa>=0.0.9 librosa>=0.10.2.post1 || (
+REM Fix commands to prevent string formatting issues
+python -m pip install torchlibrosa^>=0.0.9 librosa^>=0.10.2.post1 || (
     echo Error installing torchlibrosa or librosa.
     exit /b 1
 )
@@ -90,14 +90,46 @@ git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git &&
     exit /b 1
 )
 
+REM Install Orpheus TTS dependencies by cloning the repository
+echo Installing Orpheus TTS...
+SET ORPHEUS_DIR=models\orpheus\Orpheus-TTS
+IF NOT EXIST models\orpheus (
+    mkdir models\orpheus
+)
+IF EXIST %ORPHEUS_DIR% (
+    echo Orpheus repository already exists, updating...
+    CD %ORPHEUS_DIR%
+    git pull
+    CD ..\..\..
+) ELSE (
+    echo Cloning Orpheus repository...
+    git clone https://github.com/canopyai/Orpheus-TTS.git %ORPHEUS_DIR% || (
+        echo Error cloning Orpheus-TTS repository.
+        exit /b 1
+    )
+)
+
+REM Install orpheus-speech from the cloned repository
+CD %ORPHEUS_DIR%
+echo Installing orpheus-speech package...
+pip install orpheus-speech || (
+    echo Error installing orpheus-speech package.
+    CD ..\..\..
+    exit /b 1
+)
+
+CD ..\..\..
+
+
 pip install TTS
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
-pip install omegaconf==2.2.3
+pip install torch^=^=2.4.0 torchvision^=^=0.19.0 torchaudio^=^=2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
+pip install omegaconf^=^=2.2.3
 pip install fairseq
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl
 pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post9/triton-3.2.0-cp310-cp310-win_amd64.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl
+
 
 echo All dependencies installed successfully!
 pause

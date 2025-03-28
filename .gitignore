@@ -7,3 +7,4 @@ Python-Wrapper-for-World-Vocoder/
 .idea/
 .caches/
 *venv*
+espeak-ng.msi

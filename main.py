@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+from layouts.orpheus import render_orpheus, register_descriptions as orpheus_register_descriptions, listen as orpheus_listen
+
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s',level=logging.DEBUG)
 
@@ -82,6 +84,8 @@ if __name__ == '__main__':
         tts_register_descriptions(arg_handler)
         rvc_register_descriptions(arg_handler)
         stable_audio_register_descriptions(arg_handler)
+        orpheus_register_descriptions(arg_handler)
+
 
         with open(project_root / 'css' / 'ui.css', 'r') as css_file:
             css = css_file.read()
@@ -93,7 +97,7 @@ if __name__ == '__main__':
             js = f'<script type="text/javascript">{js}</script>'
             js += f"\n{css}"
 
-        with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue") as ui:
+        with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue", analytics_enabled=False) as ui:
             with gr.Tabs(selected="process"):
                 with gr.Tab(label='Process', id="process"):
                     render_process(arg_handler)
@@ -105,18 +109,26 @@ if __name__ == '__main__':
                     render_tts()
                 with gr.Tab(label='Sound Forge', id="soundforge"):
                     render_stable_audio(arg_handler)
+                with gr.Tab(label='Orpheus', id="orpheus"):
+                    render_orpheus(arg_handler)
 
             tts_listen()
             music_listen()
             process_listen()
             stable_audio_listen()
+            orpheus_listen()
 
         # Launch both FastAPI and Gradio
         ui.queue()  # Enable queuing for better handling of concurrent requests
 
+        # Disable specific features to work around schema validation error
+        app_config = {
+            "show_api": False,
+            "favicon_path": os.path.join(project_root, 'res', 'favicon.ico')
+        }
+
         # Mount Gradio app into FastAPI at the root path
-        favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
-        app = gr.mount_gradio_app(app, ui, path="/", favicon_path=favicon_path)
+        app = gr.mount_gradio_app(app, ui, path="/", **app_config)
 
         # Start the combined server
         logger.info(f"Server running on http://{server_name}:{server_port}")

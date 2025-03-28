@@ -66,4 +66,41 @@ pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
 pip uninstall onnxruntime -y
 pip uninstall onnxruntime-gpu -y
 pip install onnxruntime-gpu --extra-index-url "${CUDA_URL}"
+
+# Install Orpheus TTS dependencies by cloning the repository
+echo "Installing Orpheus TTS..."
+ORPHEUS_DIR="models/orpheus/Orpheus-TTS"
+mkdir -p models/orpheus
+
+if [ -d "$ORPHEUS_DIR" ]; then
+    echo "Orpheus repository already exists, updating..."
+    cd "$ORPHEUS_DIR" || exit
+    git pull
+    cd ../../..
+else
+    echo "Cloning Orpheus repository..."
+    git clone https://github.com/canopyai/Orpheus-TTS.git "$ORPHEUS_DIR" || {
+        echo "Error cloning Orpheus-TTS repository." >&2
+        exit 1
+    }
+fi
+
+# Install orpheus-speech from the cloned repository
+cd "$ORPHEUS_DIR" || exit
+echo "Installing orpheus-speech package..."
+pip install orpheus-speech || {
+    echo "Error installing orpheus-speech package." >&2
+    cd ../../..
+    exit 1
+}
+
+# Fix vllm version
+echo "Installing specific vllm version to avoid bugs..."
+pip install vllm==0.7.3 || {
+    echo "Error installing specific vllm version." >&2
+    cd ../../..
+    exit 1
+}
+cd ../../..
+
 echo "All dependencies installed successfully!"

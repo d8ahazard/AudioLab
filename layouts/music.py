@@ -81,7 +81,7 @@ def update_output_preview(selected_file):
 
 def render(arg_handler: ArgHandler):
     global SEND_TO_PROCESS_BUTTON, OUTPUT_MIX, OUTPUT_FILES
-    with gr.Blocks() as app:
+    with gr.Blocks() as music:
         gr.Markdown("# 🎵 YuE Music Generation")
         gr.Markdown("Create complete music tracks with vocals and instrumentals from text descriptions. Generate original songs using lyrics, genre tags, and optional audio references.")
 
@@ -393,7 +393,7 @@ def render(arg_handler: ArgHandler):
                     outputs=[gr.File(label="Download")]
                 )
 
-    return app
+    return music
 
 
 def listen():
