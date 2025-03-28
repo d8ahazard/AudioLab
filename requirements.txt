@@ -5,7 +5,7 @@ cog
 demucs>=4.0.1
 descript-audiotools>=0.7.2
 descript-audio-codec
-diffusers>=0.38.0
+diffusers>=0.32.2
 einops>=0.8.0
 ffmpeg
 ffmpeg-python
