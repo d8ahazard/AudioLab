@@ -209,7 +209,7 @@ class OrpheusFinetune:
         return transcribed_dataset_dir
     
     def prepare_training_config(self, dataset_dir: str, speaker_name: str, 
-                              base_model: str = "canopylabs/orpheus-tts-0.1-pretrained",
+                              base_model: str = "unsloth/orpheus-3b-0.1-ft",
                               training_args: Dict = None) -> str:
         """
         Prepare configuration for fine-tuning.

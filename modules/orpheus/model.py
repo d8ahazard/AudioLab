@@ -5,6 +5,7 @@ Orpheus TTS Model handler for AudioLab.
 import os
 import logging
 import time
+import traceback
 import numpy as np
 import torch
 import wave
@@ -22,7 +23,7 @@ class OrpheusModel:
     AVAILABLE_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
     AVAILABLE_EMOTIONS = ["", "happy", "sad", "angry", "scared", "disgusted", "surprised"]
     
-    def __init__(self, model_name: str = "canopylabs/orpheus-tts-0.1-finetune-prod"):
+    def __init__(self, model_name: str = "unsloth/orpheus-3b-0.1-ft"):
         """
         Initialize the Orpheus TTS model.
         
@@ -76,6 +77,7 @@ class OrpheusModel:
             logger.info("Model loaded successfully")
             return self.model
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Error loading model: {e}")
             raise
     

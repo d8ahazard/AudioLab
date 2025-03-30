@@ -71,10 +71,8 @@ python -m pip install torchlibrosa^>=0.0.9 librosa^>=0.10.2.post1 || (
 
 REM Install orpheus-speech
 echo Installing orpheus-speech...
-python -m pip install orpheus-speech || (
-    echo Error installing orpheus-speech.
-    exit /b 1
-)
+pip install git+https://github.com/Deathdadev/Orpheus-Speech-PyPi --extra-index-url https://download.pytorch.org/whl/cu124
+pip install accelerate
 
 REM Install remaining dependencies from requirements.txt
 IF EXIST requirements.txt (

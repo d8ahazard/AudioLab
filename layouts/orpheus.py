@@ -33,7 +33,7 @@ logger = logging.getLogger("ADLB.Orpheus")
 AVAILABLE_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
 AVAILABLE_EMOTIONS = ["None", "happy", "sad", "angry", "scared", "disgusted", "surprised"]
 
-def load_model(model_name="canopylabs/orpheus-tts-0.1-finetune-prod"):
+def load_model(model_name="unsloth/orpheus-3b-0.1-ft"):
     """
     Load the Orpheus TTS model.
     
