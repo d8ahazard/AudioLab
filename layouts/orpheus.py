@@ -7,11 +7,19 @@ import logging
 import torch
 import gradio as gr
 from pathlib import Path
+import tempfile
+import time
+from typing import Optional, List
+import traceback
+import shutil
 
 from handlers.args import ArgHandler
 from handlers.config import output_path, model_path
 from modules.orpheus.model import OrpheusModel
 from modules.orpheus.finetune import OrpheusFinetune
+
+from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -572,3 +580,232 @@ def register_descriptions(arg_handler: ArgHandler):
     
     for elem_id, description in descriptions.items():
         arg_handler.register_description("orpheus", elem_id, description)
+
+def register_api_endpoints(api):
+    """
+    Register API endpoints for Orpheus TTS
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/orpheus/generate")
+    async def api_generate_speech(
+        text: str = Form(...),
+        voice: str = Form("tara"),
+        emotion: str = Form("None"),
+        temperature: float = Form(0.7),
+        top_p: float = Form(0.9),
+        repetition_penalty: float = Form(1.0)
+    ):
+        """
+        Generate speech using the Orpheus TTS model
+        
+        Args:
+            text: Text to convert to speech
+            voice: Voice to use
+            emotion: Emotion to apply
+            temperature: Sampling temperature
+            top_p: Top-p sampling parameter
+            repetition_penalty: Repetition penalty parameter
+            
+        Returns:
+            Generated audio file
+        """
+        try:
+            # Validate input
+            if not text or text.strip() == "":
+                raise HTTPException(status_code=400, detail="Text cannot be empty")
+                
+            # Check if voice is valid
+            if voice not in AVAILABLE_VOICES:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid voice: {voice}. Available voices: {', '.join(AVAILABLE_VOICES)}"
+                )
+                
+            # Check if emotion is valid
+            if emotion != "None" and emotion not in AVAILABLE_EMOTIONS:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid emotion: {emotion}. Available emotions: {', '.join(['None'] + AVAILABLE_EMOTIONS)}"
+                )
+                
+            # Generate speech
+            output_file, message = generate_speech(
+                text=text,
+                voice=voice,
+                emotion=emotion,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty
+            )
+            
+            if not output_file or not os.path.exists(output_file):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to generate speech: {message}"
+                )
+                
+            return FileResponse(
+                output_file,
+                media_type="audio/wav",
+                filename=os.path.basename(output_file)
+            )
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error in Orpheus speech generation:")
+            raise HTTPException(status_code=500, detail=f"Speech generation error: {str(e)}")
+            
+    @api.post("/api/v1/orpheus/finetune")
+    async def api_finetune_model(
+        background_tasks: BackgroundTasks,
+        speaker_name: str = Form(...),
+        base_model: str = Form("canopylabs/orpheus-tts-0.1-finetune-prod"),
+        learning_rate: float = Form(1e-5),
+        epochs: int = Form(10),
+        batch_size: int = Form(16),
+        audio_files: List[UploadFile] = File(...)
+    ):
+        """
+        Finetune the Orpheus TTS model on a custom voice
+        
+        Args:
+            background_tasks: FastAPI background tasks
+            speaker_name: Name for the new voice
+            base_model: Base model to finetune from
+            learning_rate: Learning rate for training
+            epochs: Number of training epochs
+            batch_size: Training batch size
+            audio_files: Audio files for the custom voice
+            
+        Returns:
+            Status information and job ID
+        """
+        try:
+            # Validate input
+            if not speaker_name or speaker_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Speaker name cannot be empty")
+                
+            if not audio_files or len(audio_files) == 0:
+                raise HTTPException(status_code=400, detail="No audio files provided")
+                
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="orpheus_finetune_")
+            dataset_dir = os.path.join(temp_dir, "dataset")
+            os.makedirs(dataset_dir, exist_ok=True)
+            
+            # Save uploaded audio files
+            for audio_file in audio_files:
+                file_path = os.path.join(dataset_dir, audio_file.filename)
+                with open(file_path, "wb") as f:
+                    content = await audio_file.read()
+                    f.write(content)
+            
+            # Start finetuning in the background
+            job_id = f"finetune_{int(time.time())}"
+            background_tasks.add_task(
+                run_finetune_job,
+                job_id=job_id,
+                dataset_dir=dataset_dir,
+                speaker_name=speaker_name,
+                base_model=base_model,
+                learning_rate=learning_rate,
+                epochs=epochs,
+                batch_size=batch_size
+            )
+            
+            return {
+                "status": "started",
+                "job_id": job_id,
+                "message": f"Finetuning job started for speaker '{speaker_name}' with {len(audio_files)} audio files"
+            }
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error starting Orpheus finetuning:")
+            raise HTTPException(status_code=500, detail=f"Finetuning error: {str(e)}")
+            
+    @api.get("/api/v1/orpheus/voices")
+    async def api_list_voices():
+        """
+        List available Orpheus voices
+        
+        Returns:
+            List of available voices and emotions
+        """
+        try:
+            return {
+                "voices": AVAILABLE_VOICES,
+                "emotions": AVAILABLE_EMOTIONS
+            }
+            
+        except Exception as e:
+            logger.exception("Error listing Orpheus voices:")
+            raise HTTPException(status_code=500, detail=f"Error listing voices: {str(e)}")
+            
+def run_finetune_job(job_id, dataset_dir, speaker_name, base_model, learning_rate, epochs, batch_size):
+    """Run a finetuning job in the background"""
+    try:
+        # Prepare the dataset
+        prepare_dataset(dataset_dir, speaker_name)
+        
+        # Transcribe the dataset
+        transcribe_dataset(dataset_dir)
+        
+        # Start the finetuning
+        start_finetune(
+            dataset_dir=dataset_dir,
+            speaker_name=speaker_name,
+            base_model=base_model,
+            learning_rate=learning_rate,
+            epochs=epochs,
+            batch_size=batch_size
+        )
+        
+        # Record the job completion
+        job_status = {
+            "status": "completed",
+            "job_id": job_id,
+            "speaker_name": speaker_name,
+            "completion_time": time.time()
+        }
+        
+        # Save job status to a file
+        status_dir = os.path.join(output_path, "orpheus", "jobs")
+        os.makedirs(status_dir, exist_ok=True)
+        with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+            import json
+            json.dump(job_status, f)
+            
+    except Exception as e:
+        logger.error(f"Error in finetuning job {job_id}: {e}")
+        traceback.print_exc()
+        
+        # Record job failure
+        job_status = {
+            "status": "failed",
+            "job_id": job_id,
+            "speaker_name": speaker_name,
+            "error": str(e),
+            "completion_time": time.time()
+        }
+        
+        # Save job status to a file
+        status_dir = os.path.join(output_path, "orpheus", "jobs")
+        os.makedirs(status_dir, exist_ok=True)
+        with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+            import json
+            json.dump(job_status, f)
+    
+    finally:
+        # Clean up the temporary directory
+        if os.path.exists(dataset_dir):
+            try:
+                shutil.rmtree(dataset_dir)
+            except Exception as e:
+                logger.error(f"Error cleaning up dataset directory: {e}")

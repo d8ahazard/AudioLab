@@ -1,10 +1,18 @@
 import os
 import logging
 import torch
+import json
+import re
+import tempfile
+import time
+from pathlib import Path
+from typing import List, Optional
 
 import gradio as gr
 from torch import Tensor
 from huggingface_hub import hf_hub_download
+from fastapi import UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse
 
 from handlers.args import ArgHandler
 from handlers.tts import TTSHandler
@@ -480,6 +488,131 @@ def listen():
     process_inputs = arg_handler.get_element("main", "process_inputs")
     if process_inputs:
         SEND_TO_PROCESS_BUTTON.click(fn=send_to_process, inputs=[OUTPUT_AUDIO, process_inputs], outputs=process_inputs)
+
+def register_api_endpoints(api):
+    """
+    Register API endpoints for text-to-speech functionality
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/tts/generate")
+    async def api_generate_tts(
+        text: str = Form(...),
+        model: str = Form(...),
+        language: str = Form("en"),
+        emotion: str = Form("Normal"),
+        speaker: str = Form(""),
+        speed: float = Form(1.0),
+        speaker_reference: Optional[UploadFile] = File(None)
+    ):
+        """
+        Generate speech from text using selected TTS model
+        
+        Args:
+            text: Text content to convert to speech
+            model: TTS model to use (use "Zonos" for emotional TTS)
+            language: Language code for the speech
+            emotion: Emotion for Zonos TTS
+            speaker: Speaker ID for models with multiple speakers
+            speed: Speech speed factor (1.0 is normal)
+            speaker_reference: Optional reference audio for voice cloning
+            
+        Returns:
+            Path to generated audio file
+        """
+        try:
+            # Check if text is provided
+            if not text or text.strip() == "":
+                raise HTTPException(status_code=400, detail="Please enter some text to speak")
+            
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_dir_path = Path(temp_dir)
+                
+                # Save speaker reference if provided
+                speaker_sample_path = None
+                if speaker_reference:
+                    speaker_file_path = temp_dir_path / speaker_reference.filename
+                    with speaker_file_path.open("wb") as f:
+                        content = await speaker_reference.read()
+                        f.write(content)
+                    speaker_sample_path = str(speaker_file_path)
+                
+                # Check if Zonos is requested
+                if model == "Zonos":
+                    # For Zonos, we need a speaker reference sample
+                    if not speaker_sample_path:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail="Zonos requires a speaker audio reference file"
+                        )
+                    
+                    # Generate using Zonos
+                    output_file = run_zonos_tts(language, emotion, text, speaker_sample_path, speed)
+                    
+                    # Check if output is an error message
+                    if isinstance(output_file, str) and output_file.startswith("Error:"):
+                        raise HTTPException(status_code=500, detail=output_file)
+                    
+                else:
+                    # Generate using regular TTS models
+                    try:
+                        tts_handler = TTSHandler(language=language)
+                        output_file = tts_handler.handle(
+                            text=text, 
+                            model_name=model, 
+                            speaker_wav=speaker_sample_path, 
+                            selected_speaker=speaker, 
+                            speed=speed
+                        )
+                    except Exception as e:
+                        logger.exception(f"Error in regular TTS generation with model {model}:")
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"Could not generate speech with {model}: {str(e)}"
+                        )
+                
+                # Return the generated audio file
+                if not os.path.exists(output_file):
+                    raise HTTPException(status_code=500, detail="Failed to generate output file")
+                
+                return FileResponse(
+                    output_file,
+                    media_type="audio/wav",
+                    filename=os.path.basename(output_file)
+                )
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error in TTS generation:")
+            raise HTTPException(status_code=500, detail=f"TTS generation error: {str(e)}")
+            
+    @api.get("/api/v1/tts/models")
+    async def api_list_tts_models():
+        """
+        List available TTS models
+        
+        Returns:
+            Dictionary of available TTS models grouped by language
+        """
+        try:
+            tts_handler = TTSHandler()
+            available_models = {"regular": {}, "zonos": {"available": True}}
+            
+            # Get regular TTS models
+            for language_code in tts_handler.available_languages():
+                tts_handler.language = language_code
+                models = tts_handler.available_models()
+                available_models["regular"][language_code] = models
+                
+            return available_models
+            
+        except Exception as e:
+            logger.exception("Error listing TTS models:")
+            raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
 
 def register_descriptions(arg_handler: ArgHandler):
     descriptions = {

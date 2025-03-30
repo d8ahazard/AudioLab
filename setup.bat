@@ -1,28 +1,42 @@
 @echo off
-REM Download the espeak-ng installer
-echo Installing espeak-ng...
-curl -L -o espeak-ng.msi https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi || (
-    echo Error downloading espeak-ng.msi. Exiting.
-    exit /b 1
-)
 
-REM Install espeak-ng silently
-msiexec /i espeak-ng.msi /quiet /norestart || (
-    echo Error installing espeak-ng.
-)
+REM Check for --fix flag
+SET FIX_MODE=false
+IF "%1"=="--fix" SET FIX_MODE=true
 
-REM Add "C:\Program Files\eSpeak NG\" to the *system* PATH
-REM (Requires running as Administrator; won't take effect in the current session)
-setx /M PATH "%PATH%;C:\Program Files\eSpeak NG\"
+REM Use absolute simplest CUDA detection with fallback
+echo Detecting CUDA version...
 
-echo Installation complete. You may need to restart your terminal or log out and back in for the PATH change to be recognized.
+REM Default to CUDA 12.1 as fallback
+SET CUDA_VERSION=12.1
+SET CUDA_URL=https://download.pytorch.org/whl/cu121
 
-REM Auto-detect CUDA driver version
-FOR /F "tokens=1-2 delims=." %%A IN ('nvidia-smi --query-gpu=driver_version --format=csv,noheader') DO (
-    SET CUDA_VERSION=%%A.%%B
-)
+for /f "tokens=3 delims=:" %%a in ('nvidia-smi ^| findstr "CUDA Version"') do @for /f "tokens=1" %%b in ("%%a") do @set CUDA_VERSION=%%b
+
+
+
+echo Using CUDA version: %CUDA_VERSION%
+REM If cuda version is 12.8, use 12.6
+if %CUDA_VERSION%==12.8 set CUDA_VERSION=12.4
 SET CUDA_URL=https://download.pytorch.org/whl/cu%CUDA_VERSION:.=%
+echo PyTorch URL: %CUDA_URL%
+pause
 
+REM Create and activate venv
+IF NOT EXIST venv (
+    python -m venv venv
+)
+
+:activate_venv
+call venv\Scripts\activate.bat
+
+REM Branch based on fix mode
+IF "%FIX_MODE%"=="true" (
+    echo Skipping to fix section...
+    GOTO :fix_section
+)
+
+REM Regular installation starts here
 REM Update pip
 echo Updating pip...
 python -m pip install --upgrade pip==24.0 || (
@@ -35,7 +49,7 @@ pip install ninja
 REM Install Torch and related libraries
 echo Installing PyTorch and related packages...
 REM pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-cpu fairseq --extra-index-url https://download.pytorch.org/whl/cu121
-python -m pip install torch>=2.4.0 torchvision>=0.19.0 torchaudio>=2.4.0 faiss-cpu fairseq --extra-index-url %CUDA_URL% || (
+python -m pip install torch^>=2.4.0 torchvision^>=0.19.0 torchaudio^>=2.4.0 faiss-cpu fairseq --extra-index-url %CUDA_URL% || (
     echo Error installing PyTorch packages. Ensure CUDA version compatibility.
     exit /b 1
 )
@@ -50,9 +64,15 @@ python -m pip install https://github.com/bdashore3/flash-attention/releases/down
 
 REM Install torchlibrosa and librosa
 echo Installing torchlibrosa and librosa...
-REM Fix commands to prevent string formatting issues
 python -m pip install torchlibrosa^>=0.0.9 librosa^>=0.10.2.post1 || (
     echo Error installing torchlibrosa or librosa.
+    exit /b 1
+)
+
+REM Install orpheus-speech
+echo Installing orpheus-speech...
+python -m pip install orpheus-speech || (
+    echo Error installing orpheus-speech.
     exit /b 1
 )
 
@@ -90,46 +110,84 @@ git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git &&
     exit /b 1
 )
 
-REM Install Orpheus TTS dependencies by cloning the repository
-echo Installing Orpheus TTS...
-SET ORPHEUS_DIR=models\orpheus\Orpheus-TTS
-IF NOT EXIST models\orpheus (
-    mkdir models\orpheus
-)
-IF EXIST %ORPHEUS_DIR% (
-    echo Orpheus repository already exists, updating...
-    CD %ORPHEUS_DIR%
-    git pull
-    CD ..\..\..
-) ELSE (
-    echo Cloning Orpheus repository...
-    git clone https://github.com/canopyai/Orpheus-TTS.git %ORPHEUS_DIR% || (
-        echo Error cloning Orpheus-TTS repository.
-        exit /b 1
-    )
-)
+:fix_section
+REM Important fix section - uses the CUDA_VERSION already detected
+echo Running fix section...
 
-REM Install orpheus-speech from the cloned repository
-CD %ORPHEUS_DIR%
-echo Installing orpheus-speech package...
-pip install orpheus-speech || (
-    echo Error installing orpheus-speech package.
-    CD ..\..\..
-    exit /b 1
-)
+echo [1/8] Installing Visual C++ Redistributable (required for DLLs)...
+powershell -Command "& {Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile 'vc_redist.x64.exe'; Start-Process -FilePath 'vc_redist.x64.exe' -ArgumentList '/install', '/quiet', '/norestart' -Wait; Remove-Item -Path 'vc_redist.x64.exe'}"
 
-CD ..\..\..
+echo [2/8] Complete cleanup of problematic packages...
+pip uninstall -y onnx onnxruntime onnxruntime-gpu torch torchvision torchaudio audio-separator fairseq triton
+pip cache purge
+rmdir /s /q %USERPROFILE%\.cache\torch_extensions 2>nul
+rmdir /s /q %USERPROFILE%\.cache\huggingface 2>nul
 
+echo [3/8] Installing PyTorch ecosystem with EXPLICIT CUDA support...
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --extra-index-url %CUDA_URL%
 
-pip install TTS
-pip install torch^=^=2.4.0 torchvision^=^=0.19.0 torchaudio^=^=2.4.0 --extra-index-url %CUDA_URL% --force-reinstall
-pip install omegaconf^=^=2.2.3
-pip install fairseq
+echo [4/8] Verifying CUDA is available in PyTorch...
+python -c "import torch; print(f'PyTorch CUDA check: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}, Version: {torch.__version__}')"
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA is not available'"
+
+echo [5/8] Installing core packages and dependencies...
+pip install numpy==1.24.3 protobuf==4.25.3
+pip install TTS fairseq wandb
 pip install ./wheels/audiosr-0.0.8-py2.py3-none-any.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl
 pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post9/triton-3.2.0-cp310-cp310-win_amd64.whl
 pip install https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl
 
+echo [6/8] Installing specific ONNX and ONNX Runtime versions...
+pip install onnx==1.15.0
+pip install onnxruntime-gpu==1.16.3
+
+echo [7/8] Installing final dependencies...
+pip install faiss-cpu
+
+echo [8/8] Installing audio-separator with specific dependency version...
+pip install audio-separator==0.30.1 --no-deps
+pip install numpy==1.24.3  
+
+echo [8/8] Installing PyTorch ecosystem with EXPLICIT CUDA support...
+pip install numpy==1.24.3 pandas numba torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu fairseq onnxruntime-gpu --extra-index-url %CUDA_URL% --force-reinstall
+
+
+echo Performing final verification...
+python -c "import torch; print(f'PyTorch CUDA: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}, Version: {torch.__version__}')"
+python -c "import onnxruntime as ort; print(f'ONNX Runtime version: {ort.__version__}, Providers: {ort.get_available_providers()}')"
+python -c "import audio_separator; print(f'Audio Separator version: {audio_separator.__version__}')"
+
+echo Running comprehensive DLL check for troubleshooting...
+python -c "import os, sys; print('Python PATH:'); [print(p) for p in sys.path]"
+python -c "import ctypes; print('Loading C++ Runtime DLLs...'); ctypes.cdll.LoadLibrary('vcruntime140.dll'); ctypes.cdll.LoadLibrary('vcruntime140_1.dll'); print('C++ Runtime loaded successfully')"
+
+REM Deactivate Venv
+call venv\Scripts\deactivate.bat
+
+IF "%FIX_MODE%"=="true" (
+    echo Fix complete! Dependencies have been reinstalled.
+    pause
+    exit /b 0
+)
+
+REM Download the espeak-ng installer
+echo Installing espeak-ng...
+curl -L -o espeak-ng.msi https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi || (
+    echo Error downloading espeak-ng.msi. Exiting.
+    exit /b 1
+)
+
+REM Install espeak-ng silently
+msiexec /i espeak-ng.msi /quiet /norestart || (
+    echo Error installing espeak-ng.
+)
+
+REM Add "C:\Program Files\eSpeak NG\" to the *system* PATH
+REM (Requires running as Administrator; won't take effect in the current session)
+setx /M PATH "%PATH%;C:\Program Files\eSpeak NG\"
+
+echo Installation complete. You may need to restart your terminal or log out and back in for the PATH change to be recognized.
 
 echo All dependencies installed successfully!
 pause

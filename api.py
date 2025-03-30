@@ -8,8 +8,21 @@ import shutil
 from pathlib import Path
 import importlib
 import inspect
+import logging
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
+
+# Initialize logger
+logger = logging.getLogger(__name__)
+
+# Add direct import for the transcribe functionality
+import layouts.transcribe as transcribe_module
+import layouts.music as music_module
+import layouts.orpheus as orpheus_module
+import layouts.process as process_module
+import layouts.rvc_train as rvc_train_module
+import layouts.stable_audio as stable_audio_module
+import layouts.tts as tts_module
 
 app = FastAPI(
     title="AudioLab API",
@@ -171,4 +184,31 @@ async def get_documentation():
                 for k, v in wrapper.allowed_kwargs.items()
             }
         }
-    return docs 
+    return docs
+
+def register_all_api_endpoints():
+    """
+    Register all API endpoints from each layout module
+    """
+    modules = [
+        transcribe_module,
+        music_module,
+        orpheus_module,
+        process_module,
+        rvc_train_module,
+        stable_audio_module,
+        tts_module
+    ]
+    
+    for module in modules:
+        try:
+            if hasattr(module, "register_api_endpoints"):
+                logger.info(f"Registering API endpoints from {module.__name__}")
+                module.register_api_endpoints(app)
+            else:
+                logger.warning(f"Module {module.__name__} does not have register_api_endpoints function")
+        except Exception as e:
+            logger.error(f"Error registering API endpoints from {module.__name__}: {e}")
+
+# Register all API endpoints
+register_all_api_endpoints() 

@@ -7,7 +7,7 @@ import sys
 import traceback
 from random import shuffle
 from time import sleep
-from typing import List
+from typing import List, Optional, Dict, Any
 
 import faiss
 import gradio as gr
@@ -17,6 +17,16 @@ import torchaudio
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 import librosa
+import glob
+import multiprocessing
+import random
+import re
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path, app_path
@@ -1148,3 +1158,347 @@ def register_descriptions(arg_handler: ArgHandler):
     }
     for elem_id, description in descriptions.items():
         arg_handler.register_description("rvc", elem_id, description)
+
+
+def register_api_endpoints(api):
+    """
+    Register API endpoints for RVC voice training
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/rvc/train")
+    async def api_train_rvc_model(
+        background_tasks: BackgroundTasks,
+        project_name: str = Form(...),
+        sample_rate: int = Form(48000),
+        use_pitch_guidance: bool = Form(True),
+        speaker_id: int = Form(0),
+        extraction_method: str = Form("rmvpe+"),
+        epoch_save_freq: int = Form(10),
+        train_epochs: int = Form(200),
+        batch_size: int = Form(16),
+        save_latest_only: bool = Form(False),
+        save_weights_every: bool = Form(True),
+        project_version: str = Form("v2"),
+        gpus_rmvpe: str = Form("0"),
+        audio_files: List[UploadFile] = File(...)
+    ):
+        """
+        Train a new RVC voice model
+        
+        Args:
+            background_tasks: FastAPI background tasks
+            project_name: Name for the voice project
+            sample_rate: Target sample rate for the model
+            use_pitch_guidance: Whether to use pitch guidance
+            speaker_id: Speaker ID for the model
+            extraction_method: Method for extracting features
+            epoch_save_freq: How often to save checkpoints
+            train_epochs: Total number of training epochs
+            batch_size: Training batch size
+            save_latest_only: Whether to save only the latest checkpoint
+            save_weights_every: Whether to save weights with each checkpoint
+            project_version: RVC model version
+            gpus_rmvpe: GPU indices for RMVPE
+            audio_files: Audio files for training
+            
+        Returns:
+            Status information and job ID
+        """
+        try:
+            # Validate inputs
+            if not project_name or project_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Project name cannot be empty")
+                
+            if not audio_files or len(audio_files) == 0:
+                raise HTTPException(status_code=400, detail="No audio files provided")
+                
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="rvc_train_")
+            
+            # Save uploaded audio files
+            audio_paths = []
+            for audio_file in audio_files:
+                file_path = os.path.join(temp_dir, audio_file.filename)
+                with open(file_path, "wb") as f:
+                    content = await audio_file.read()
+                    f.write(content)
+                audio_paths.append(file_path)
+            
+            # Start training in the background
+            job_id = f"train_{int(time.time())}"
+            background_tasks.add_task(
+                run_train_job,
+                job_id=job_id,
+                project_name=project_name,
+                audio_files=audio_paths,
+                sample_rate=sample_rate,
+                use_pitch_guidance=use_pitch_guidance,
+                speaker_id=speaker_id,
+                extraction_method=extraction_method,
+                epoch_save_freq=epoch_save_freq,
+                train_epochs=train_epochs,
+                batch_size=batch_size,
+                save_latest_only=save_latest_only,
+                save_weights_every=save_weights_every,
+                project_version=project_version,
+                gpus_rmvpe=gpus_rmvpe,
+                temp_dir=temp_dir
+            )
+            
+            return {
+                "status": "started",
+                "job_id": job_id,
+                "message": f"Training job started for project '{project_name}' with {len(audio_files)} audio files",
+                "estimated_time": f"Estimated time: {len(audio_files) * 2 + train_epochs * 0.5:.1f} minutes"
+            }
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error starting RVC training:")
+            raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
+            
+    @api.get("/api/v1/rvc/models")
+    async def api_list_rvc_models():
+        """
+        List available RVC voice models
+        
+        Returns:
+            List of available voice models
+        """
+        try:
+            voice_projects = list_voice_projects()
+            
+            result = {
+                "models": []
+            }
+            
+            for project in voice_projects:
+                # Get the weights for this project
+                project_dir = os.path.join(output_path, "voices", project)
+                weights = list_project_weights(project_dir)
+                
+                # Get project version (v1 or v2)
+                version_file = os.path.join(project_dir, "version.txt")
+                version = "v2"  # Default
+                if os.path.exists(version_file):
+                    with open(version_file, "r") as f:
+                        version = f.read().strip()
+                
+                result["models"].append({
+                    "name": project,
+                    "version": version,
+                    "weights": weights
+                })
+                
+            return result
+            
+        except Exception as e:
+            logger.exception("Error listing RVC models:")
+            raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+            
+    @api.get("/api/v1/rvc/job/{job_id}")
+    async def api_get_job_status(job_id: str):
+        """
+        Get status of a training job
+        
+        Args:
+            job_id: ID of the job to check
+            
+        Returns:
+            Current status of the job
+        """
+        try:
+            status_dir = os.path.join(output_path, "voices", "jobs")
+            status_file = os.path.join(status_dir, f"{job_id}.json")
+            
+            if not os.path.exists(status_file):
+                raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+                
+            with open(status_file, "r") as f:
+                status = json.load(f)
+                
+            return status
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error getting job status for {job_id}:")
+            raise HTTPException(status_code=500, detail=f"Error getting job status: {str(e)}")
+            
+    @api.get("/api/v1/rvc/download/{project_name}/{weight_file}")
+    async def api_download_model(project_name: str, weight_file: str):
+        """
+        Download a trained model weight file
+        
+        Args:
+            project_name: Name of the voice project
+            weight_file: Name of the weight file to download
+            
+        Returns:
+            Model weight file
+        """
+        try:
+            project_dir = os.path.join(output_path, "voices", project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
+                
+            weight_path = os.path.join(project_dir, weight_file)
+            if not os.path.exists(weight_path):
+                raise HTTPException(status_code=404, detail=f"Weight file {weight_file} not found")
+                
+            return FileResponse(
+                weight_path,
+                media_type="application/octet-stream",
+                filename=weight_file
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error downloading model {project_name}/{weight_file}:")
+            raise HTTPException(status_code=500, detail=f"Error downloading model: {str(e)}")
+
+def run_train_job(
+    job_id, project_name, audio_files, sample_rate, use_pitch_guidance, 
+    speaker_id, extraction_method, epoch_save_freq, train_epochs,
+    batch_size, save_latest_only, save_weights_every, project_version, 
+    gpus_rmvpe, temp_dir
+):
+    """Run a training job in the background"""
+    try:
+        # Create status directory
+        status_dir = os.path.join(output_path, "voices", "jobs")
+        os.makedirs(status_dir, exist_ok=True)
+        
+        # Initialize status
+        status = {
+            "job_id": job_id,
+            "project_name": project_name,
+            "status": "preprocessing",
+            "progress": 0,
+            "start_time": time.time(),
+            "completion_time": None,
+            "current_epoch": 0,
+            "total_epochs": train_epochs,
+            "log": []
+        }
+        
+        # Function to update and save status
+        def update_status(new_status, progress=None, message=None):
+            nonlocal status
+            status["status"] = new_status
+            if progress is not None:
+                status["progress"] = progress
+            if message:
+                status["log"].append({
+                    "time": time.time(),
+                    "message": message
+                })
+            # Save to file
+            with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+                json.dump(status, f, indent=2)
+        
+        # Start training
+        update_status("preprocessing", 0, "Starting preprocessing")
+        
+        # Get number of CPUs
+        num_cpus = os.cpu_count() or 4
+        
+        # Run the actual training process
+        train1key(
+            project_name=project_name,
+            existing_project_name=None,
+            separate_vocals=True,
+            tgt_sample_rate=sample_rate,
+            use_pitch_guidance=use_pitch_guidance,
+            inputs=audio_files,
+            spk_id=speaker_id,
+            num_cpus=num_cpus,
+            extraction_method=extraction_method,
+            epoch_save_freq=epoch_save_freq,
+            train_epochs=train_epochs,
+            batch_size=batch_size,
+            save_latest=save_latest_only,
+            generator="",
+            discriminator="",
+            tgt_gpus="0",
+            cache_to_gpu=False,
+            save_weights_every=save_weights_every,
+            project_version=project_version,
+            gpus_rmvpe=gpus_rmvpe,
+            pause_after_separation=False,
+            progress=StatusUpdater(update_status)
+        )
+        
+        # Update final status
+        update_status("completed", 100, "Training completed successfully")
+        status["completion_time"] = time.time()
+        with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+            json.dump(status, f, indent=2)
+            
+    except Exception as e:
+        logger.error(f"Error in training job {job_id}: {e}")
+        
+        # Update failed status
+        try:
+            status["status"] = "failed"
+            status["completion_time"] = time.time()
+            status["log"].append({
+                "time": time.time(),
+                "message": f"Error: {str(e)}"
+            })
+            with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+                json.dump(status, f, indent=2)
+        except Exception as status_e:
+            logger.error(f"Error updating job status: {status_e}")
+            
+    finally:
+        # Clean up temporary directory
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except Exception as e:
+            logger.error(f"Error cleaning up temporary directory: {e}")
+
+class StatusUpdater:
+    """
+    Helper class to update job status from progress callback
+    """
+    def __init__(self, update_func):
+        self.update_func = update_func
+        self.last_update = 0
+        
+    def __call__(self, value, desc="", total=100):
+        # Calculate percentage and only update status occasionally to avoid too many files writes
+        percentage = int((value / total) * 100) if total > 0 else 0
+        
+        # Update if significant change (more than 5%) or if it's at the beginning or end
+        if (percentage - self.last_update >= 5) or percentage == 0 or percentage == 100:
+            self.last_update = percentage
+            
+            # Determine status based on description
+            if "preprocess" in desc.lower():
+                status = "preprocessing"
+            elif "extract" in desc.lower():
+                status = "feature_extraction"
+            elif "train" in desc.lower():
+                status = "training"
+                # Extract current epoch if available
+                if "epoch" in desc.lower():
+                    try:
+                        epoch_parts = desc.split("epoch")
+                        if len(epoch_parts) > 1:
+                            epoch_part = epoch_parts[1].strip()
+                            current_epoch = int(epoch_part.split("/")[0])
+                            self.update_func(status, percentage, desc)
+                            return
+                    except Exception:
+                        pass
+            else:
+                status = "processing"
+                
+            self.update_func(status, percentage, desc)
