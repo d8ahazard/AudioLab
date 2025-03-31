@@ -271,87 +271,92 @@ def render_orpheus(arg_handler: ArgHandler):
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO, FINETUNE_OUTPUT
     
     with gr.Tabs():
-        # Inference Tab
+        # Text to Speech Tab (Inference) - Styled like TTS layout
         with gr.TabItem("Text to Speech", id="orpheus_tts"):
+            gr.Markdown("# 🗣️ Text to Speech")
+            gr.Markdown("Convert text to high-quality natural-sounding speech using Orpheus TTS. Supports multiple voices, emotions, and adjustable generation parameters.")
+            
             with gr.Row():
-                with gr.Column():  # Left column - Text Input and Parameters
-                    # Text input area
+                with gr.Column():
+                    gr.Markdown("### 🔧 Settings")
+                    voice_dropdown = gr.Dropdown(
+                        choices=AVAILABLE_VOICES,
+                        value="tara",
+                        label="Voice",
+                        elem_id="orpheus_voice",
+                        elem_classes="hintitem"
+                    )
+                    
+                    emotion_dropdown = gr.Dropdown(
+                        choices=AVAILABLE_EMOTIONS,
+                        value="None",
+                        label="Emotion",
+                        elem_id="orpheus_emotion",
+                        elem_classes="hintitem"
+                    )
+                    
+                    temperature_slider = gr.Slider(
+                        minimum=0.1,
+                        maximum=1.5,
+                        value=0.7,
+                        step=0.1,
+                        label="Temperature",
+                        elem_id="orpheus_temperature",
+                        elem_classes="hintitem"
+                    )
+                    
+                    top_p_slider = gr.Slider(
+                        minimum=0.1,
+                        maximum=1.0,
+                        value=0.9,
+                        step=0.1,
+                        label="Top-p",
+                        elem_id="orpheus_top_p",
+                        elem_classes="hintitem"
+                    )
+                    
+                    repetition_penalty_slider = gr.Slider(
+                        minimum=1.0,
+                        maximum=2.0,
+                        value=1.1,
+                        step=0.1,
+                        label="Repetition Penalty",
+                        elem_id="orpheus_repetition_penalty",
+                        elem_classes="hintitem"
+                    )
+                
+                with gr.Column():
+                    gr.Markdown("### 🎤 Input")
+                    # Moved text input to this column
                     text_input = gr.TextArea(
-                        label="Text to Synthesize",
+                        label="Input Text",
                         placeholder="Enter your text here...",
-                        lines=10,
+                        lines=6,
                         elem_id="orpheus_text_input",
                         elem_classes="hintitem"
                     )
                     
-                    # Voice and emotion selection
+                    gr.Markdown("#### 📝 Note")
+                    gr.Markdown("Orpheus does not require speaker reference audio as it has built-in voice models.")
+                
+                with gr.Column():
+                    gr.Markdown("### 🎮 Actions")
                     with gr.Row():
-                        voice_dropdown = gr.Dropdown(
-                            choices=AVAILABLE_VOICES,
-                            value="tara",
-                            label="Voice",
-                            elem_id="orpheus_voice",
+                        generate_btn = gr.Button(
+                            "Generate",
+                            variant="primary",
+                            elem_id="orpheus_generate_btn",
                             elem_classes="hintitem"
                         )
                         
-                        emotion_dropdown = gr.Dropdown(
-                            choices=AVAILABLE_EMOTIONS,
-                            value="None",
-                            label="Emotion",
-                            elem_id="orpheus_emotion",
+                        SEND_TO_PROCESS_BUTTON = gr.Button(
+                            "Send to Process",
+                            variant="secondary",
+                            elem_id="orpheus_send_to_process",
                             elem_classes="hintitem"
                         )
-                
-                with gr.Column():  # Middle column - Advanced Parameters
-                    with gr.Group():
-                        gr.Markdown("### Generation Parameters")
-                        temperature_slider = gr.Slider(
-                            minimum=0.1,
-                            maximum=1.5,
-                            value=0.7,
-                            step=0.1,
-                            label="Temperature",
-                            elem_id="orpheus_temperature",
-                            elem_classes="hintitem"
-                        )
-                        
-                        top_p_slider = gr.Slider(
-                            minimum=0.1,
-                            maximum=1.0,
-                            value=0.9,
-                            step=0.1,
-                            label="Top-p",
-                            elem_id="orpheus_top_p",
-                            elem_classes="hintitem"
-                        )
-                        
-                        repetition_penalty_slider = gr.Slider(
-                            minimum=1.0,
-                            maximum=2.0,
-                            value=1.1,
-                            step=0.1,
-                            label="Repetition Penalty",
-                            elem_id="orpheus_repetition_penalty",
-                            elem_classes="hintitem"
-                        )
-                
-                with gr.Column():  # Right column - Action Buttons and Output
-                    with gr.Group():
-                        with gr.Row():
-                            generate_btn = gr.Button(
-                                "Generate",
-                                variant="primary",
-                                elem_id="orpheus_generate_btn",
-                                elem_classes="hintitem"
-                            )
-                            
-                            SEND_TO_PROCESS_BUTTON = gr.Button(
-                                "Send to Process",
-                                elem_id="orpheus_send_to_process",
-                                elem_classes="hintitem"
-                            )
                     
-                    # Output displays
+                    gr.Markdown("### 🎶 Outputs")
                     OUTPUT_AUDIO = gr.Audio(
                         label="Generated Speech",
                         type="filepath",
@@ -364,7 +369,7 @@ def render_orpheus(arg_handler: ArgHandler):
                         elem_id="orpheus_output_message",
                         elem_classes="hintitem"
                     )
-                    
+            
             # Connect the generate button to the generate_speech function
             generate_btn.click(
                 fn=generate_speech,
@@ -379,72 +384,49 @@ def render_orpheus(arg_handler: ArgHandler):
                 outputs=[OUTPUT_AUDIO, output_message]
             )
         
-        # Fine-tuning Tab
+        # Fine-tuning Tab - Styled like RVC Train layout
         with gr.TabItem("Fine-tune", id="orpheus_finetune"):
+            gr.Markdown("# 🎤 Voice Model Training")
+            gr.Markdown("Train custom Orpheus voice models with your own audio data. Fine-tune the base model to create personalized voices with controllable emotions and speech patterns.")
+            
             with gr.Row():
-                with gr.Column():  # Left column - Dataset Preparation
-                    with gr.Group():
-                        gr.Markdown("### Prepare Dataset")
-                        audio_dir = gr.Textbox(
-                            label="Audio Directory",
-                            placeholder="Path to directory containing audio files",
-                            elem_id="orpheus_audio_dir",
-                            elem_classes="hintitem"
-                        )
-                        
-                        speaker_name = gr.Textbox(
-                            label="Speaker Name",
-                            placeholder="Name for the new voice",
-                            elem_id="orpheus_speaker_name",
-                            elem_classes="hintitem"
-                        )
-                        
-                        prepare_dataset_btn = gr.Button(
-                            "Prepare Dataset",
-                            variant="primary",
-                            elem_id="orpheus_prepare_dataset_btn",
-                            elem_classes="hintitem"
-                        )
-                        
-                        dataset_output = gr.Textbox(
-                            label="Dataset Directory",
-                            placeholder="Will contain the path to the prepared dataset",
-                            elem_id="orpheus_dataset_output",
-                            elem_classes="hintitem"
-                        )
-                        
-                        dataset_message = gr.Textbox(
-                            label="Dataset Message",
-                            elem_id="orpheus_dataset_message",
-                            elem_classes="hintitem"
-                        )
-                
-                with gr.Column():  # Middle column - Transcription
-                    with gr.Group():
-                        gr.Markdown("### Transcribe Dataset")
-                        transcribe_dataset_btn = gr.Button(
-                            "Transcribe Dataset",
-                            variant="primary",
-                            elem_id="orpheus_transcribe_dataset_btn",
-                            elem_classes="hintitem"
-                        )
-                        
-                        transcribed_output = gr.Textbox(
-                            label="Transcribed Dataset",
-                            placeholder="Will contain the path to the transcribed dataset",
-                            elem_id="orpheus_transcribed_output",
-                            elem_classes="hintitem"
-                        )
-                        
-                        transcription_message = gr.Textbox(
-                            label="Transcription Message",
-                            elem_id="orpheus_transcription_message",
-                            elem_classes="hintitem"
-                        )
-                
-                with gr.Column():  # Right column - Fine-tuning
-                    with gr.Group():
-                        gr.Markdown("### Fine-tuning Parameters")
+                with gr.Column():
+                    gr.Markdown("### 🔧 Settings")
+                    speaker_name = gr.Textbox(
+                        label="Voice Name",
+                        placeholder="Name for the new voice",
+                        elem_id="orpheus_speaker_name",
+                        elem_classes="hintitem"
+                    )
+                    
+                    audio_dir = gr.Textbox(
+                        label="Audio Directory",
+                        placeholder="Path to directory containing audio files",
+                        elem_id="orpheus_audio_dir",
+                        elem_classes="hintitem"
+                    )
+                    
+                    batch_size = gr.Slider(
+                        minimum=1,
+                        maximum=32,
+                        step=1,
+                        label="Batch Size",
+                        value=1,
+                        elem_id="orpheus_batch_size",
+                        elem_classes="hintitem"
+                    )
+                    
+                    epochs = gr.Slider(
+                        minimum=1,
+                        maximum=50,
+                        step=1,
+                        label="Training Epochs",
+                        value=3,
+                        elem_id="orpheus_epochs",
+                        elem_classes="hintitem"
+                    )
+                    
+                    with gr.Accordion(label="Advanced", open=False):
                         base_model = gr.Textbox(
                             label="Base Model",
                             value="canopylabs/orpheus-tts-0.1-pretrained",
@@ -459,20 +441,32 @@ def render_orpheus(arg_handler: ArgHandler):
                             elem_id="orpheus_learning_rate",
                             elem_classes="hintitem"
                         )
-                        
-                        epochs = gr.Number(
-                            label="Epochs",
-                            value=3,
-                            precision=0,
-                            elem_id="orpheus_epochs",
+                
+                with gr.Column():
+                    gr.Markdown("### 🎤 Inputs")
+                    # In RVC, this would be input files, but for Orpheus we keep the dataset preparation here
+                    input_files = gr.File(
+                        label="Audio Files",
+                        file_count="multiple",
+                        file_types=["audio"],
+                        elem_id="orpheus_input_files",
+                        elem_classes="hintitem"
+                    )
+                
+                with gr.Column():
+                    gr.Markdown("### 🎮 Actions")
+                    with gr.Row():
+                        prepare_dataset_btn = gr.Button(
+                            "Prepare Dataset",
+                            variant="secondary",
+                            elem_id="orpheus_prepare_dataset_btn",
                             elem_classes="hintitem"
                         )
                         
-                        batch_size = gr.Number(
-                            label="Batch Size",
-                            value=1,
-                            precision=0,
-                            elem_id="orpheus_batch_size",
+                        transcribe_dataset_btn = gr.Button(
+                            "Transcribe Dataset",
+                            variant="secondary",
+                            elem_id="orpheus_transcribe_dataset_btn",
                             elem_classes="hintitem"
                         )
                         
@@ -482,32 +476,47 @@ def render_orpheus(arg_handler: ArgHandler):
                             elem_id="orpheus_finetune_btn",
                             elem_classes="hintitem"
                         )
-                        
-                        FINETUNE_OUTPUT = gr.Textbox(
-                            label="Fine-tuned Model",
-                            placeholder="Will contain the path to the fine-tuned model",
-                            elem_id="orpheus_finetune_output",
-                            elem_classes="hintitem"
-                        )
-                        
-                        finetune_message = gr.Textbox(
-                            label="Fine-tuning Message",
-                            elem_id="orpheus_finetune_message",
-                            elem_classes="hintitem"
-                        )
+                    
+                    gr.Markdown("### 🎶 Outputs")
+                    dataset_output = gr.Textbox(
+                        label="Dataset Directory",
+                        placeholder="Will contain the path to the prepared dataset",
+                        elem_id="orpheus_dataset_output",
+                        elem_classes="hintitem"
+                    )
+                    
+                    transcribed_output = gr.Textbox(
+                        label="Transcribed Dataset",
+                        placeholder="Will contain the path to the transcribed dataset",
+                        elem_id="orpheus_transcribed_output",
+                        elem_classes="hintitem"
+                    )
+                    
+                    FINETUNE_OUTPUT = gr.Textbox(
+                        label="Fine-tuned Model",
+                        placeholder="Will contain the path to the fine-tuned model",
+                        elem_id="orpheus_finetune_output",
+                        elem_classes="hintitem"
+                    )
+                    
+                    finetune_message = gr.Textbox(
+                        label="Output Message",
+                        elem_id="orpheus_finetune_message",
+                        elem_classes="hintitem"
+                    )
             
             # Connect the dataset preparation button
             prepare_dataset_btn.click(
                 fn=prepare_dataset,
                 inputs=[audio_dir, speaker_name],
-                outputs=[dataset_output, dataset_message]
+                outputs=[dataset_output, finetune_message]
             )
             
             # Connect the transcription button
             transcribe_dataset_btn.click(
                 fn=transcribe_dataset,
                 inputs=[dataset_output],
-                outputs=[transcribed_output, transcription_message]
+                outputs=[transcribed_output, finetune_message]
             )
             
             # Connect the fine-tuning button
@@ -565,17 +574,16 @@ def register_descriptions(arg_handler: ArgHandler):
         "orpheus_speaker_name": "Name to give the new voice you're creating.",
         "orpheus_prepare_dataset_btn": "Prepare a dataset from the audio files for fine-tuning.",
         "orpheus_dataset_output": "Path to the prepared dataset.",
-        "orpheus_dataset_message": "Status messages about dataset preparation.",
         "orpheus_transcribe_dataset_btn": "Transcribe the audio files in the dataset (optional but recommended).",
         "orpheus_transcribed_output": "Path to the transcribed dataset.",
-        "orpheus_transcription_message": "Status messages about transcription.",
         "orpheus_base_model": "The base Orpheus model to fine-tune. Default is the pretrained model.",
         "orpheus_learning_rate": "Learning rate for fine-tuning. Lower values are more stable but train slower.",
         "orpheus_epochs": "Number of training epochs. More epochs can improve quality but risk overfitting.",
         "orpheus_batch_size": "Batch size for training. Reduce if you encounter memory issues.",
         "orpheus_finetune_btn": "Start the fine-tuning process.",
         "orpheus_finetune_output": "Path to the fine-tuned model.",
-        "orpheus_finetune_message": "Status messages about fine-tuning."
+        "orpheus_finetune_message": "Status messages about fine-tuning.",
+        "orpheus_input_files": "Upload audio files for voice model training."
     }
     
     for elem_id, description in descriptions.items():
