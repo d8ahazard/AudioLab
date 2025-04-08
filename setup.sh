@@ -64,12 +64,27 @@ if [ "$goto_fix_section" == "false" ]; then
         exit 1
     }
 
-    # Install flash-attn
+    # Install flash-attn with exact version matching
     echo "Installing flash-attn..."
-    # Note: Need to use a Linux-compatible wheel URL - using a similar pattern
-    python -m pip install flash-attn || {
-        echo "Error installing flash-attn."
-        exit 1
+    # Get Python version (e.g., 3.10 -> 310)
+    PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
+    # Get torch version (e.g., 2.4.0 -> 2.4)
+    TORCH_VERSION=$(python -c "import torch; print('.'.join(torch.__version__.split('.')[:2]))")
+    # Simplified CUDA version for URL (e.g., 12.1 -> 12)
+    CUDA_SHORT=$(echo $CUDA_VERSION | cut -d. -f1)
+
+    # Construct the flash-attention URL with appropriate versions
+    FLASH_ATTN_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu${CUDA_SHORT}torch${TORCH_VERSION}cxx11abiFALSE-cp${PYTHON_VERSION}-cp${PYTHON_VERSION}-linux_x86_64.whl"
+
+    echo "Installing flash-attn from: $FLASH_ATTN_URL"
+    python -m pip install "$FLASH_ATTN_URL" || {
+        echo "Error installing flash-attn. Trying alternative version..."
+        # Try with abiTRUE as fallback
+        FLASH_ATTN_URL_ALT="https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu${CUDA_SHORT}torch${TORCH_VERSION}cxx11abiTRUE-cp${PYTHON_VERSION}-cp${PYTHON_VERSION}-linux_x86_64.whl"
+        python -m pip install "$FLASH_ATTN_URL_ALT" || {
+            echo "Error installing flash-attn. Please install manually."
+            exit 1
+        }
     }
 
     # Install torchlibrosa and librosa
