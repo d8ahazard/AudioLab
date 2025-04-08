@@ -22,13 +22,33 @@ SET CUDA_URL=https://download.pytorch.org/whl/cu%CUDA_VERSION:.=%
 echo PyTorch URL: %CUDA_URL%
 pause
 
-REM Create and activate venv
+REM Check if we're already in a virtual environment
+SET IN_VENV=false
+
+REM Check for VIRTUAL_ENV (standard venv) or CONDA_PREFIX (conda env) environment variables
+IF DEFINED VIRTUAL_ENV (
+    echo Already in a Python virtual environment, using the current environment.
+    SET IN_VENV=true
+    GOTO :skip_venv_creation
+)
+
+IF DEFINED CONDA_PREFIX (
+    echo Already in a Conda environment, using the current environment.
+    SET IN_VENV=true
+    GOTO :skip_venv_creation
+)
+
+REM Create venv only if not already in a venv and venv folder doesn't exist
 IF NOT EXIST venv (
+    echo Creating new virtual environment...
     python -m venv venv
 )
 
-:activate_venv
+REM Activate venv
+echo Activating virtual environment...
 call venv\Scripts\activate.bat
+
+:skip_venv_creation
 
 REM Branch based on fix mode
 IF "%FIX_MODE%"=="true" (
@@ -160,8 +180,11 @@ echo Running comprehensive DLL check for troubleshooting...
 python -c "import os, sys; print('Python PATH:'); [print(p) for p in sys.path]"
 python -c "import ctypes; print('Loading C++ Runtime DLLs...'); ctypes.cdll.LoadLibrary('vcruntime140.dll'); ctypes.cdll.LoadLibrary('vcruntime140_1.dll'); print('C++ Runtime loaded successfully')"
 
-REM Deactivate Venv
-call venv\Scripts\deactivate.bat
+REM Deactivate Venv only if we activated it in this script
+IF "%IN_VENV%"=="false" (
+    echo Deactivating virtual environment...
+    call venv\Scripts\deactivate.bat
+)
 
 IF "%FIX_MODE%"=="true" (
     echo Fix complete! Dependencies have been reinstalled.

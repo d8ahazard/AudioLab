@@ -30,13 +30,22 @@ CUDA_URL="https://download.pytorch.org/whl/cu${CUDA_VERSION//./}"
 echo "PyTorch URL: $CUDA_URL"
 read -p "Press enter to continue"
 
-# Create and activate venv
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
-fi
+# Check if we're already in a virtual environment
+IN_VENV=false
+if [ -n "$VIRTUAL_ENV" ] || [ -n "$CONDA_PREFIX" ]; then
+    echo "Already in a Python virtual environment, using the current environment."
+    IN_VENV=true
+else
+    # Create and activate venv only if not already in a venv
+    if [ ! -d "venv" ]; then
+        echo "Creating new virtual environment..."
+        python3 -m venv venv
+    fi
 
-# Activate virtual environment
-source venv/bin/activate
+    # Activate virtual environment
+    echo "Activating virtual environment..."
+    source venv/bin/activate
+fi
 
 # Branch based on fix mode
 if [ "$FIX_MODE" == "true" ]; then
@@ -185,8 +194,11 @@ echo "Running comprehensive DLL check for troubleshooting..."
 python -c "import os, sys; print('Python PATH:'); [print(p) for p in sys.path]"
 python -c "import ctypes; print('Checking shared libraries...')"
 
-# Deactivate venv
-deactivate
+# Deactivate venv only if we activated it in this script
+if [ "$IN_VENV" == "false" ]; then
+    echo "Deactivating virtual environment..."
+    deactivate
+fi
 
 if [ "$FIX_MODE" == "true" ]; then
     echo "Fix complete! Dependencies have been reinstalled."
