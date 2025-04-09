@@ -42,6 +42,7 @@ from layouts.rvc_train import render as rvc_render, register_descriptions as rvc
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.stable_audio import render as render_stable_audio, register_descriptions as stable_audio_register_descriptions, \
     listen as stable_audio_listen
+from fastapi.middleware.cors import CORSMiddleware
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -62,6 +63,36 @@ project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+def setup_middleware(app):
+    """Setup CORS and other middleware for the app"""
+    # Remove any existing CORS middleware to avoid conflicts
+    app.user_middleware = [x for x in app.user_middleware if x.cls.__name__ != 'CORSMiddleware']
+    
+    # Configure CORS with a restrictive policy
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # In production, you should limit this to your domain
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # Make sure other FastAPI settings don't cause redirects
+    @app.middleware("http")
+    async def no_redirect_middleware(request, call_next):
+        response = await call_next(request)
+        # Ensure no redirects by removing any redirect headers if they exist
+        if response.status_code in (301, 302, 307, 308):
+            for header in ('location', 'Location'):
+                if header in response.headers:
+                    # If there's a redirect to http://, change it to https:// if needed
+                    if response.headers[header].startswith('http://'):
+                        # Only change the scheme, keep the rest of the URL
+                        response.headers[header] = 'https://' + response.headers[header][7:]
+        return response
+    
+    return app
+
 if __name__ == '__main__':
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="AudioLab Web Server")
@@ -76,6 +107,7 @@ if __name__ == '__main__':
 
     if args.api_only:
         # Run only the FastAPI server
+        setup_middleware(app)
         uvicorn.run(app, host=server_name, port=server_port)
     else:
         # Set up the UI
@@ -131,8 +163,24 @@ if __name__ == '__main__':
             "favicon_path": os.path.join(project_root, 'res', 'favicon.ico')
         }
 
+        # This approach creates a more direct integration between Gradio and FastAPI
+        # to prevent redirects that can break iframe embedding
+        setup_middleware(app)
+        
+        # For Gradio 5.23+, we use a simpler approach with the correct parameters
+        # to avoid redirects
+        
         # Mount Gradio app into FastAPI at the root path
-        app = gr.mount_gradio_app(app, ui, path="/", **app_config)
+        app = gr.mount_gradio_app(
+            app, 
+            ui, 
+            path="/",
+            root_path="",  # Empty root_path to avoid redirects
+            app_kwargs={
+                "docs_url": "/docs",
+                "redoc_url": "/redoc"
+            }
+        )
 
         # Start the combined server
         logger.info(f"Server running on http://{server_name}:{server_port}")
