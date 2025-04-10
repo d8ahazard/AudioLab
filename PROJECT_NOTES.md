@@ -57,6 +57,7 @@ Contains the core functional modules of the application:
 - **yue/**: Music generation module.
 - **zonos/**: High-quality TTS module.
 - **stable_audio/**: Text-to-audio generation using StabilityAI's Stable Audio model.
+- **diffrythm/**: End-to-end full-length song generation using DiffRhythm.
 
 #### `/layouts`
 
@@ -258,6 +259,7 @@ The application provides a modular REST API built with FastAPI:
    - **/api/v1/stable-audio/generate**: Generate audio from text using Stable Audio.
    - **/api/v1/rvc/train**: Train RVC voice models.
    - **/api/v1/rvc/models**: List available voice models.
+   - **/api/v1/diffrythm/generate**: Generate full-length songs with DiffRhythm.
 
 3. **API Documentation**:
    - Interactive documentation available at **/docs** using Swagger UI.
@@ -414,4 +416,43 @@ The Transcribe tab provides advanced audio transcription capabilities using Whis
 - Create precise word-level timestamps for perfect alignment with audio.
 - Support batch processing of multiple audio files.
 - Generate both JSON (with detailed metadata) and human-readable text outputs.
-- Control transcription parameters like language detection, alignment, and speaker assignment. 
+- Control transcription parameters like language detection, alignment, and speaker assignment.
+
+### DiffRhythm
+
+The DiffRhythm module provides end-to-end full-length song generation capabilities:
+
+- Generate full-length songs (up to 4m45s) from text prompts and style references.
+- Support for generating music with lyrics using timestamped LRC files.
+- Create songs in various styles using style prompts or reference audio.
+- High-quality stereo audio generation at 44.1kHz.
+- Blazingly fast generation compared to other music generation models.
+- Chunked decoding option to optimize memory usage on consumer GPUs.
+- Support for both text-to-music and pure music generation.
+- Memory-efficient implementation based on the latent diffusion architecture.
+
+The DiffRhythm module provides a dedicated UI interface with the following features:
+
+- **Generation Interface**: A user-friendly interface for song generation with:
+  - Model selection between base (95s) and full (285s) models
+  - Chunked decoding option for optimized memory usage
+  - Style prompt input for text-based style control
+  - Reference audio upload for audio-based style control
+  - LRC format lyrics entry with timestamp support
+  - One-click generation with progress tracking
+  - Audio preview and download capabilities
+  - Send to Process tab for further audio processing
+
+- **Training Information**: Comprehensive documentation about model training with:
+  - Dataset preparation requirements and formats
+  - Training resource recommendations
+  - Future feature roadmap
+  
+- **API Integration**: Complete REST API with endpoint `/api/v1/diffrythm/generate` supporting:
+  - Text prompt style descriptions
+  - LRC format lyrics input
+  - Audio reference file uploads
+  - Model selection
+  - Memory optimization options
+
+The module seamlessly integrates with the rest of the AudioLab ecosystem, allowing generated songs to be further processed with other tools like audio separation, voice cloning, and remastering. 

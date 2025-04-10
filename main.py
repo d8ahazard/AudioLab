@@ -6,6 +6,7 @@ from pathlib import Path
 
 from layouts.orpheus import render_orpheus, register_descriptions as orpheus_register_descriptions, listen as orpheus_listen
 from layouts.transcribe import render as render_transcribe, register_descriptions as transcribe_register_descriptions, listen as transcribe_listen
+from layouts.diffrythm import render as render_diffrythm, register_descriptions as diffrythm_register_descriptions, listen as diffrythm_listen
 
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s',level=logging.DEBUG)
@@ -127,6 +128,7 @@ if __name__ == '__main__':
         stable_audio_register_descriptions(arg_handler)
         orpheus_register_descriptions(arg_handler)
         transcribe_register_descriptions(arg_handler)
+        diffrythm_register_descriptions(arg_handler)
 
         # Load CSS and JS
         with open(project_root / 'css' / 'ui.css', 'r') as css_file:
@@ -156,6 +158,8 @@ if __name__ == '__main__':
                     render_stable_audio(arg_handler)
                 with gr.Tab(label='Orpheus', id="orpheus"):
                     render_orpheus(arg_handler)
+                with gr.Tab(label='DiffRhythm', id="diffrythm"):
+                    render_diffrythm(arg_handler)
                 with gr.Tab(label='Transcribe', id="transcribe"):
                     render_transcribe(arg_handler)
 
@@ -165,6 +169,7 @@ if __name__ == '__main__':
             process_listen()
             stable_audio_listen()
             orpheus_listen()
+            diffrythm_listen()
             transcribe_listen()
 
         # Enable queue for handling concurrent requests
