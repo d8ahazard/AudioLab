@@ -168,7 +168,7 @@ pip install audio-separator==0.30.1 --no-deps
 pip install numpy==1.24.3  
 
 echo [8/8] Installing PyTorch ecosystem with EXPLICIT CUDA support...
-pip install numpy==1.24.3 pandas numba torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu fairseq onnxruntime-gpu --extra-index-url %CUDA_URL% --force-reinstall
+pip install numpy==1.24.3 pandas numba torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 faiss-cpu fairseq onnxruntime-gpu wandb xformers== 0.0.27.post2 gradio --extra-index-url "%CUDA_URL%" --force-reinstall
 
 
 echo Performing final verification...

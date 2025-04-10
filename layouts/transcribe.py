@@ -446,18 +446,88 @@ def register_api_endpoints(api):
         """
         Transcribe audio files using WhisperX with alignment and speaker diarization.
         
-        Args:
-            files: List of audio files to transcribe
-            language: Language code or 'auto' for automatic detection
-            align_output: Whether to align the transcription with the audio
-            assign_speakers: Whether to detect and assign speakers
-            min_speakers: Minimum number of speakers to detect (optional)
-            max_speakers: Maximum number of speakers to detect (optional)
-            batch_size: Batch size for transcription processing
-            compute_type: Precision level for computation
+        This endpoint provides high-quality speech-to-text transcription with additional
+        features like precise word-level timestamps and speaker identification.
+        
+        ## Parameters
+        
+        - **files**: Audio files to transcribe (WAV, MP3, FLAC, etc.)
+        - **language**: Language code (ISO 639-1) or "auto" for automatic detection
+          - Examples: "en", "fr", "de", "ja", "zh", "es", etc.
+        - **align_output**: Create word-level timestamps using phoneme alignment (default: true)
+        - **assign_speakers**: Detect and label different speakers in the audio (default: true)
+        - **min_speakers**: Minimum number of speakers to detect (optional)
+          - Leave empty for automatic detection
+        - **max_speakers**: Maximum number of speakers to detect (optional)
+          - Leave empty for automatic detection
+        - **batch_size**: Batch size for processing (default: 16)
+          - Higher values use more memory but may be faster
+        - **compute_type**: Precision level for computation (default: "float16")
+          - Options: "float16", "float32", "int8"
+        
+        ## Example Request
+        
+        ```python
+        import requests
+        
+        url = "http://localhost:7860/api/v1/transcribe"
+        
+        # Upload audio file
+        files = [
+            ('files', ('interview.mp3', open('interview.mp3', 'rb'), 'audio/mpeg'))
+        ]
+        
+        # Configure transcription parameters
+        data = {
+            'language': 'en',  # English
+            'align_output': 'true',
+            'assign_speakers': 'true',
+            'min_speakers': '2',
+            'max_speakers': '4'
+        }
+        
+        # Send request
+        response = requests.post(url, files=files, data=data)
+        
+        # Process response
+        result = response.json()
+        print(f"Transcription Summary: {result['summary']}")
+        
+        # Get the detailed transcription from the JSON output
+        for output_file in result['output_files']:
+            file_url = output_file['url']
+            json_response = requests.get(file_url)
+            transcription_data = json_response.json()
             
-        Returns:
-            Dictionary containing transcription results and file paths
+            for segment in transcription_data['segments']:
+                speaker = segment['speaker']
+                text = segment['text']
+                start = segment['start']
+                end = segment['end']
+                print(f"[{start:.2f}s - {end:.2f}s] Speaker {speaker}: {text}")
+        ```
+        
+        ## Response Format
+        
+        ```json
+        {
+            "summary": "Transcription completed successfully. Found 3 speakers.",
+            "output_files": [
+                {
+                    "url": "http://localhost:7860/path/to/transcription.json",
+                    "media_type": "application/json",
+                    "filename": "transcription.json"
+                }
+            ]
+        }
+        ```
+        
+        The returned JSON files contain detailed transcription data including:
+        
+        - Segments with start/end timestamps
+        - Speaker identification
+        - Word-level timing information
+        - Confidence scores
         """
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
