@@ -4,6 +4,10 @@ import os
 import sys
 from pathlib import Path
 
+from layouts.orpheus import render_orpheus, register_descriptions as orpheus_register_descriptions, listen as orpheus_listen
+from layouts.transcribe import render as render_transcribe, register_descriptions as transcribe_register_descriptions, listen as transcribe_listen
+from layouts.diffrythm import render as render_diffrythm, register_descriptions as diffrythm_register_descriptions, listen as diffrythm_listen
+
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s',level=logging.DEBUG)
 
@@ -39,6 +43,7 @@ from layouts.rvc_train import render as rvc_render, register_descriptions as rvc
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.stable_audio import render as render_stable_audio, register_descriptions as stable_audio_register_descriptions, \
     listen as stable_audio_listen
+from fastapi.middleware.cors import CORSMiddleware
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -59,6 +64,44 @@ project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+def setup_middleware(app):
+    """Setup CORS and other middleware for the app"""
+    # Remove any existing CORS middleware to avoid conflicts
+    app.user_middleware = [x for x in app.user_middleware if x.cls.__name__ != 'CORSMiddleware']
+    
+    # Configure CORS with a permissive policy
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # Disable any redirect handling to prevent issues with iframe embedding
+    @app.middleware("http")
+    async def prevent_redirects(request, call_next):
+        # Store original method and URL
+        original_method = request.method
+        original_url = str(request.url)
+        
+        # Process the request
+        response = await call_next(request)
+        
+        # If response is a redirect, return a 200 OK instead with the original content
+        if response.status_code in (301, 302, 307, 308):
+            logger.debug(f"Preventing redirect from {original_url} to {response.headers.get('location', 'unknown')}")
+            # Simply drop the status code to 200 and remove location header
+            response.status_code = 200
+            if 'location' in response.headers:
+                del response.headers['location']
+            if 'Location' in response.headers:
+                del response.headers['Location']
+            
+        return response
+    
+    return app
+
 if __name__ == '__main__':
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="AudioLab Web Server")
@@ -72,28 +115,36 @@ if __name__ == '__main__':
     server_port = args.port
 
     if args.api_only:
-        # Run only the FastAPI server
+        # Run only the FastAPI server without Gradio
+        setup_middleware(app)
         uvicorn.run(app, host=server_name, port=server_port)
     else:
-        # Set up the UI
+        # Set up the UI components and descriptions
         arg_handler = ArgHandler()
         process_register_descriptions(arg_handler)
         music_register_descriptions(arg_handler)
         tts_register_descriptions(arg_handler)
         rvc_register_descriptions(arg_handler)
         stable_audio_register_descriptions(arg_handler)
+        orpheus_register_descriptions(arg_handler)
+        transcribe_register_descriptions(arg_handler)
+        diffrythm_register_descriptions(arg_handler)
 
+        # Load CSS and JS
         with open(project_root / 'css' / 'ui.css', 'r') as css_file:
             css = css_file.read()
             css = f'<style type="text/css">{css}</style>'
-        # Load the contents of ./js/ui.js
         with open(project_root / 'js' / 'ui.js', 'r') as js_file:
             js = js_file.read()
             js += f"\n{arg_handler.get_descriptions_js()}"
             js = f'<script type="text/javascript">{js}</script>'
             js += f"\n{css}"
 
-        with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue") as ui:
+        # Define the Gradio UI
+        demo = gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue", analytics_enabled=False)
+        
+        # Build the interface with tabs
+        with demo:
             with gr.Tabs(selected="process"):
                 with gr.Tab(label='Process', id="process"):
                     render_process(arg_handler)
@@ -105,20 +156,68 @@ if __name__ == '__main__':
                     render_tts()
                 with gr.Tab(label='Sound Forge', id="soundforge"):
                     render_stable_audio(arg_handler)
+                with gr.Tab(label='Orpheus', id="orpheus"):
+                    render_orpheus(arg_handler)
+                with gr.Tab(label='DiffRhythm', id="diffrythm"):
+                    render_diffrythm(arg_handler)
+                with gr.Tab(label='Transcribe', id="transcribe"):
+                    render_transcribe(arg_handler)
 
+            # Set up inter-tab listeners
             tts_listen()
             music_listen()
             process_listen()
             stable_audio_listen()
+            orpheus_listen()
+            diffrythm_listen()
+            transcribe_listen()
 
-        # Launch both FastAPI and Gradio
-        ui.queue()  # Enable queuing for better handling of concurrent requests
-
-        # Mount Gradio app into FastAPI at the root path
-        favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
-        app = gr.mount_gradio_app(app, ui, path="/", favicon_path=favicon_path)
-
-        # Start the combined server
+        # Enable queue for handling concurrent requests
+        demo.queue()
+        
+        # ---------------------------------------------------------------------------------
+        # Directly adapt Automatic1111's approach to prevent redirect issues
+        # ---------------------------------------------------------------------------------
+        
+        # Set up CORS and other middleware
+        setup_middleware(app)
+        
+        # Gradio uses a very open CORS policy via app.user_middleware, which makes it possible for
+        # an attacker to trick the user into opening a malicious HTML page, which makes a request to the
+        # running web ui and do whatever the attacker wants. We disable this here. Suggested by RyotaK.
+        app.user_middleware = [x for x in app.user_middleware if x.cls.__name__ != 'CORSMiddleware']
+        
+        # Launch Gradio with specific settings to prevent redirects
+        # This is similar to Automatic1111's approach
+        auth_creds = None  # No authentication
+        
+        # Launch with prevent_thread_lock to allow server to run in the main thread
+        app, local_url, share_url = demo.launch(
+            share=False,
+            server_name=server_name,
+            server_port=server_port,
+            debug=False,
+            auth=auth_creds,
+            inbrowser=False,
+            prevent_thread_lock=True,
+            favicon_path=os.path.join(project_root, 'res', 'favicon.ico'),
+            show_api=False,
+            root_path="",  # Important: empty root_path helps prevent redirects
+            app_kwargs={
+                "docs_url": "/docs",
+                "redoc_url": "/redoc",
+            }
+        )
+        
+        # Print startup information
         logger.info(f"Server running on http://{server_name}:{server_port}")
         logger.info(f"API documentation available at http://{server_name}:{server_port}/docs")
-        uvicorn.run(app, host=server_name, port=server_port)
+        
+        # Keep the server running
+        import time
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Keyboard interrupt received, shutting down...")
+            sys.exit(0)

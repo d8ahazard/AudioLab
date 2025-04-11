@@ -154,12 +154,87 @@ class Separate(BaseWrapper):
             """
             Separate audio files into stems.
             
-            Args:
-                files: List of audio files to separate
-                settings: Separation settings including stem types and processing options
-                
-            Returns:
-                List of separated audio stems
+            This endpoint splits audio tracks into individual components (stems) such as vocals, instruments, 
+            and other elements. It uses advanced AI models to isolate different parts of a mix with high quality.
+            It also provides options for removing reverb, crowd noise, and general noise from the separated stems.
+            
+            ## Parameters
+            
+            - **files**: Audio files to separate (WAV, MP3, FLAC)
+            - **settings**: Separation settings with the following options:
+              - **vocals_only**: Only extract vocals and instrumental stems (default: true)
+              - **separate_bg_vocals**: Separate background vocals from main vocals (default: true)
+              - **delete_extra_stems**: Delete intermediate stem files after processing (default: true)
+              - **separate_drums**: Separate the drum track (default: false)
+              - **separate_woodwinds**: Separate woodwind instruments (default: false)
+              - **alt_bass_model**: Use alternative bass separation model (default: false)
+              - **store_reverb_ir**: Store impulse response for later reverb restoration (default: true)
+              - **reverb_removal**: Apply reverb removal to specified stems (default: "Main Vocals")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **crowd_removal**: Apply crowd noise removal to specified stems (default: "Nothing")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **noise_removal**: Apply general noise removal to specified stems (default: "Nothing")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **noise_removal_model**: Model to use for noise removal (default: "UVR-DeNoise.pth")
+                - Options: "UVR-DeNoise.pth", "UVR-DeNoise-Lite.pth"
+              - **crowd_removal_model**: Model to use for crowd noise removal (default: "UVR-MDX-NET_Crowd_HQ_1.onnx")
+                - Options: "UVR-MDX-NET_Crowd_HQ_1.onnx", "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
+            
+            ## Example Request
+            
+            ```python
+            import requests
+            
+            url = "http://localhost:7860/api/v1/process/separate"
+            
+            # Upload audio file
+            files = [
+                ('files', ('song.mp3', open('song.mp3', 'rb'), 'audio/mpeg'))
+            ]
+            
+            # Configure separation parameters
+            data = {
+                'vocals_only': 'true',
+                'separate_bg_vocals': 'true',
+                'reverb_removal': 'Main Vocals',
+                'noise_removal': 'Main Vocals'
+            }
+            
+            # Send request
+            response = requests.post(url, files=files, data=data)
+            
+            # The API returns a list of files, so we save each one
+            if response.headers['Content-Type'] == 'application/json':
+                # Multiple files returned as JSON with file information
+                files_info = response.json()
+                for i, file_info in enumerate(files_info):
+                    file_response = requests.get(file_info['url'])
+                    with open(f'stem_{i}.wav', 'wb') as f:
+                        f.write(file_response.content)
+            else:
+                # Single file returned directly
+                with open('vocals.wav', 'wb') as f:
+                    f.write(response.content)
+            ```
+            
+            ## Typical Output Files
+            
+            When using the default settings, the API will typically generate these files:
+            
+            1. **Main Vocals**: The lead vocals isolated from the mix
+            2. **Background Vocals**: Any backing vocals or harmonies (if separate_bg_vocals=true)
+            3. **Instrumental**: All non-vocal elements of the track
+            
+            With vocals_only=false, additional stems may include:
+            
+            4. **Bass**: Bass instruments
+            5. **Drums**: Percussion and drum elements (if separate_drums=true)
+            6. **Woodwinds**: Flute, saxophone, etc. (if separate_woodwinds=true)
+            7. **Other**: Remaining instruments not covered by other stems
+            
+            ## Response
+            
+            The API returns the separated audio files as attachments.
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:

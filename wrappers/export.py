@@ -104,12 +104,70 @@ class Export(BaseWrapper):
             """
             Export audio files to DAW project.
             
-            Args:
-                files: List of audio files to process
-                settings: Export settings including project format
-                
-            Returns:
-                Exported project file (zip)
+            This endpoint takes multiple audio files (typically stems) and creates a Digital Audio Workstation (DAW) 
+            project file that includes all the audio tracks properly arranged. The resulting project can be opened 
+            directly in Ableton Live or Reaper, depending on the format you choose.
+            
+            ## Parameters
+            
+            - **files**: Audio files to include in the project (WAV, MP3, FLAC)
+            - **settings**: Export settings with the following options:
+              - **project_format**: DAW format to create (default: "Ableton")
+                - Options: "Ableton", "Reaper"
+              - **export_all_stems**: Include all available stems, not just processed ones (default: true)
+              - **pitch_shift**: Apply pitch shift in semitones to non-cloned tracks (default: 0)
+            
+            ## Example Request
+            
+            ```python
+            import requests
+            
+            url = "http://localhost:7860/api/v1/process/export"
+            
+            # Upload audio stems to include in project
+            files = [
+                ('files', ('vocals.wav', open('vocals.wav', 'rb'), 'audio/wav')),
+                ('files', ('instrumental.wav', open('instrumental.wav', 'rb'), 'audio/wav')),
+                ('files', ('drums.wav', open('drums.wav', 'rb'), 'audio/wav')),
+                ('files', ('bass.wav', open('bass.wav', 'rb'), 'audio/wav'))
+            ]
+            
+            # Configure export parameters
+            data = {
+                'project_format': 'Ableton',
+                'export_all_stems': 'true'
+            }
+            
+            # Send request
+            response = requests.post(url, files=files, data=data)
+            
+            # Save the project ZIP file
+            with open('ableton_project.zip', 'wb') as f:
+                f.write(response.content)
+            ```
+            
+            ## Project Structure
+            
+            The export process creates a structured project with these features:
+            
+            1. **Audio Tracks**: Each audio file becomes a separate track in the project
+            2. **Track Naming**: Tracks are named based on the stem type (vocals, drums, etc.)
+            3. **BPM Detection**: The system attempts to detect the tempo of the music
+            4. **Organization**: Files are properly organized in the project folder structure
+            
+            For Ableton Live (.als) projects:
+            - Project file and all audio samples in proper organization
+            - Session and Arrangement views populated
+            - Proper warp markers and BPM settings
+            
+            For Reaper (.RPP) projects:
+            - Project file with relative paths to media
+            - Tracks arranged with appropriate naming
+            - Volume and pan settings preserved
+            
+            ## Response
+            
+            The API returns a ZIP file containing the complete DAW project.
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:

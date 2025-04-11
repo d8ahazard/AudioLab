@@ -42,7 +42,6 @@ Defines wrapper classes that encapsulate audio processing modules for the Proces
 - **base_wrapper.py**: Base abstract class defining the interface for all wrappers.
 - **separate.py**: Handles audio source separation.
 - **clone.py**: Voice cloning functionality.
-- **transcribe.py**: Audio transcription wrapper.
 - **remaster.py**: Audio remastering capabilities.
 - **super_res.py**: Audio super-resolution enhancement.
 - **merge.py**: Merges separate audio tracks.
@@ -58,6 +57,7 @@ Contains the core functional modules of the application:
 - **yue/**: Music generation module.
 - **zonos/**: High-quality TTS module.
 - **stable_audio/**: Text-to-audio generation using StabilityAI's Stable Audio model.
+- **diffrythm/**: End-to-end full-length song generation using DiffRhythm.
 
 #### `/layouts`
 
@@ -69,6 +69,8 @@ Defines the Gradio UI layouts for different sections of the application:
 - **tts.py**: UI for text-to-speech.
 - **zonos.py**: UI for the Zonos TTS system.
 - **stable_audio.py**: UI for text-to-audio generation with StabilityAI's Stable Audio.
+- **orpheus.py**: UI for Orpheus TTS functionality.
+- **transcribe.py**: UI for audio transcription with speaker diarization.
 
 #### `/util`
 
@@ -238,10 +240,41 @@ The application uses Gradio to create a web-based UI:
 
 ### API Structure
 
-- REST API built with FastAPI.
-- Dynamically generates endpoints for each wrapper.
-- Supports both single processor and multi-processor chains.
-- Validates input parameters using Pydantic models.
+The application provides a modular REST API built with FastAPI:
+
+1. **Modular API Design**:
+   - Each layout module registers its own API endpoints through a `register_api_endpoints` function.
+   - The main `api.py` automatically discovers and registers all endpoints from each module.
+   - Each module is responsible for implementing and documenting its own endpoints.
+
+2. **Core API Endpoints**:
+   - **/api/v1/process/{processor}**: Endpoints for individual processing wrappers.
+   - **/api/v1/process/multi**: Chain multiple processors together in a sequence.
+   - **/api/v1/transcribe**: Transcribe audio files with speaker diarization.
+   - **/api/v1/tts/generate**: Generate speech from text with various models.
+   - **/api/v1/tts/models**: List available TTS models.
+   - **/api/v1/music/generate**: Generate music with lyrics and genre prompts.
+   - **/api/v1/orpheus/generate**: Generate speech using Orpheus TTS.
+   - **/api/v1/orpheus/finetune**: Finetune Orpheus on custom voices.
+   - **/api/v1/stable-audio/generate**: Generate audio from text using Stable Audio.
+   - **/api/v1/rvc/train**: Train RVC voice models.
+   - **/api/v1/rvc/models**: List available voice models.
+   - **/api/v1/diffrythm/generate**: Generate full-length songs with DiffRhythm.
+
+3. **API Documentation**:
+   - Interactive documentation available at **/docs** using Swagger UI.
+   - Alternative documentation at **/redoc** for a different presentation.
+   - Programmatic schema access at **/openapi.json**.
+
+4. **Parameter Validation**:
+   - Uses Pydantic models for request validation.
+   - Properly documents all parameters with types and constraints.
+   - Returns helpful error messages for invalid requests.
+
+5. **Asynchronous Processing**:
+   - Long-running tasks (training, fine-tuning) run in the background.
+   - Job status endpoints for checking progress of background tasks.
+   - File download endpoints for retrieving generated content.
 
 ## Processing Flow
 
@@ -372,4 +405,54 @@ The Sound Forge tab provides text-to-audio generation capabilities using Stabili
 - Customize generation parameters like duration, inference steps, and guidance scale.
 - Create multiple variations of the same prompt.
 - Control generation with negative prompts to avoid unwanted characteristics.
-- Generate audio up to 47 seconds in length. 
+- Generate audio up to 47 seconds in length.
+
+### Transcribe
+
+The Transcribe tab provides advanced audio transcription capabilities using WhisperX:
+
+- Convert speech to text with high accuracy across multiple languages.
+- Automatically identify and label different speakers in audio (speaker diarization).
+- Create precise word-level timestamps for perfect alignment with audio.
+- Support batch processing of multiple audio files.
+- Generate both JSON (with detailed metadata) and human-readable text outputs.
+- Control transcription parameters like language detection, alignment, and speaker assignment.
+
+### DiffRhythm
+
+The DiffRhythm module provides end-to-end full-length song generation capabilities:
+
+- Generate full-length songs (up to 4m45s) from text prompts and style references.
+- Support for generating music with lyrics using timestamped LRC files.
+- Create songs in various styles using style prompts or reference audio.
+- High-quality stereo audio generation at 44.1kHz.
+- Blazingly fast generation compared to other music generation models.
+- Chunked decoding option to optimize memory usage on consumer GPUs.
+- Support for both text-to-music and pure music generation.
+- Memory-efficient implementation based on the latent diffusion architecture.
+
+The DiffRhythm module provides a dedicated UI interface with the following features:
+
+- **Generation Interface**: A user-friendly interface for song generation with:
+  - Model selection between base (95s) and full (285s) models
+  - Chunked decoding option for optimized memory usage
+  - Style prompt input for text-based style control
+  - Reference audio upload for audio-based style control
+  - LRC format lyrics entry with timestamp support
+  - One-click generation with progress tracking
+  - Audio preview and download capabilities
+  - Send to Process tab for further audio processing
+
+- **Training Information**: Comprehensive documentation about model training with:
+  - Dataset preparation requirements and formats
+  - Training resource recommendations
+  - Future feature roadmap
+  
+- **API Integration**: Complete REST API with endpoint `/api/v1/diffrythm/generate` supporting:
+  - Text prompt style descriptions
+  - LRC format lyrics input
+  - Audio reference file uploads
+  - Model selection
+  - Memory optimization options
+
+The module seamlessly integrates with the rest of the AudioLab ecosystem, allowing generated songs to be further processed with other tools like audio separation, voice cloning, and remastering. 

@@ -55,12 +55,65 @@ class Convert(BaseWrapper):
             """
             Convert audio files to MP3 format.
             
-            Args:
-                files: List of audio files to process
-                settings: Conversion settings including bitrate
-                
-            Returns:
-                List of converted audio files
+            This endpoint converts audio files to MP3 format with configurable bitrate settings.
+            It provides a simple way to standardize your audio collection to a consistent format
+            while maintaining quality control through bitrate selection.
+            
+            ## Parameters
+            
+            - **files**: Audio files to convert (WAV, FLAC, AAC, OGG, etc.)
+            - **settings**: Conversion settings with the following options:
+              - **bitrate**: Bitrate for the output MP3 file (default: "320k")
+                - Options: "64k", "96k", "128k", "160k", "192k", "224k", "256k", "320k"
+                - Higher bitrates provide better audio quality but larger file sizes
+            
+            ## Example Request
+            
+            ```python
+            import requests
+            
+            url = "http://localhost:7860/api/v1/process/convert"
+            
+            # Upload audio files
+            files = [
+                ('files', ('audio.wav', open('audio.wav', 'rb'), 'audio/wav')),
+                ('files', ('audio2.flac', open('audio2.flac', 'rb'), 'audio/flac'))
+            ]
+            
+            # Configure conversion parameters
+            data = {
+                'bitrate': '192k'  # Medium quality, good balance of size and quality
+            }
+            
+            # Send request
+            response = requests.post(url, files=files, data=data)
+            
+            # Save the converted files
+            for i, file_response in enumerate(response.json()):
+                file_url = file_response['url']
+                file_data = requests.get(file_url)
+                with open(f'converted_{i}.mp3', 'wb') as f:
+                    f.write(file_data.content)
+            ```
+            
+            ## How It Works
+            
+            The conversion process uses FFmpeg to transcode audio files with these steps:
+            
+            1. Input files are read and processed one by one
+            2. FFmpeg is called with the specified bitrate parameter
+            3. The output is saved as an MP3 file with the same basename as the input
+            4. The converted files are returned to the client
+            
+            ## Common Use Cases
+            
+            1. **Archive Optimization**: Convert high-quality lossless files to MP3 for storage efficiency
+            2. **Compatibility**: Ensure audio files work on all devices and players
+            3. **Bandwidth Saving**: Create smaller files for streaming or sharing
+            
+            ## Response
+            
+            The API returns the converted audio files as attachments.
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:

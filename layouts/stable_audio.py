@@ -2,13 +2,20 @@ import os
 import logging
 import gradio as gr
 import torch
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import random
 import zipfile
+import json
+import tempfile
+import shutil
+import time
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
 from modules.stable_audio import StableAudioModel
+from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+from pathlib import Path
 
 logger = logging.getLogger("ADLB.Layout.StableAudio")
 
@@ -606,16 +613,26 @@ def render(arg_handler: ArgHandler):
 def register_descriptions(arg_handler: ArgHandler):
     """Register descriptions for the Stable Audio module."""
     descriptions = {
-        "prompt": "Describe the sound you want to generate in detail. The more specific, the better the results.",
-        "negative_prompt": "Describe characteristics you want to avoid in the generated audio.",
-        "duration": "Set the length of the generated audio in seconds (max 30 seconds).",
-        "num_waveforms": "Number of variations to generate from the same prompt.",
-        "inference_steps": "More steps can improve quality but take longer to generate.",
-        "guidance_scale": "How closely to follow the prompt. Higher values are more accurate but may be less creative.",
-        "seed": "Use -1 for random, or set a specific value for reproducible results.",
-        "use_init_audio": "Enable to use an existing audio file as reference for generation.",
-        "init_audio_path": "Upload an audio file to use as guidance for the generation.",
-        "init_noise_level": "Controls how much of the reference audio to preserve (0=exact copy, 1=complete recreation)."
+        "prompt": "Enter a detailed description of the audio you want to generate. The more specific and descriptive, the better the results.",
+        "negative_prompt": "Specify what you don't want to appear in the generated audio. Helps avoid unwanted characteristics.",
+        "duration": "Length of the generated audio in seconds. Maximum 47 seconds due to model constraints.",
+        "num_waveforms": "Number of different audio variations to generate from the same prompt.",
+        "inference_steps": "Number of denoising steps. Higher values may produce better quality but take longer.",
+        "guidance_scale": "How closely the model should follow your prompt. Higher values = more faithful to prompt but may sound less natural.",
+        "seed": "Control randomness with a specific seed. Use -1 for random seeds, or set a specific value for reproducibility.",
+        "use_init_audio": "Enable to use an existing audio file as reference for the structure of the generated audio.",
+        "init_audio_path": "Upload an audio file to use as a reference for generation.",
+        "init_audio_preview": "Preview of your reference audio.",
+        "init_noise_level": "Amount of noise to add to the reference audio. Higher values allow more creative freedom.",
+        "randomize_btn": "Click to get a new random seed.",
+        "generate_btn": "Start audio generation with current settings.",
+        "clear_btn": "Reset all settings to defaults and clear outputs.",
+        "download_btn": "Download the currently selected audio file.",
+        "download_all_btn": "Download all generated audio files as a ZIP archive.",
+        "use_as_reference_btn": "Use the currently selected audio as a reference for new generation.",
+        "output_selector": "Select between multiple generated audio files to preview.",
+        "status": "Current status and information about generation process.",
+        "send_to_process": "Send selected audio to the Process tab for further manipulation."
     }
     
     for elem_id, description in descriptions.items():
@@ -658,4 +675,195 @@ def send_to_process(selected_variation, process_inputs):
         return gr.update()
         
     process_inputs.append(file_path)
-    return gr.update(value=process_inputs) 
+    return gr.update(value=process_inputs)
+
+def register_api_endpoints(api):
+    """
+    Register API endpoints for Stable Audio
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/stable-audio/generate")
+    async def api_generate_audio(
+        background_tasks: BackgroundTasks,
+        prompt: str = Form(...),
+        negative_prompt: Optional[str] = Form(""),
+        duration: float = Form(5.0),
+        num_waveforms: int = Form(1),
+        inference_steps: int = Form(100),
+        guidance_scale: float = Form(7.0),
+        seed: int = Form(-1),
+        use_reference_audio: bool = Form(False),
+        reference_audio: Optional[UploadFile] = File(None),
+        noise_level: float = Form(0.7)
+    ):
+        """
+        Generate audio from text using Stable Audio
+        
+        Args:
+            background_tasks: FastAPI background tasks
+            prompt: Text description of the desired audio
+            negative_prompt: Text description of what to avoid
+            duration: Duration of the generated audio in seconds
+            num_waveforms: Number of audio samples to generate
+            inference_steps: Number of denoising steps
+            guidance_scale: Guidance scale for classifier-free guidance
+            seed: Random seed for generation (-1 for random)
+            use_reference_audio: Whether to use a reference audio file
+            reference_audio: Optional reference audio file
+            noise_level: Amount of noise to add to reference audio (0.0-1.0)
+            
+        Returns:
+            Dictionary containing information about generated audio files
+        """
+        try:
+            # Validate inputs
+            if not prompt or not prompt.strip():
+                raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+                
+            if duration < 1.0 or duration > 47.0:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Duration must be between 1.0 and 47.0 seconds"
+                )
+                
+            # Initialize model
+            model = StableAudioModel()
+            
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_dir_path = Path(temp_dir)
+                
+                # Save reference audio if provided
+                reference_audio_path = None
+                if use_reference_audio and reference_audio:
+                    ref_file_path = temp_dir_path / reference_audio.filename
+                    with ref_file_path.open("wb") as f:
+                        content = await reference_audio.read()
+                        f.write(content)
+                    reference_audio_path = str(ref_file_path)
+                
+                # Generate audio
+                results = model.generate_audio(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    duration=duration,
+                    num_waveforms=num_waveforms,
+                    num_inference_steps=inference_steps,
+                    guidance_scale=guidance_scale,
+                    seed=seed,
+                    init_audio_path=reference_audio_path,
+                    init_noise_level=noise_level
+                )
+                
+                if not results:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="No output generated. Audio generation failed."
+                    )
+                
+                # Prepare response with file information
+                response = {
+                    "status": "success",
+                    "message": f"Generated {len(results)} audio file(s)",
+                    "outputs": []
+                }
+                
+                # Store files for download
+                temp_api_dir = os.path.join(output_path, "temp_api", "stable_audio")
+                os.makedirs(temp_api_dir, exist_ok=True)
+                
+                # Copy files to download location and add to response
+                for result in results:
+                    src_path = result["file_path"]
+                    file_name = os.path.basename(src_path)
+                    dst_path = os.path.join(temp_api_dir, file_name)
+                    
+                    # Copy file
+                    shutil.copy2(src_path, dst_path)
+                    
+                    # Schedule cleanup
+                    background_tasks.add_task(
+                        delete_temp_file,
+                        dst_path, 
+                        delay=3600  # 1 hour
+                    )
+                    
+                    # Add to response
+                    response["outputs"].append({
+                        "filename": file_name,
+                        "download_url": f"/api/v1/stable-audio/download/{file_name}",
+                        "seed": result["seed"],
+                        "duration": duration,
+                        "sample_rate": result["sample_rate"]
+                    })
+                
+                # If multiple files, create a zip file
+                if len(results) > 1:
+                    zip_filename = f"stable_audio_{int(time.time())}.zip"
+                    zip_path = os.path.join(temp_api_dir, zip_filename)
+                    
+                    with zipfile.ZipFile(zip_path, 'w') as zipf:
+                        for result in results:
+                            src_path = result["file_path"]
+                            zipf.write(src_path, os.path.basename(src_path))
+                    
+                    # Schedule cleanup
+                    background_tasks.add_task(
+                        delete_temp_file,
+                        zip_path, 
+                        delay=3600  # 1 hour
+                    )
+                    
+                    # Add zip file to response
+                    response["zip_file"] = {
+                        "filename": zip_filename,
+                        "download_url": f"/api/v1/stable-audio/download/{zip_filename}"
+                    }
+                
+                return response
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error in Stable Audio generation:")
+            raise HTTPException(status_code=500, detail=f"Audio generation error: {str(e)}")
+    
+    @api.get("/api/v1/stable-audio/download/{file_name}")
+    async def download_stable_audio_file(file_name: str):
+        """
+        Download a generated Stable Audio file
+        
+        Args:
+            file_name: Name of the file to download
+            
+        Returns:
+            Audio file as a response
+        """
+        file_path = os.path.join(output_path, "temp_api", "stable_audio", file_name)
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        # Determine content type based on file extension
+        if file_name.lower().endswith(".zip"):
+            media_type = "application/zip"
+        else:
+            media_type = "audio/wav"
+            
+        return FileResponse(
+            file_path,
+            media_type=media_type,
+            filename=file_name
+        )
+
+def delete_temp_file(file_path: str, delay: int = 3600):
+    """Delete a temporary file after a delay"""
+    try:
+        time.sleep(delay)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        logger.error(f"Error deleting temporary file {file_path}: {e}") 

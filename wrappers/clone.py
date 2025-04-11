@@ -357,12 +357,75 @@ class Clone(BaseWrapper):
             """
             Clone vocals using RVC voice models.
             
-            Args:
-                files: List of audio files to process
-                settings: Voice cloning settings
-                
-            Returns:
-                List of processed audio files
+            This endpoint transforms vocal characteristics in audio files using pre-trained RVC voice models.
+            It allows you to change the timbre and characteristics of vocals while preserving the original
+            pitch, timing, and emotion of the performance.
+            
+            ## Parameters
+            
+            - **files**: Audio files containing vocals to be transformed (WAV, MP3, FLAC)
+            - **settings**: Voice cloning settings with the following options:
+              - **selected_voice** (required): Voice model name from available models (get list from `/api/v1/clone/voices`)
+              - **pitch_shift**: Pitch shift in semitones, from -24 to +24 (default: 0)
+              - **clone_bg_vocals**: Whether to also clone background vocals (default: false)
+              - **clone_stereo**: Preserve stereo information when cloning (default: true)
+              - **pitch_correction**: Apply pitch correction to cloned vocals (default: false)
+              - **pitch_correction_humanize**: How human-like the pitch correction should be (0-1, default: 0.95)
+              - **volume_mix_rate**: Mix ratio for volume envelope (0-1, default: 0.9)
+              - **accent_strength**: How strongly to apply the target voice characteristics (0-1, default: 0.2)
+              - **speaker_id**: ID of the speaker for multi-speaker models (default: 0)
+              - **pitch_extraction_method**: Algorithm for pitch extraction (default: "rmvpe+")
+                - Options: "hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe", etc.
+              - **filter_radius**: Median filter radius for 'harvest' pitch recognition (0-7, default: 3)
+              - **index_rate**: Feature search proportion when using the vector index (0-1, default: 1)
+              - **merge_type**: Merge strategy for hybrid pitch extraction ("median" or "mean", default: "median")
+              - **crepe_hop_length**: Hop length for CREPE-based pitch extraction (default: 160)
+            
+            ## Example Request
+            
+            ```python
+            import requests
+            
+            url = "http://localhost:7860/api/v1/process/clone"
+            
+            # Get available voices first
+            voices_response = requests.get("http://localhost:7860/api/v1/clone/voices")
+            voice_model = voices_response.json()["voices"][0]  # Use first available voice
+            
+            # Upload audio file
+            files = [
+                ('files', ('vocals.wav', open('vocals.wav', 'rb'), 'audio/wav'))
+            ]
+            
+            # Configure voice cloning parameters
+            data = {
+                'selected_voice': voice_model,
+                'pitch_shift': 0,
+                'accent_strength': 0.3,
+                'pitch_extraction_method': 'rmvpe+',
+                'volume_mix_rate': 0.9,
+                'clone_stereo': 'true'
+            }
+            
+            # Send request
+            response = requests.post(url, files=files, data=data)
+            
+            # Save the cloned audio
+            with open('cloned_vocals.wav', 'wb') as f:
+                f.write(response.content)
+            ```
+            
+            ## Best Practices
+            
+            1. Use isolated vocals for best results - separate your audio first
+            2. Start with default settings and adjust as needed
+            3. For challenging vocals, try different pitch extraction methods
+            4. Adjust accent_strength to control how strongly the target voice is applied
+            5. Use pitch_shift if the output is too high or low
+            
+            ## Response
+            
+            The API returns the cloned audio file as an attachment.
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -395,7 +458,46 @@ class Clone(BaseWrapper):
         # Also register the voice list endpoint
         @api.get("/api/v1/clone/voices")
         async def list_available_voices():
-            """Get list of available voice models"""
+            """
+            Get list of available voice models for the Clone processor.
+            
+            This endpoint returns a list of all available pre-trained voice models that can be used with the Clone processor.
+            These voice models are used to transform the vocal characteristics of audio files.
+            
+            ## Example Request
+            
+            ```python
+            import requests
+            
+            url = "http://localhost:7860/api/v1/clone/voices"
+            response = requests.get(url)
+            voices = response.json()["voices"]
+            
+            print(f"Available voice models: {voices}")
+            
+            # Use a voice model with the Clone processor
+            clone_url = "http://localhost:7860/api/v1/process/clone"
+            files = [('files', ('vocals.wav', open('vocals.wav', 'rb'), 'audio/wav'))]
+            data = {'selected_voice': voices[0]}  # Use the first available voice
+            
+            response = requests.post(clone_url, files=files, data=data)
+            ```
+            
+            ## Response Format
+            
+            ```json
+            {
+                "voices": [
+                    "voice_model_1",
+                    "voice_model_2",
+                    "celebrity_voice_1",
+                    "..."
+                ]
+            }
+            ```
+            
+            The returned voice model names can be used directly with the Clone processor's `selected_voice` parameter.
+            """
             return {"voices": list_speakers()}
 
         return process_clone
