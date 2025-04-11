@@ -26,6 +26,7 @@ logger.setLevel(logging.DEBUG)
 import gradio as gr
 import uvicorn
 from torchaudio._extension import _init_dll_path
+from fastapi.middleware.cors import CORSMiddleware
 
 import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 from api import app
@@ -39,6 +40,11 @@ from layouts.rvc_train import render as rvc_render, register_descriptions as rvc
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.stable_audio import render as render_stable_audio, register_descriptions as stable_audio_register_descriptions, \
     listen as stable_audio_listen
+from layouts.orpheus import listen as orpheus_listen, render_orpheus, register_descriptions as orpheus_register_descriptions
+from layouts.diffrythm import listen as diffrythm_listen, register_descriptions as diffrythm_register_descriptions, \
+    render as render_diffrythm
+from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
+    render as render_transcribe
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -58,6 +64,16 @@ os.environ["HF_HOME"] = hf_dir
 project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+def setup_middleware(app):
+    """Set up the FastAPI middleware for CORS and other functionality."""
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 if __name__ == '__main__':
     # Parse command-line arguments
@@ -82,6 +98,9 @@ if __name__ == '__main__':
         tts_register_descriptions(arg_handler)
         rvc_register_descriptions(arg_handler)
         stable_audio_register_descriptions(arg_handler)
+        orpheus_register_descriptions(arg_handler)
+        diffrythm_register_descriptions(arg_handler)
+        transcribe_register_descriptions(arg_handler)
 
         with open(project_root / 'css' / 'ui.css', 'r') as css_file:
             css = css_file.read()
@@ -93,7 +112,7 @@ if __name__ == '__main__':
             js = f'<script type="text/javascript">{js}</script>'
             js += f"\n{css}"
 
-        with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue") as ui:
+        with gr.Blocks(title='AudioLab', head=js, theme="d8ahazard/rd_blue") as demo:
             with gr.Tabs(selected="process"):
                 with gr.Tab(label='Process', id="process"):
                     render_process(arg_handler)
@@ -105,6 +124,12 @@ if __name__ == '__main__':
                     render_tts()
                 with gr.Tab(label='Sound Forge', id="soundforge"):
                     render_stable_audio(arg_handler)
+                with gr.Tab(label='Orpheus', id="orpheus"):
+                    render_orpheus(arg_handler)
+                with gr.Tab(label='DiffRhythm', id="diffrythm"):
+                    render_diffrythm(arg_handler)
+                with gr.Tab(label='Transcribe', id="transcribe"):
+                    render_transcribe(arg_handler)
 
             tts_listen()
             music_listen()

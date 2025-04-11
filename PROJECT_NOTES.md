@@ -58,6 +58,7 @@ Contains the core functional modules of the application:
 - **zonos/**: High-quality TTS module.
 - **stable_audio/**: Text-to-audio generation using StabilityAI's Stable Audio model.
 - **diffrythm/**: End-to-end full-length song generation using DiffRhythm.
+- **orpheus/**: Real-time high-quality TTS system powered by large language models.
 
 #### `/layouts`
 
@@ -70,6 +71,7 @@ Defines the Gradio UI layouts for different sections of the application:
 - **zonos.py**: UI for the Zonos TTS system.
 - **stable_audio.py**: UI for text-to-audio generation with StabilityAI's Stable Audio.
 - **orpheus.py**: UI for Orpheus TTS functionality.
+- **diffrythm.py**: UI for DiffRhythm song generation.
 - **transcribe.py**: UI for audio transcription with speaker diarization.
 
 #### `/util`
@@ -256,10 +258,12 @@ The application provides a modular REST API built with FastAPI:
    - **/api/v1/music/generate**: Generate music with lyrics and genre prompts.
    - **/api/v1/orpheus/generate**: Generate speech using Orpheus TTS.
    - **/api/v1/orpheus/finetune**: Finetune Orpheus on custom voices.
+   - **/api/v1/orpheus/voices**: List available Orpheus voice models.
    - **/api/v1/stable-audio/generate**: Generate audio from text using Stable Audio.
    - **/api/v1/rvc/train**: Train RVC voice models.
    - **/api/v1/rvc/models**: List available voice models.
    - **/api/v1/diffrythm/generate**: Generate full-length songs with DiffRhythm.
+   - **/api/v1/diffrythm/models**: List available DiffRhythm models.
 
 3. **API Documentation**:
    - Interactive documentation available at **/docs** using Swagger UI.
@@ -455,4 +459,33 @@ The DiffRhythm module provides a dedicated UI interface with the following featu
   - Model selection
   - Memory optimization options
 
-The module seamlessly integrates with the rest of the AudioLab ecosystem, allowing generated songs to be further processed with other tools like audio separation, voice cloning, and remastering. 
+The module seamlessly integrates with the rest of the AudioLab ecosystem, allowing generated songs to be further processed with other tools like audio separation, voice cloning, and remastering.
+
+### Orpheus TTS
+
+The Orpheus TTS module provides real-time high-quality text-to-speech capabilities:
+
+- Generate natural-sounding speech with human-like intonation and prosody.
+- Real-time speech synthesis powered by large language models.
+- Support for voice cloning with minimal voice data requirements.
+- Create multiple voice styles from a single voice model.
+- Fine-tuning capabilities to create custom voice models from your own recordings.
+- Multilingual support for generating speech in different languages.
+- Emotion and speaking style control for expressive speech generation.
+
+The Orpheus TTS interface includes:
+
+- **Text Input**: Comprehensive text editor with formatting options for speech generation.
+- **Voice Selection**: Browse and select from pre-trained voice models.
+- **Style Control**: Adjust speaking style, emotion, speed, and other voice characteristics.
+- **Fine-tuning Interface**: Tools for creating custom voice models from your recordings.
+- **Batch Processing**: Generate speech for multiple text inputs with the same voice settings.
+- **Export Options**: Save generated speech in various formats (WAV, MP3, etc.).
+- **Integration with Process Tab**: Send generated speech to the Process tab for further audio manipulation.
+
+The module is fully integrated with the AudioLab API through the following endpoints:
+- `/api/v1/orpheus/generate`: Generate speech from text with voice customization.
+- `/api/v1/orpheus/finetune`: Create custom voice models from audio recordings.
+- `/api/v1/orpheus/voices`: List available voice models with their capabilities.
+
+Orpheus TTS brings state-of-the-art LLM-powered speech synthesis to AudioLab, enabling users to create incredibly natural and expressive speech for a wide range of applications. 

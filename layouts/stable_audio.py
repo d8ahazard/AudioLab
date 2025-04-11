@@ -1,10 +1,12 @@
 import os
 import logging
 import gradio as gr
-import torch
-from typing import Dict, Any, List
-import random
+from pathlib import Path
+import tempfile
+import time
 import zipfile
+from typing import List
+import random
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
@@ -662,16 +664,20 @@ def send_to_process(selected_variation, process_inputs):
 
 def register_api_endpoints(api):
     """
-    Register API endpoints for Stable Audio
+    Register FastAPI endpoints for Stable Audio generation.
     
     Args:
         api: FastAPI application instance
     """
+    from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException
+    from fastapi.responses import FileResponse, JSONResponse
+    from typing import Optional
+    
     @api.post("/api/v1/stable-audio/generate", tags=["Stable Audio"])
     async def api_generate_audio(
         background_tasks: BackgroundTasks,
         prompt: str = Form(...),
-        negative_prompt: Optional[str] = Form(""),
+        negative_prompt: str = Form(""),
         duration: float = Form(5.0),
         num_waveforms: int = Form(1),
         inference_steps: int = Form(100),

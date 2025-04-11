@@ -488,6 +488,10 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
+    from fastapi import UploadFile, File, Form, HTTPException
+    from fastapi.responses import FileResponse, JSONResponse
+    from typing import Optional
+    
     @api.post("/api/v1/tts/generate", tags=["Standard TTS"])
     async def api_generate_tts(
         text: str = Form(...),

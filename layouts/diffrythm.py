@@ -33,7 +33,7 @@ from modules.diffrythm.infer import (
 )
 
 from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -623,7 +623,7 @@ def render(arg_handler: ArgHandler):
                         train_btn = gr.Button(
                             "Start Training",
                             variant="primary",
-                            elem_classes="hintitem",
+                        elem_classes="hintitem",
                             elem_id="diffrythm_train_btn"
                         )
                         
@@ -1153,10 +1153,14 @@ File Naming:
 def register_api_endpoints(api):
     """
     Register API endpoints for DiffRhythm functionality
-    
-    Args:
+        
+        Args:
         api: FastAPI application instance
     """
+    from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+    from fastapi.responses import FileResponse, JSONResponse
+    from typing import Optional, List
+    
     @api.post("/api/v1/diffrythm/create_project", tags=["DiffRhythm"])
     async def api_create_project(
         project_name: str = Form(...),
@@ -1168,18 +1172,51 @@ def register_api_endpoints(api):
         key: Optional[str] = Form(None),
         time_signature: Optional[str] = Form(None)
     ):
+        """Create a new DiffRhythm project with audio and lyrics"""
         try:
-            result = await create_project(
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="diffrythm_project_")
+            
+            # Save uploaded files
+            audio_path = os.path.join(temp_dir, audio_file.filename)
+            with open(audio_path, "wb") as f:
+                content = await audio_file.read()
+                f.write(content)
+                
+            # Save lyrics file if provided
+            lyrics_path = None
+            if lyrics_file:
+                lyrics_path = os.path.join(temp_dir, lyrics_file.filename)
+                with open(lyrics_path, "wb") as f:
+                    content = await lyrics_file.read()
+                    f.write(content)
+            elif lyrics_text:
+                lyrics_path = os.path.join(temp_dir, f"{project_name}.{lyrics_format}")
+                with open(lyrics_path, "w", encoding="utf-8") as f:
+                    f.write(lyrics_text)
+            
+            # Create project directory
+            project_dir = os.path.join(output_path, "diffrythm_train", project_name)
+            os.makedirs(project_dir, exist_ok=True)
+            
+            # Process the audio and lyrics
+            input_files = [audio_path]
+            if lyrics_path:
+                input_files.append(lyrics_path)
+                
+            result = preprocess_data_global(
                 project_name=project_name,
-                audio_file=audio_file,
-                lyrics_file=lyrics_file,
-                lyrics_text=lyrics_text,
-                lyrics_format=lyrics_format,
-                bpm=bpm,
-                key=key,
-                time_signature=time_signature
+                existing_project="",  # No existing project
+                input_files=input_files,
+                separate_vocals=True,
+                transcribe_audio=True
             )
-            return result
+            
+            # Cleanup temp directory in the background
+            BackgroundTasks().add_task(cleanup_temp_files, temp_dir)
+            
+            return {"status": "success", "message": result}
+            
         except Exception as e:
             logger.exception("Error creating DiffRhythm project:")
             raise HTTPException(status_code=500, detail=str(e))
@@ -1192,15 +1229,28 @@ def register_api_endpoints(api):
         learning_rate: float = Form(1e-4),
         save_interval: int = Form(10)
     ):
+        """Train a DiffRhythm model on a prepared project"""
         try:
-            result = await train_model(
+            # Start training with default parameters
+            result = start_training_global(
                 project_name=project_name,
+                existing_project="",  # No existing project, use project_name
+                base_model="ASLP-lab/DiffRhythm-base",
                 batch_size=batch_size,
-                num_epochs=num_epochs,
+                epochs=num_epochs,
                 learning_rate=learning_rate,
-                save_interval=save_interval
+                num_workers=4,  # Default value
+                save_steps=save_interval * 1000,
+                warmup_steps=20,  # Default value
+                max_grad_norm=1.0,  # Default value
+                grad_accumulation=1,  # Default value
+                audio_drop_prob=0.3,  # Default value 
+                style_drop_prob=0.1,  # Default value
+                lrc_drop_prob=0.1    # Default value
             )
-            return result
+            
+            return {"status": "success", "message": result}
+            
         except Exception as e:
             logger.exception("Error training DiffRhythm model:")
             raise HTTPException(status_code=500, detail=str(e))
@@ -1218,26 +1268,57 @@ def register_api_endpoints(api):
         guidance_scale: float = Form(3.0),
         temperature: float = Form(1.0)
     ):
+        """Generate audio with a trained DiffRhythm model"""
         try:
-            result = await generate_audio(
-                project_name=project_name,
-                lyrics_file=lyrics_file,
-                lyrics_text=lyrics_text,
-                lyrics_format=lyrics_format,
-                bpm=bpm,
-                key=key,
-                time_signature=time_signature,
-                num_samples=num_samples,
-                guidance_scale=guidance_scale,
-                temperature=temperature
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="diffrythm_generate_")
+            
+            # Save lyrics if provided
+            lrc_path = None
+            if lyrics_file:
+                lrc_path = os.path.join(temp_dir, lyrics_file.filename)
+                with open(lrc_path, "wb") as f:
+                    content = await lyrics_file.read()
+                    f.write(content)
+            elif lyrics_text:
+                lrc_path = os.path.join(temp_dir, f"lyrics.{lyrics_format}")
+                with open(lrc_path, "w", encoding="utf-8") as f:
+                    f.write(lyrics_text)
+            
+            # Find the trained model path
+            model_path = os.path.join(output_path, "diffrythm_train", project_name, "model.pt")
+            if not os.path.exists(model_path):
+                model_path = "ASLP-lab/DiffRhythm-base"  # Fall back to base model
+                
+            # Generate the audio
+            output_path_file, message = generate_song(
+                lrc_path=lrc_path,
+                style_prompt=f"BPM {bpm}, Key {key}, {time_signature}" if bpm and key and time_signature else "",
+                ref_audio_path=None,
+                model_name=model_path,
+                chunked=True
             )
-            return result
+            
+            if not output_path_file or not os.path.exists(output_path_file):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to generate audio: {message}"
+                )
+            
+            # Return the generated audio file
+            return FileResponse(
+                output_path_file,
+                media_type="audio/wav",
+                filename=os.path.basename(output_path_file)
+            )
+            
         except Exception as e:
             logger.exception("Error generating audio with DiffRhythm:")
             raise HTTPException(status_code=500, detail=str(e))
 
     @api.get("/api/v1/diffrythm/projects", tags=["DiffRhythm"])
     async def api_list_projects():
+        """List all available DiffRhythm projects"""
         try:
             projects = list_diffrythm_projects()
             return {"projects": projects}
@@ -1247,18 +1328,54 @@ def register_api_endpoints(api):
 
     @api.get("/api/v1/diffrythm/project/{project_name}", tags=["DiffRhythm"])
     async def api_get_project(project_name: str):
+        """Get details of a specific DiffRhythm project"""
         try:
-            project = get_project_details(project_name)
-            return project
+            project_dir = os.path.join(output_path, "diffrythm_train", project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
+                
+            # Get training info
+            train_scp = os.path.join(project_dir, "train.scp")
+            dataset_size = 0
+            if os.path.exists(train_scp):
+                with open(train_scp, "r") as f:
+                    dataset_size = len(f.readlines())
+                    
+            # Get model info
+            model_path = os.path.join(project_dir, "model.pt")
+            model_exists = os.path.exists(model_path)
+            model_size = 0
+            if model_exists:
+                model_size = os.path.getsize(model_path) / (1024 * 1024)  # Size in MB
+                
+            return {
+                "name": project_name,
+                "dataset_size": dataset_size,
+                "model_trained": model_exists,
+                "model_size_mb": model_size
+            }
+            
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("Error getting DiffRhythm project details:")
             raise HTTPException(status_code=500, detail=str(e))
 
     @api.delete("/api/v1/diffrythm/project/{project_name}", tags=["DiffRhythm"])
     async def api_delete_project(project_name: str):
+        """Delete a DiffRhythm project"""
         try:
-            result = delete_project(project_name)
-            return result
+            project_dir = os.path.join(output_path, "diffrythm_train", project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
+                
+            # Delete the project directory
+            shutil.rmtree(project_dir)
+            
+            return {"status": "success", "message": f"Project {project_name} deleted successfully"}
+            
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("Error deleting DiffRhythm project:")
             raise HTTPException(status_code=500, detail=str(e))
@@ -1270,4 +1387,221 @@ def cleanup_temp_files(temp_dir):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
     except Exception as e:
-        logger.error(f"Error cleaning up temporary files: {e}") 
+        logger.error(f"Error cleaning up temporary files: {e}")
+
+# Add global versions of functions for API access
+
+def preprocess_data_global(
+    project_name,
+    existing_project,
+    input_files,
+    separate_vocals,
+    transcribe_audio,
+    progress=None
+):
+    """
+    Global version of preprocess_data that can be called from API endpoints
+    """
+    try:
+        if not project_name and not existing_project:
+            return "Please provide a project name"
+        
+        if project_name and existing_project:
+            return "Please provide only one project name"
+        
+        if not input_files:
+            return "Please provide input files"
+        
+        # Use existing project name if provided
+        if existing_project:
+            project_name = existing_project
+        
+        # Create project directory
+        project_dir = os.path.join(output_path, "diffrythm_train", project_name)
+        os.makedirs(project_dir, exist_ok=True)
+        
+        # Create dataset directories
+        latent_dir = os.path.join(project_dir, "latent")
+        style_dir = os.path.join(project_dir, "style")
+        lrc_dir = os.path.join(project_dir, "lrc")
+        raw_dir = os.path.join(project_dir, "raw")
+        
+        for d in [latent_dir, style_dir, lrc_dir, raw_dir]:
+            os.makedirs(d, exist_ok=True)
+        
+        if progress:
+            progress(0.1, "Processing input files...")
+        
+        # Load models for latent conversion
+        if progress:
+            progress(0.15, "Loading models...")
+        vae_ckpt_path = check_download_model(repo_id="ASLP-lab/DiffRhythm-vae")
+        vae = torch.jit.load(vae_ckpt_path)
+        
+        muq_model_dir = os.path.join(model_path, "diffrythm", "muq")
+        os.makedirs(muq_model_dir, exist_ok=True)
+        muq = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large", cache_dir=muq_model_dir)
+        
+        # Process each input file
+        processed_files = []
+        for idx, f in enumerate(input_files):
+            try:
+                if progress:
+                    progress((idx + 1) / len(input_files), 
+                           f"Processing file {idx + 1}/{len(input_files)}")
+                
+                # Get base name without extension
+                base_name = os.path.splitext(os.path.basename(f))[0]
+                
+                # Copy original file to raw directory
+                raw_path = os.path.join(raw_dir, f"{base_name}.wav")
+                if not os.path.exists(raw_path):
+                    shutil.copy2(f, raw_path)
+                
+                # Separate vocals if requested
+                if separate_vocals:
+                    if progress:
+                        progress((idx + 1) / len(input_files), 
+                               f"Separating vocals for {base_name}")
+                    vocal_outputs, _ = separate_vocal([raw_path])
+                    if vocal_outputs:
+                        raw_path = vocal_outputs[0]
+                
+                # Transcribe if requested and no matching lyrics file
+                if transcribe_audio:
+                    matching_lyrics = None
+                    if input_files:
+                        for lf in input_files:
+                            if os.path.splitext(os.path.basename(lf))[0] == base_name:
+                                matching_lyrics = lf
+                                break
+                    
+                    if not matching_lyrics:
+                        if progress:
+                            progress((idx + 1) / len(input_files), 
+                                   f"Transcribing {base_name}")
+                        transcription = process_transcription(
+                            [raw_path],
+                            language="auto",
+                            align_output=True,
+                            assign_speakers=False
+                        )
+                        if transcription[1]:  # If transcription files were created
+                            # Find the .txt file
+                            txt_file = [f for f in transcription[1] 
+                                      if f.endswith('.txt')][0]
+                            matching_lyrics = txt_file
+                
+                # Convert audio to latents and style embeddings
+                if progress:
+                    progress((idx + 1) / len(input_files), 
+                           f"Converting {base_name} to latents")
+                
+                latents, style_emb = convert_to_latents(raw_path, vae, muq)
+                if latents is not None and style_emb is not None:
+                    # Save latents and style embeddings
+                    latent_path = os.path.join(latent_dir, f"{base_name}.npy")
+                    style_path = os.path.join(style_dir, f"{base_name}.npy")
+                    lrc_path = os.path.join(lrc_dir, f"{base_name}.lrc")
+                    
+                    np.save(latent_path, latents)
+                    np.save(style_path, style_emb)
+                    
+                    # Copy or create LRC file
+                    if matching_lyrics:
+                        shutil.copy2(matching_lyrics, lrc_path)
+                    
+                    processed_files.append(
+                        f"{raw_path}|{lrc_path}|{latent_path}|{style_path}"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Error processing file {f}: {e}")
+                continue
+        
+        # Create train.scp file
+        scp_path = os.path.join(project_dir, "train.scp")
+        with open(scp_path, "w") as f:
+            f.write("\n".join(processed_files))
+        
+        return "Preprocessing complete! Ready to start training."
+        
+    except Exception as e:
+        logger.error(f"Error during preprocessing: {e}")
+        return f"Error during preprocessing: {str(e)}"
+
+def start_training_global(
+    project_name,
+    existing_project,
+    base_model,
+    batch_size,
+    epochs,
+    learning_rate,
+    num_workers,
+    save_steps,
+    warmup_steps,
+    max_grad_norm,
+    grad_accumulation,
+    audio_drop_prob,
+    style_drop_prob,
+    lrc_drop_prob,
+    progress=None
+):
+    """
+    Global version of start_training that can be called from API endpoints
+    """
+    try:
+        if not project_name and not existing_project:
+            return "Please provide a project name"
+        
+        if project_name and existing_project:
+            return "Please provide only one project name"
+        
+        # Use existing project name if provided
+        if existing_project:
+            project_name = existing_project
+        
+        # Check if project exists and has been preprocessed
+        project_dir = os.path.join(output_path, "diffrythm_train", project_name)
+        train_scp = os.path.join(project_dir, "train.scp")
+        
+        if not os.path.exists(project_dir) or not os.path.exists(train_scp):
+            return "Project not found or data not preprocessed. Please preprocess data first."
+        
+        # Import training function
+        from modules.diffrythm.train.train import TrainingArgs, train
+        
+        # Create training arguments
+        args = TrainingArgs(
+            project_dir=project_dir,
+            base_model=base_model,
+            batch_size=batch_size,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            num_workers=num_workers,
+            save_steps=save_steps,
+            warmup_steps=warmup_steps,
+            max_grad_norm=max_grad_norm,
+            grad_accumulation=grad_accumulation,
+            audio_drop_prob=audio_drop_prob,
+            style_drop_prob=style_drop_prob,
+            lrc_drop_prob=lrc_drop_prob,
+            max_frames=2048,  # Fixed for now, could be made configurable
+            grad_ckpt=True,   # Enable gradient checkpointing by default
+            reset_lr=False,   # Don't reset learning rate by default
+            resumable_with_seed=42  # Fixed seed for reproducibility
+        )
+        
+        # Start training with progress updates
+        final_model_path = train(args, progress=progress)
+        
+        if final_model_path and os.path.exists(final_model_path):
+            return f"Training complete! Model saved to {final_model_path}"
+        else:
+            return "Training completed but model save failed."
+        
+    except Exception as e:
+        logger.error(f"Error during training: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error during training: {str(e)}" 

@@ -1157,6 +1157,10 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
+    from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException
+    from fastapi.responses import FileResponse, JSONResponse
+    from typing import Optional, List
+    
     @api.post("/api/v1/rvc/train", tags=["RVC"])
     async def api_train_rvc_model(
         background_tasks: BackgroundTasks,
@@ -1351,6 +1355,14 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception(f"Error downloading model {project_name}/{weight_file}:")
             raise HTTPException(status_code=500, detail=f"Error downloading model: {str(e)}")
+
+    @api.post("/api/v1/rvc/upload", tags=["RVC"])
+    async def api_upload_datasets(
+        project_name: str = Form(...),
+        dataset_files: List[UploadFile] = File(...)
+    ):
+        # Implementation of the new API endpoint
+        pass
 
 def run_train_job(
     job_id, project_name, audio_files, sample_rate, use_pitch_guidance, 

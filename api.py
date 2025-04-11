@@ -1,29 +1,31 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, create_model
-from typing import List, Dict, Any, Optional
-import tempfile
-import os
-import shutil
-from pathlib import Path
 import importlib
 import inspect
+import logging
+import shutil
+import tempfile
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, create_model
+
 from util.data_classes import ProjectFiles
-from wrappers.base_wrapper import BaseWrapper, TypedInput
-from handlers.config import app_path
+from wrappers.base_wrapper import BaseWrapper
+
+# Import register_api_endpoints functions from layout modules
+from layouts.orpheus import register_api_endpoints as register_orpheus_endpoints
+from layouts.diffrythm import register_api_endpoints as register_diffrythm_endpoints
+from layouts.music import register_api_endpoints as register_music_endpoints
+from layouts.process import register_api_endpoints as register_process_endpoints
+from layouts.rvc_train import register_api_endpoints as register_rvc_endpoints
+from layouts.stable_audio import register_api_endpoints as register_stable_audio_endpoints
+from layouts.tts import register_api_endpoints as register_tts_endpoints
+from layouts.transcribe import register_api_endpoints as register_transcribe_endpoints
 
 # Initialize logger
 logger = logging.getLogger(__name__)
-
-# Add direct import for the transcribe functionality
-import layouts.transcribe as transcribe_module
-import layouts.music as music_module
-import layouts.orpheus as orpheus_module
-import layouts.process as process_module
-import layouts.rvc_train as rvc_train_module
-import layouts.stable_audio as stable_audio_module
-import layouts.tts as tts_module
-import layouts.diffrythm as diffrythm_module
 
 app = FastAPI(
     title="AudioLab API",
@@ -145,9 +147,28 @@ app = FastAPI(
     ]
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Create a temporary directory for file uploads
 TEMP_DIR = Path("temp_uploads")
 TEMP_DIR.mkdir(exist_ok=True)
+
+# Register API endpoints from layout modules
+register_orpheus_endpoints(app)
+register_diffrythm_endpoints(app)
+register_music_endpoints(app)
+register_process_endpoints(app)
+register_rvc_endpoints(app)
+register_stable_audio_endpoints(app)
+register_tts_endpoints(app)
+register_transcribe_endpoints(app)
 
 def create_pydantic_model_from_wrapper(wrapper: BaseWrapper) -> BaseModel:
     """Create a Pydantic model from a wrapper's allowed_kwargs"""
@@ -157,9 +178,10 @@ def create_pydantic_model_from_wrapper(wrapper: BaseWrapper) -> BaseModel:
         if value.field.default == ...:
             field_type = Optional[field_type]
         fields[key] = (field_type, value.field)
-    
+
     model_name = f"{wrapper.__class__.__name__}Model"
     return create_model(model_name, **fields)
+
 
 def get_all_wrappers():
     """Dynamically load all wrapper classes"""
@@ -168,29 +190,32 @@ def get_all_wrappers():
     for file in wrappers_dir.glob("*.py"):
         if file.name == "base_wrapper.py" or file.name.startswith("_"):
             continue
-        
+
         module_name = f"wrappers.{file.stem}"
         module = importlib.import_module(module_name)
-        
+
         for name, obj in module.__dict__.items():
-            if (inspect.isclass(obj) and 
-                issubclass(obj, BaseWrapper) and 
-                obj is not BaseWrapper):
+            if (inspect.isclass(obj) and
+                    issubclass(obj, BaseWrapper) and
+                    obj is not BaseWrapper):
                 wrapper = obj()
                 wrappers[wrapper.title.lower().replace(" ", "_")] = wrapper
-    
+
     return wrappers
 
+
 WRAPPERS = get_all_wrappers()
+
 
 class ProcessRequest(BaseModel):
     processors: List[str]
     settings: Dict[str, Dict[str, Any]]
 
+
 @app.post("/api/v1/process/multi", tags=["Multi-Processing"])
 async def process_multi(
-    request: ProcessRequest,
-    files: List[UploadFile] = File(...)
+        request: ProcessRequest,
+        files: List[UploadFile] = File(...)
 ):
     """
     Process multiple audio files through a chain of processors
@@ -205,23 +230,23 @@ async def process_multi(
                 with file_path.open("wb") as f:
                     shutil.copyfileobj(file.file, f)
                 input_files.append(ProjectFiles(str(file_path)))
-            
+
             # Process through each wrapper
             current_files = input_files
             for processor_name in request.processors:
                 if processor_name not in WRAPPERS:
                     raise HTTPException(status_code=400, detail=f"Unknown processor: {processor_name}")
-                
+
                 wrapper = WRAPPERS[processor_name]
                 settings = request.settings.get(processor_name, {})
-                
+
                 # Validate settings against wrapper's allowed_kwargs
                 if not wrapper.validate_args(**settings):
                     raise HTTPException(status_code=400, detail=f"Invalid settings for processor: {processor_name}")
-                
+
                 # Process files
                 current_files = wrapper.process_audio(current_files, **settings)
-            
+
             # Return the processed files
             output_files = []
             for project in current_files:
@@ -229,21 +254,23 @@ async def process_multi(
                     output_path = Path(output)
                     if output_path.exists():
                         output_files.append(FileResponse(output))
-            
+
             return output_files
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # Create individual endpoints for each wrapper
 for name, wrapper in WRAPPERS.items():
     model = create_pydantic_model_from_wrapper(wrapper)
-    
+
+
     @app.post(f"/api/v1/process/{name}", tags=["Audio Processing"])
     async def process_single(
-        files: List[UploadFile] = File(...),
-        settings: model = None,
-        wrapper=wrapper
+            files: List[UploadFile] = File(...),
+            settings: model = None,
+            wrapper=wrapper
     ):
         """
         Process audio files through a single processor
@@ -257,11 +284,11 @@ for name, wrapper in WRAPPERS.items():
                     with file_path.open("wb") as f:
                         shutil.copyfileobj(file.file, f)
                     input_files.append(ProjectFiles(str(file_path)))
-                
+
                 # Process files
                 settings_dict = settings.dict() if settings else {}
                 processed_files = wrapper.process_audio(input_files, **settings_dict)
-                
+
                 # Return the processed files
                 output_files = []
                 for project in processed_files:
@@ -269,11 +296,12 @@ for name, wrapper in WRAPPERS.items():
                         output_path = Path(output)
                         if output_path.exists():
                             output_files.append(FileResponse(output))
-                
+
                 return output_files
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
 
 # Add OpenAPI documentation
 @app.get("/api/v1/docs", tags=["Multi-Processing"])
@@ -297,4 +325,4 @@ async def get_documentation():
                 for k, v in wrapper.allowed_kwargs.items()
             }
         }
-    return docs 
+    return docs

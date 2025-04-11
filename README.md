@@ -17,7 +17,9 @@ AudioLab is an open-source powerhouse for voice-cloning and audio separation, bu
 
 ### 🎵 Audio Processing Capabilities
 - **🎼 Music Generation:** Create music from scratch or remix existing tracks using YuE.
+- **🎵 Song Generation:** Create full-length songs with vocals and instrumentals using DiffRhythm.
 - **🗣️ Zonos Text-to-Speech:** High-quality TTS with deep learning.
+- **🎭 Orpheus TTS:** Real-time natural-sounding speech powered by large language models.
 - **📢 Text-to-Speech:** Clone voices and generate natural-sounding speech with Coqui TTS.
 - **🔊 Text-to-Audio:** Generate sound effects and ambient audio from text descriptions using Stable Audio.
 - **🎛️ Audio Separation:** Isolate vocals, drums, bass, and other components from a track.
@@ -147,6 +149,83 @@ Example prompts:
 - "An electronic beat with pulsing bass at 120 BPM"
 - "A sci-fi spaceship engine humming"
 
+### DiffRhythm: Full-Length Song Generation
+
+Create complete songs with vocals and instrumentals using state-of-the-art latent diffusion:
+
+- **🎵 Complete Songs:** Generate full-length songs up to 4m45s.
+- **🎤 Lyrics Support:** Add lyrics using LRC format with timestamps.
+- **🎹 Style Control:** Define the musical style using text prompts or reference audio.
+- **⚡ Blazingly Fast:** Efficient generation compared to other music models.
+- **💾 Memory Efficient:** Chunked decoding option for consumer GPUs.
+
+Example use cases:
+- Create original songs in any genre with your own lyrics
+- Generate background music for videos with specific moods
+- Experiment with unique musical styles and vocal characteristics
+
+### Orpheus TTS: Real-time Speech Synthesis
+
+Generate natural-sounding speech with LLM-powered text-to-speech capabilities:
+
+- **⚡ Real-time Processing:** Instantaneous speech generation.
+- **🗣️ Voice Cloning:** Create custom voice models from your recordings.
+- **😀 Emotion Control:** Adjust speaking style for more expressive speech.
+- **🌐 Multilingual Support:** Generate speech in multiple languages.
+- **🎭 Style Variety:** Create different styles from a single voice model.
+
+Example applications:
+- Create audiobooks with natural narration
+- Develop voice assistants with your own voice
+- Generate voiceovers for videos and presentations
+- Create accessible content for those with reading difficulties
+
+### Transcribe: Advanced Speech-to-Text
+
+Convert audio recordings to text with speaker identification and precise timing:
+
+- **👥 Speaker Diarization:** Automatically identify and label different speakers.
+- **⏱️ Word-Level Timestamps:** Create perfectly aligned text with audio timing.
+- **🌍 Multilingual Support:** Transcribe content in multiple languages.
+- **📊 Batch Processing:** Process multiple audio files in sequence.
+- **📋 Multiple Output Formats:** Generate both JSON metadata and readable text.
+
+Example applications:
+- Create subtitles for videos with speaker labels
+- Transcribe interviews and meetings with speaker attribution
+- Generate searchable archives of audio content
+- Create training data for voice and speech models
+
+### Process Tab: Audio Processing Pipeline
+
+The heart of AudioLab with modular audio processing through a chain of wrappers:
+
+- **🔊 Separate:** Split audio into vocals, drums, bass, and other instruments.
+- **🎤 Clone:** Apply voice conversion with trained models.
+- **⚡ Remaster:** Enhance audio based on reference tracks.
+- **🔬 Super Resolution:** Improve audio detail and clarity.
+- **🔀 Merge:** Mix separate audio tracks with complete control.
+- **🔄 Convert:** Change audio formats with customizable settings.
+
+Example workflows:
+- Extract vocals → Apply voice clone → Merge with original instruments
+- Split song → Enhance each component → Remix with new levels
+- Remaster old recordings using modern reference tracks
+
+### RVC Training: Voice Model Creation
+
+Train custom voice models for voice conversion and cloning:
+
+- **🎯 One-Click Process:** Simplified training with automatic preprocessing.
+- **⚙️ Advanced Options:** Fine-tune training for specific voice characteristics.
+- **📊 Training Visualization:** Monitor progress in real-time.
+- **🔄 Model Management:** Organize and share your trained voice models.
+
+Example applications:
+- Create virtual versions of your own voice
+- Develop character voices for games or animations
+- Restore or enhance historical recordings
+
 ---
 
 ## 🤝 Acknowledgements
@@ -162,6 +241,8 @@ AudioLab is powered by some fantastic open-source projects:
 - 🎼 [YuE](https://github.com/multimodal-art-projection/YuE) – Music generation.
 - 🏆 [Zonos](https://github.com/Zyphra/Zonos) – High-quality TTS.
 - 🔈 [Stable Audio](https://stability.ai/blog/stable-audio-open-1-0-free-text-to-audio-model) – Text-to-audio generation.
+- 🎵 [DiffRhythm](https://github.com/ASLP-lab/DiffRhythm) – Full-length song generation with latent diffusion.
+- 🗣️ [Orpheus-TTS](https://github.com/canopyai/Orpheus-TTS) – Real-time high-quality text-to-speech.
 
 ---
 

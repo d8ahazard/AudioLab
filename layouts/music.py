@@ -1,13 +1,17 @@
 import json
 import os
+from pathlib import Path
 import random
+import shutil
+import tempfile
+import time
 import zipfile
 
 import gradio as gr
 import requests
 
 from handlers.args import ArgHandler
-from handlers.config import model_path
+from handlers.config import model_path, output_path
 from modules.yue.inference.infer import generate_music
 from modules.yue.inference.xcodec_mini_infer.utils.utils import seed_everything
 import logging
@@ -440,6 +444,10 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
+    from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException
+    from fastapi.responses import FileResponse, JSONResponse
+    from typing import Optional
+    
     @api.post("/api/v1/music/generate", tags=["YuE Music"])
     async def api_generate_music(
         background_tasks: BackgroundTasks,
