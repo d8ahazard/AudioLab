@@ -110,15 +110,40 @@ if __name__ == '__main__':
             music_listen()
             process_listen()
             stable_audio_listen()
+            orpheus_listen()
+            diffrythm_listen()
+            transcribe_listen()
 
-        # Launch both FastAPI and Gradio
-        ui.queue()  # Enable queuing for better handling of concurrent requests
-
-        # Mount Gradio app into FastAPI at the root path
-        favicon_path = os.path.join(project_root, 'res', 'favicon.ico')
-        app = gr.mount_gradio_app(app, ui, path="/", favicon_path=favicon_path)
-
-        # Start the combined server
+        # Enable queue for handling concurrent requests
+        demo.queue()
+        
+        # ---------------------------------------------------------------------------------
+        # Directly adapt Automatic1111's approach to prevent redirect issues
+        # ---------------------------------------------------------------------------------
+        
+        # Set up CORS and other middleware
+        setup_middleware(app)
+        
+        # Mount Gradio app onto our FastAPI app
+        app = gr.mount_gradio_app(
+            app, 
+            demo,
+            path="/",  # Mount at root path
+            favicon_path=os.path.join(project_root, 'res', 'favicon.ico')
+        )
+        
+        # Print startup information
         logger.info(f"Server running on http://{server_name}:{server_port}")
         logger.info(f"API documentation available at http://{server_name}:{server_port}/docs")
+        
+        # Run the FastAPI server
         uvicorn.run(app, host=server_name, port=server_port)
+        
+        # Keep the server running
+        import time
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Keyboard interrupt received, shutting down...")
+            sys.exit(0)

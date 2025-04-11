@@ -12,6 +12,19 @@ from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 from handlers.config import app_path
 
+# Initialize logger
+logger = logging.getLogger(__name__)
+
+# Add direct import for the transcribe functionality
+import layouts.transcribe as transcribe_module
+import layouts.music as music_module
+import layouts.orpheus as orpheus_module
+import layouts.process as process_module
+import layouts.rvc_train as rvc_train_module
+import layouts.stable_audio as stable_audio_module
+import layouts.tts as tts_module
+import layouts.diffrythm as diffrythm_module
+
 app = FastAPI(
     title="AudioLab API",
     version="1.0.0",
