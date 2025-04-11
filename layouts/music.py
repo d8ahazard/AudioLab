@@ -431,3 +431,207 @@ def register_descriptions(arg_handler: ArgHandler):
     }
     for elem_id, description in descriptions.items():
         arg_handler.register_description("yue", elem_id, description)
+
+
+def register_api_endpoints(api):
+    """
+    Register API endpoints for music generation
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/music/generate", tags=["YuE Music"])
+    async def api_generate_music(
+        background_tasks: BackgroundTasks,
+        model_language: str = Form("English"),
+        genre_txt: str = Form(...),
+        lyrics_txt: str = Form(...),
+        use_audio_prompt: bool = Form(False),
+        audio_prompt: Optional[UploadFile] = File(None),
+        prompt_start_time: float = Form(0.0),
+        prompt_end_time: float = Form(30.0),
+        max_new_tokens: int = Form(3000),
+        run_n_segments: int = Form(2),
+        stage2_batch_size: int = Form(4),
+        keep_intermediate: bool = Form(False),
+        disable_offload_model: bool = Form(False),
+        cuda_idx: int = Form(0),
+        rescale: bool = Form(True),
+        seed: int = Form(-1)
+    ):
+        """
+        Generate music using YuE with lyrics and genre prompts
+        
+        Args:
+            background_tasks: FastAPI background tasks
+            model_language: Language model to use (English, Mandarin/Cantonese, Japanese/Korean)
+            genre_txt: Genre tags for music generation
+            lyrics_txt: Lyrics for the song (must include [verse], [chorus], etc. markers)
+            use_audio_prompt: Whether to use an audio prompt
+            audio_prompt: Optional audio file to use as reference
+            prompt_start_time: Start time in seconds for audio prompt
+            prompt_end_time: End time in seconds for audio prompt
+            max_new_tokens: Maximum number of tokens to generate
+            run_n_segments: Number of segments to run
+            stage2_batch_size: Batch size for stage 2 processing
+            keep_intermediate: Whether to keep intermediate files
+            disable_offload_model: Whether to disable model offloading
+            cuda_idx: CUDA device index
+            rescale: Whether to rescale output audio
+            seed: Random seed (-1 for random)
+            
+        Returns:
+            Dictionary containing output file paths and download links
+        """
+        try:
+            # Initial validation
+            if not any(char in lyrics_txt for char in ['[', ']']):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Lyrics must contain section markers like [verse] or [chorus]"
+                )
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_dir_path = Path(temp_dir)
+                
+                # Save audio prompt if provided
+                audio_prompt_path = ""
+                if use_audio_prompt and audio_prompt:
+                    audio_file_path = temp_dir_path / audio_prompt.filename
+                    with audio_file_path.open("wb") as f:
+                        content = await audio_prompt.read()
+                        f.write(content)
+                    audio_prompt_path = str(audio_file_path)
+                
+                # Initialize models
+                fetch_and_extxract_models()
+                
+                # Set seed
+                if seed != -1:
+                    seed_everything(seed)
+                else:
+                    seed_everything(random.randint(0, 4294967295))
+                
+                # Get appropriate stage1 model
+                model_type = "icl" if use_audio_prompt else "cot"
+                stage1_model = STAGE1_MODELS[model_language][model_type]
+                
+                # Generate music
+                output_paths = generate_music(
+                    stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
+                    audio_prompt_path, prompt_start_time, prompt_end_time, max_new_tokens,
+                    run_n_segments, stage2_batch_size, keep_intermediate,
+                    disable_offload_model, cuda_idx, rescale,
+                    top_p=0.93, temperature=1.0, repetition_penalty=1.2
+                )
+                
+                if not output_paths:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="No output paths returned from music generation"
+                    )
+                
+                # Validate outputs
+                valid_outputs = {}
+                for key, path in output_paths.items():
+                    if os.path.exists(path):
+                        valid_outputs[key] = path
+                
+                if not valid_outputs:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="No valid output files were generated"
+                    )
+                
+                # Create a zip file of all outputs
+                output_zip = os.path.join(temp_dir, "music_outputs.zip")
+                with zipfile.ZipFile(output_zip, 'w') as zipf:
+                    for key, path in valid_outputs.items():
+                        if os.path.exists(path):
+                            zipf.write(path, os.path.basename(path))
+                
+                # Set up response
+                response = {
+                    "status": "success",
+                    "message": "Music generation complete",
+                    "outputs": {}
+                }
+                
+                # Add file download endpoints for each output
+                for key, path in valid_outputs.items():
+                    file_id = os.path.basename(path)
+                    response["outputs"][key] = {
+                        "filename": file_id,
+                        "download_url": f"/api/v1/music/download/{file_id}"
+                    }
+                
+                # Add complete download
+                all_files_id = os.path.basename(output_zip)
+                response["all_files"] = {
+                    "filename": "music_outputs.zip",
+                    "download_url": f"/api/v1/music/download/{all_files_id}"
+                }
+                
+                # Store files for download (temporary)
+                for key, path in valid_outputs.items():
+                    file_id = os.path.basename(path)
+                    target_path = os.path.join(output_path, "temp_api", file_id)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    background_tasks.add_task(copy_temp_file, path, target_path)
+                
+                # Store zip file
+                zip_target = os.path.join(output_path, "temp_api", all_files_id)
+                os.makedirs(os.path.dirname(zip_target), exist_ok=True)
+                background_tasks.add_task(copy_temp_file, output_zip, zip_target)
+                
+                return response
+                
+        except Exception as e:
+            logger.exception("Error in API music generation")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.get("/api/v1/music/download/{file_id}", tags=["YuE Music"])
+    async def download_music_file(file_id: str):
+        """
+        Download a generated music file by ID
+        
+        Args:
+            file_id: File ID to download
+            
+        Returns:
+            FileResponse containing the requested file
+        """
+        file_path = os.path.join(output_path, "temp_api", file_id)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        return FileResponse(
+            file_path,
+            filename=os.path.basename(file_path),
+            media_type="application/octet-stream"
+        )
+
+def copy_temp_file(src_path: str, dst_path: str):
+    """Copy a file and clean up after a delay"""
+    try:
+        # Ensure the destination directory exists
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        
+        # Copy the file
+        shutil.copy2(src_path, dst_path)
+        
+        # Schedule deletion after 1 hour (could be configurable)
+        def cleanup():
+            try:
+                time.sleep(3600)  # 1 hour
+                if os.path.exists(dst_path):
+                    os.remove(dst_path)
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary file {dst_path}: {e}")
+                
+        # Start cleanup in a separate thread
+        import threading
+        threading.Thread(target=cleanup, daemon=True).start()
+        
+    except Exception as e:
+        logger.error(f"Error copying temporary file from {src_path} to {dst_path}: {e}")

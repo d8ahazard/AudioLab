@@ -324,7 +324,7 @@ class Clone(BaseWrapper):
 
     def register_api_endpoint(self, api) -> Any:
         """
-        Register FastAPI endpoint for voice cloning.
+        Register FastAPI endpoint for audio cloning.
         
         Args:
             api: FastAPI application instance
@@ -332,70 +332,108 @@ class Clone(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
-        from fastapi.responses import FileResponse
-        from pydantic import BaseModel, create_model
-        from typing import List, Optional
+        from fastapi import HTTPException, Body
+        from fastapi.responses import JSONResponse
+        from pydantic import BaseModel
+        from typing import List
         import tempfile
         from pathlib import Path
 
-        # Create Pydantic model for settings
-        fields = {}
-        for key, value in self.allowed_kwargs.items():
-            field_type = value.type
-            if value.field.default == ...:
-                field_type = Optional[field_type]
-            fields[key] = (field_type, value.field)
-        
-        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v1/process/clone")
-        async def process_clone(
-            files: List[UploadFile] = File(...),
-            settings: Optional[SettingsModel] = None
+        @api.post("/api/v2/process/clone", tags=["Audio Processing"])
+        async def process_clone_json(
+            request: JsonRequest = Body(...)
         ):
             """
             Clone vocals using RVC voice models.
             
-            Args:
-                files: List of audio files to process
-                settings: Voice cloning settings
-                
-            Returns:
-                List of processed audio files
+            This endpoint transforms vocal characteristics in audio files using pre-trained RVC voice models.
+            It allows you to change the timbre and characteristics of vocals while preserving the original
+            pitch, timing, and emotion of the performance.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "vocals.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "selected_voice": "my_voice_model",
+                "pitch_shift": 0,
+                "clone_bg_vocals": false,
+                "clone_stereo": true,
+                "pitch_correction": false,
+                "pitch_extraction_method": "rmvpe+"
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+            - **settings**: Voice cloning settings with the following options:
+              - **selected_voice** (required): Voice model name from available models (get list from `/api/v2/clone/voices`)
+              - **pitch_shift**: Pitch shift in semitones, from -24 to +24 (default: 0)
+              - **clone_bg_vocals**: Whether to also clone background vocals (default: false)
+              - **clone_stereo**: Preserve stereo information when cloning (default: true)
+              - **pitch_correction**: Apply pitch correction to cloned vocals (default: false)
+              - **pitch_correction_humanize**: How human-like the pitch correction should be (0-1, default: 0.95)
+              - **volume_mix_rate**: Mix ratio for volume envelope (0-1, default: 0.9)
+              - **accent_strength**: How strongly to apply the target voice characteristics (0-1, default: 0.2)
+              - **speaker_id**: ID of the speaker for multi-speaker models (default: 0)
+              - **pitch_extraction_method**: Algorithm for pitch extraction (default: "rmvpe+")
+                - Options: "hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe", etc.
+              - **filter_radius**: Median filter radius for 'harvest' pitch recognition (0-7, default: 3)
+              - **index_rate**: Feature search proportion when using the vector index (0-1, default: 1)
+              - **merge_type**: Merge strategy for hybrid pitch extraction ("median" or "mean", default: "median")
+              - **crepe_hop_length**: Hop length for CREPE-based pitch extraction (default: 160)
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "cloned_vocals.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the cloned audio file as a Base64-encoded string.
             """
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Process files
-                    settings_dict = settings.dict() if settings else {}
-                    processed_files = self.process_audio(input_files, **settings_dict)
-                    
-                    # Return processed files
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists():
-                                output_files.append(FileResponse(output))
-                    
-                    return output_files
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
 
-        # Also register the voice list endpoint
-        @api.get("/api/v1/clone/voices")
+        @api.get("/api/v2/clone/voices", tags=["Audio Processing"])
         async def list_available_voices():
-            """Get list of available voice models"""
+            """
+            List available voice models for cloning.
+            
+            Returns a list of all available RVC voice models that can be used with the clone endpoint.
+            Use these voice model names in the 'selected_voice' parameter of the clone request.
+            
+            ## Response
+            
+            ```json
+            {
+              "voices": [
+                "Voice_Model_1",
+                "Voice_Model_2",
+                "Voice_Model_3"
+              ]
+            }
+            ```
+            """
             return {"voices": list_speakers()}
 
-        return process_clone
+        return [process_clone_json, list_available_voices]

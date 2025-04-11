@@ -1,5 +1,6 @@
 import os
 
+from fastapi import HTTPException
 import gradio as gr
 from typing import List, Tuple
 from datetime import datetime
@@ -427,3 +428,83 @@ def render(arg_handler: ArgHandler):
 def listen():
     # Add any event listeners that need to be registered outside the render function
     pass
+
+
+def register_api_endpoints(api):
+    """
+    Register API endpoints for the Process module
+    
+    Args:
+        api: FastAPI application instance
+    """
+    # Note: The main processing endpoints are already registered in api.py
+    # This function adds additional endpoints for managing projects
+    
+    @api.get("/api/v1/process/projects", tags=["Multi-Processing"])
+    async def api_list_projects():
+        """
+        List all available processing projects
+        
+        Returns:
+            List of project names
+        """
+        try:
+            projects = list_projects()
+            return {
+                "projects": projects
+            }
+            
+        except Exception as e:
+            logger.exception("Error listing projects:")
+            raise HTTPException(status_code=500, detail=f"Error listing projects: {str(e)}")
+            
+    @api.get("/api/v1/process/processors", tags=["Multi-Processing"])
+    async def api_list_processors():
+        """
+        List all available processors and their settings
+        
+        Returns:
+            Dictionary of processors with their settings and descriptions
+        """
+        try:
+            all_wrappers, _ = list_wrappers()
+            result = {}
+            
+            for wrapper_name in all_wrappers:
+                processor = get_processor(wrapper_name)
+                
+                # Skip if processor is None
+                if not processor:
+                    continue
+                    
+                processor_info = {
+                    "title": processor.title,
+                    "description": processor.description,
+                    "priority": processor.priority,
+                    "default": processor.default,
+                    "required": processor.required,
+                    "parameters": {}
+                }
+                
+                # Add parameter information
+                for param_name, param_info in processor.allowed_kwargs.items():
+                    processor_info["parameters"][param_name] = {
+                        "type": str(param_info.type.__name__),
+                        "description": param_info.description,
+                        "default": param_info.field.default if param_info.field.default != ... else None,
+                        "required": param_info.required,
+                        "render": param_info.render
+                    }
+                    
+                    # Add additional parameter metadata if available
+                    for meta_key in ["min", "max", "step", "choices"]:
+                        if hasattr(param_info, meta_key):
+                            processor_info["parameters"][param_name][meta_key] = getattr(param_info, meta_key)
+                
+                result[processor.title.lower().replace(" ", "_")] = processor_info
+                
+            return result
+            
+        except Exception as e:
+            logger.exception("Error listing processors:")
+            raise HTTPException(status_code=500, detail=f"Error listing processors: {str(e)}")

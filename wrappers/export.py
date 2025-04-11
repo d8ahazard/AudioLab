@@ -79,7 +79,7 @@ class Export(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, create_model
         from typing import List, Optional
@@ -95,8 +95,11 @@ class Export(BaseWrapper):
             fields[key] = (field_type, value.field)
         
         SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v1/process/export")
+        @api.post("/api/v1/process/export", tags=["Audio Processing"])
         async def process_export(
             files: List[UploadFile] = File(...),
             settings: Optional[SettingsModel] = None
@@ -142,7 +145,68 @@ class Export(BaseWrapper):
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
-        return process_export
+        @api.post("/api/v2/process/export", tags=["Audio Processing"])
+        async def process_export_json(
+            request: JsonRequest = Body(...)
+        ):
+            """
+            Export audio files to DAW project.
+            
+            This endpoint takes multiple audio files (typically stems) and creates a Digital Audio Workstation (DAW) 
+            project file that includes all the audio tracks properly arranged. The resulting project can be opened 
+            directly in Ableton Live or Reaper, depending on the format you choose.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "vocals.wav",
+                  "content": "base64_encoded_file_content..."
+                },
+                {
+                  "filename": "instrumental.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "project_format": "Ableton",
+                "export_all_stems": true
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+            - **settings**: Export settings with the following options:
+              - **project_format**: DAW format to create (default: "Ableton")
+                - Options: "Ableton", "Reaper"
+              - **export_all_stems**: Include all available stems, not just processed ones (default: true)
+              - **pitch_shift**: Apply pitch shift in semitones to non-cloned tracks (default: 0)
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "project.zip",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the zipped project as a Base64-encoded file.
+            """
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
+
+        return process_export_json
 
     title = "Export to Ableton Live"
     description = "Export stems to an Ableton Live project file (.als)"

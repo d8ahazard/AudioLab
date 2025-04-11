@@ -34,7 +34,7 @@ def generate_output_filename(file1: str, file2: str, output_folder: str) -> str:
     )
 
 
-class Compare:
+class Compare(BaseWrapper):
     title = "Compare"
     description = "Compare two audio files using time-domain waveforms and spectrogram differences."
     priority = 1000000
@@ -175,57 +175,70 @@ class Compare:
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel
         from typing import List
         import tempfile
         from pathlib import Path
 
-        @api.post("/api/v1/process/compare")
-        async def process_compare(
-            files: List[UploadFile] = File(...)
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
+
+        @api.post("/api/v2/process/compare", tags=["Audio Processing"])
+        async def process_compare_json(
+            request: JsonRequest = Body(...)
         ):
             """
             Compare two audio files and generate visualization.
             
-            Args:
-                files: List of exactly 2 audio files to compare
-                
-            Returns:
-                Comparison visualization image
+            This endpoint analyzes and compares two audio files, generating visualizations that show 
+            time-domain waveforms, absolute difference, and spectrogram-based representations.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "audio1.wav",
+                  "content": "base64_encoded_file_content..."
+                },
+                {
+                  "filename": "audio2.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+              - Exactly 2 files must be provided for comparison
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "comparison.png",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the comparison visualization as a Base64-encoded PNG image.
             """
-            if len(files) != 2:
+            # Check if exactly 2 files are provided
+            if len(request.files) != 2:
                 raise HTTPException(status_code=400, detail="Exactly 2 files must be provided for comparison")
+                
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
 
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Process files
-                    processed_files = self.process_audio(input_files)
-                    
-                    # Return comparison image
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists():
-                                output_files.append(FileResponse(output))
-                    
-                    if not output_files:
-                        raise HTTPException(status_code=500, detail="No comparison output generated")
-                    
-                    return output_files[0]  # Return the first (and should be only) comparison image
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-
-        return process_compare
+        return process_compare_json

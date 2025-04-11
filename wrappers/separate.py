@@ -129,7 +129,7 @@ class Separate(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, create_model
         from typing import List, Optional
@@ -145,21 +145,47 @@ class Separate(BaseWrapper):
             fields[key] = (field_type, value.field)
         
         SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v1/process/separate")
+        @api.post("/api/v1/process/separate", tags=["Audio Processing"])
         async def process_separate(
             files: List[UploadFile] = File(...),
             settings: Optional[SettingsModel] = None
         ):
             """
-            Separate audio files into stems.
+            Separate audio files into stems using multipart/form-data.
             
-            Args:
-                files: List of audio files to separate
-                settings: Separation settings including stem types and processing options
-                
-            Returns:
-                List of separated audio stems
+            This endpoint splits audio tracks into individual components (stems) such as vocals, instruments, 
+            and other elements. It uses advanced AI models to isolate different parts of a mix with high quality.
+            It also provides options for removing reverb, crowd noise, and general noise from the separated stems.
+            
+            ## Parameters
+            
+            - **files**: Audio files to separate (WAV, MP3, FLAC)
+            - **settings**: Separation settings with the following options:
+              - **vocals_only**: Only extract vocals and instrumental stems (default: true)
+              - **separate_bg_vocals**: Separate background vocals from main vocals (default: true)
+              - **delete_extra_stems**: Delete intermediate stem files after processing (default: true)
+              - **separate_drums**: Separate the drum track (default: false)
+              - **separate_woodwinds**: Separate woodwind instruments (default: false)
+              - **alt_bass_model**: Use alternative bass separation model (default: false)
+              - **store_reverb_ir**: Store impulse response for later reverb restoration (default: true)
+              - **reverb_removal**: Apply reverb removal to specified stems (default: "Main Vocals")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **crowd_removal**: Apply crowd noise removal to specified stems (default: "Nothing")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **noise_removal**: Apply general noise removal to specified stems (default: "Nothing")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **noise_removal_model**: Model to use for noise removal (default: "UVR-DeNoise.pth")
+                - Options: "UVR-DeNoise.pth", "UVR-DeNoise-Lite.pth"
+              - **crowd_removal_model**: Model to use for crowd noise removal (default: "UVR-MDX-NET_Crowd_HQ_1.onnx")
+                - Options: "UVR-MDX-NET_Crowd_HQ_1.onnx", "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
+            
+            ## Response
+            
+            The API returns the separated audio files as attachments.
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -188,8 +214,84 @@ class Separate(BaseWrapper):
                     
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+                
+        @api.post("/api/v2/process/separate", tags=["Audio Processing"])
+        async def process_separate_json(
+            request: JsonRequest = Body(...)
+        ):
+            """
+            Separate audio files into stems.
+            
+            This endpoint splits audio tracks into individual components (stems) such as vocals, instruments, 
+            and other elements. It uses advanced AI models to isolate different parts of a mix with high quality.
+            It also provides options for removing reverb, crowd noise, and general noise from the separated stems.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "audio.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "vocals_only": true,
+                "separate_bg_vocals": true,
+                "delete_extra_stems": true,
+                "reverb_removal": "Main Vocals"
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+            - **settings**: Separation settings with the following options:
+              - **vocals_only**: Only extract vocals and instrumental stems (default: true)
+              - **separate_bg_vocals**: Separate background vocals from main vocals (default: true)
+              - **delete_extra_stems**: Delete intermediate stem files after processing (default: true)
+              - **separate_drums**: Separate the drum track (default: false)
+              - **separate_woodwinds**: Separate woodwind instruments (default: false)
+              - **alt_bass_model**: Use alternative bass separation model (default: false)
+              - **store_reverb_ir**: Store impulse response for later reverb restoration (default: true)
+              - **reverb_removal**: Apply reverb removal to specified stems (default: "Main Vocals")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **crowd_removal**: Apply crowd noise removal to specified stems (default: "Nothing")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **noise_removal**: Apply general noise removal to specified stems (default: "Nothing")
+                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
+              - **noise_removal_model**: Model to use for noise removal (default: "UVR-DeNoise.pth")
+                - Options: "UVR-DeNoise.pth", "UVR-DeNoise-Lite.pth"
+              - **crowd_removal_model**: Model to use for crowd noise removal (default: "UVR-MDX-NET_Crowd_HQ_1.onnx")
+                - Options: "UVR-MDX-NET_Crowd_HQ_1.onnx", "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "vocals.wav",
+                  "content": "base64_encoded_file_content..."
+                },
+                {
+                  "filename": "instrumental.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the separated audio files as Base64-encoded strings.
+            """
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
 
-        return process_separate
+        return process_separate_json
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, any]) -> List[ProjectFiles]:
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}

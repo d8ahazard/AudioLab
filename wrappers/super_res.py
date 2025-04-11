@@ -2,7 +2,7 @@ import gc
 import logging
 import os
 import warnings
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import librosa
 import numpy as np
@@ -133,10 +133,10 @@ class SuperResolution(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, create_model
-        from typing import List
+        from typing import List, Optional
         import tempfile
         from pathlib import Path
         
@@ -148,10 +148,13 @@ class SuperResolution(BaseWrapper):
         
         SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
         
-        @api.post("/api/v1/process/super_resolution")
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
+        
+        @api.post("/api/v1/process/super_resolution", tags=["Audio Processing"])
         async def process_super_resolution(
             files: List[UploadFile] = File(...),
-            settings: SettingsModel = None
+            settings: Optional[SettingsModel] = None
         ):
             """
             Process audio files with super resolution.
@@ -190,6 +193,79 @@ class SuperResolution(BaseWrapper):
                     
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @api.post("/api/v2/process/super_resolution", tags=["Audio Processing"])
+        async def process_super_resolution_json(
+            request: JsonRequest = Body(...)
+        ):
+            """
+            Process audio files with super resolution.
+            
+            This endpoint enhances the quality of audio files by applying AI-powered super resolution 
+            techniques. The process can dramatically improve detail, clarity, and perceived audio quality 
+            by reconstructing high-frequency information, enhancing transients, and improving overall 
+            resolution. Audio files are upscaled to 48kHz sample rate with enhanced detail.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "low_quality.mp3",
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "ddim_steps": 50,
+                "guidance_scale": 3.5,
+                "tgt_ensemble": true,
+                "tgt_cutoff": 12000,
+                "seed": 42
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+            - **settings**: Super resolution settings with the following options:
+              - **ddim_steps**: Number of diffusion steps for inference (default: 50)
+                - Range: 10-500 (higher values increase quality but take longer)
+              - **guidance_scale**: Strength of classifier-free guidance (default: 3.5)
+                - Range: 1.0-20.0 (higher values make the output more distinct but less natural)
+              - **overlap**: Proportion of overlap between audio chunks (default: 0.04)
+                - Range: 0.0-0.5 (higher values improve transitions but increase computation)
+              - **chunk_size**: Length of each audio chunk in seconds (default: 10.24)
+                - Range: 5.0-20.0 (smaller chunks use less memory but may introduce artifacts)
+              - **seed**: Random seed for reproducibility (default: -1)
+                - Set to -1 for random seed on each run
+              - **tgt_ensemble**: Combine output with filtered original audio (default: false)
+                - When true, creates a more balanced, natural sound
+              - **tgt_cutoff**: Cutoff frequency for ensemble filtering (default: 12000)
+                - Range: 500-24000 Hz (adjusts blend between processed and original audio)
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "enhanced_audio.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the enhanced high-resolution audio file as a Base64-encoded string.
+            """
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
+            
+        return process_super_resolution_json
 
     def setup(self, model_name="basic", device="auto"):
         self.model_name = model_name

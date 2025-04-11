@@ -10,13 +10,126 @@ import importlib
 import inspect
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
+from handlers.config import app_path
 
 app = FastAPI(
     title="AudioLab API",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    favicon_path="/res/favicon.ico",
+    description="""
+    # AudioLab API
+
+    AudioLab is an open-source audio processing application focused on voice-cloning, audio separation, and audio manipulation.
+    This API provides access to all the core functionalities of AudioLab.
+
+    ## Overview
+
+    - **Audio Processing**: Separation, cloning, enhancement, and format conversion
+    - **Voice Synthesis**: Multiple TTS engines including Orpheus for emotional synthesis
+    - **Music Generation**: Complete song generation with YuE, DiffRhythm, and Stable Audio
+    - **Training**: Custom voice models with RVC and DiffRhythm
+    - **Utilities**: Transcription, project management, and multi-processing
+
+    For detailed documentation on each endpoint's parameters and responses,
+    explore the sections below.
+    """,
+    terms_of_service="https://example.com/terms/",
+    contact={
+        "name": "AudioLab Support",
+        "url": "https://github.com/d8ahazard/audiolab/issues",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=[
+        {
+            "name": "Audio Processing",
+            "description": """
+            Core audio processing functionality including:
+            - Audio separation (vocals, instruments, etc.)
+            - Voice cloning with RVC
+            - Audio enhancement and remastering
+            - Format conversion and export
+            """
+        },
+        {
+            "name": "RVC",
+            "description": """
+            RVC voice cloning system:
+            - Voice model training
+            - Model management and download
+            - Training job monitoring
+            """
+        },
+        {
+            "name": "Orpheus TTS",
+            "description": """
+            Emotional text-to-speech synthesis:
+            - Speech generation with emotions
+            - Custom voice training
+            - Voice model management
+            """
+        },
+        {
+            "name": "Standard TTS",
+            "description": """
+            Traditional text-to-speech synthesis:
+            - Multiple TTS models and voices
+            - Language and speaker selection
+            - Voice cloning support
+            """
+        },
+        {
+            "name": "YuE Music",
+            "description": """
+            Music generation with YuE:
+            - Text-to-music generation
+            - Style transfer and control
+            - Reference audio support
+            """
+        },
+        {
+            "name": "DiffRhythm",
+            "description": """
+            Complete song generation with lyrics:
+            - Song generation with LRC lyrics
+            - Custom model training
+            - Project and file management
+            - Training job monitoring
+            """
+        },
+        {
+            "name": "Stable Audio",
+            "description": """
+            Music generation with Stable Audio:
+            - Text-to-music generation
+            - High-quality synthesis
+            - Style control
+            """
+        },
+        {
+            "name": "Transcription",
+            "description": """
+            Speech transcription functionality:
+            - Multi-speaker transcription
+            - Speaker diarization
+            - Multiple output formats (TXT, JSON, LRC)
+            """
+        },
+        {
+            "name": "Multi-Processing",
+            "description": """
+            Advanced processing pipelines:
+            - Chain multiple processors
+            - Custom processing workflows
+            - Batch processing support
+            """
+        }
+    ]
 )
 
 # Create a temporary directory for file uploads
@@ -61,7 +174,7 @@ class ProcessRequest(BaseModel):
     processors: List[str]
     settings: Dict[str, Dict[str, Any]]
 
-@app.post("/api/v1/process/multi")
+@app.post("/api/v1/process/multi", tags=["Multi-Processing"])
 async def process_multi(
     request: ProcessRequest,
     files: List[UploadFile] = File(...)
@@ -113,7 +226,7 @@ async def process_multi(
 for name, wrapper in WRAPPERS.items():
     model = create_pydantic_model_from_wrapper(wrapper)
     
-    @app.post(f"/api/v1/process/{name}")
+    @app.post(f"/api/v1/process/{name}", tags=["Audio Processing"])
     async def process_single(
         files: List[UploadFile] = File(...),
         settings: model = None,
@@ -150,7 +263,7 @@ for name, wrapper in WRAPPERS.items():
             raise HTTPException(status_code=500, detail=str(e))
 
 # Add OpenAPI documentation
-@app.get("/api/v1/docs")
+@app.get("/api/v1/docs", tags=["Multi-Processing"])
 async def get_documentation():
     """
     Get API documentation for all available processors

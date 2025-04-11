@@ -481,6 +481,257 @@ def listen():
     if process_inputs:
         SEND_TO_PROCESS_BUTTON.click(fn=send_to_process, inputs=[OUTPUT_AUDIO, process_inputs], outputs=process_inputs)
 
+def register_api_endpoints(api):
+    """
+    Register API endpoints for text-to-speech functionality
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/tts/generate", tags=["Standard TTS"])
+    async def api_generate_tts(
+        text: str = Form(...),
+        model: str = Form(...),
+        language: str = Form("en"),
+        emotion: str = Form("Normal"),
+        speaker: str = Form(""),
+        speed: float = Form(1.0),
+        speaker_reference: Optional[UploadFile] = File(None)
+    ):
+        """
+        Generate speech from text using selected TTS model
+        
+        This endpoint converts text to speech using various text-to-speech models,
+        including specialized models like Zonos for emotional speech synthesis.
+        
+        ## Parameters
+        
+        - **text**: Text content to convert to speech
+          - For Zonos, you can include emotion tags like [Happy] or [Sad] for specific sections
+          - Example: "Hello world! [Happy] I'm so excited to talk to you! [Sad] But I have to go now."
+        - **model**: TTS model to use
+          - Use "Zonos" for emotional voice cloning
+          - For other models, get available options from `/api/v1/tts/models`
+        - **language**: Language code for the speech (default: "en")
+          - ISO 639-1 language codes: "en", "fr", "de", "es", etc.
+        - **emotion**: Overall emotion for Zonos TTS (default: "Normal")
+          - Options: "Normal", "Happy", "Sad", "Angry", "Surprised", "Fear", "Disgust"
+          - "Normal" lets text brackets control emotion, otherwise applies globally
+        - **speaker**: Speaker ID for models with multiple speakers (default: "")
+          - See available speakers in the response from `/api/v1/tts/models`
+        - **speed**: Speech speed factor (default: 1.0)
+          - Range: 0.5 (slow) to 2.0 (fast)
+        - **speaker_reference**: Optional reference audio for voice cloning
+          - Required for Zonos TTS
+          - Should be a 5-15 second clear speech sample
+        
+        ## Example Request
+        
+        ```python
+        import requests
+        
+        url = "http://localhost:7860/api/v1/tts/generate"
+        
+        # Text to convert to speech
+        text = "Hello world! This is a test of text to speech synthesis."
+        
+        # First, check available models
+        models_response = requests.get("http://localhost:7860/api/v1/tts/models")
+        models_data = models_response.json()
+        
+        # Example with regular TTS model
+        files = []  # No speaker reference needed for regular TTS
+        
+        data = {
+            'text': text,
+            'model': 'tts_models/en/ljspeech/tacotron2-DDC',  # Example model
+            'language': 'en',
+            'speaker': '',
+            'speed': 1.0
+        }
+        
+        response = requests.post(url, files=files, data=data)
+        
+        # Save the generated audio
+        with open('generated_speech.wav', 'wb') as f:
+            f.write(response.content)
+            
+        # Example with Zonos (requires speaker reference)
+        files = [
+            ('speaker_reference', ('reference.wav', open('reference.wav', 'rb'), 'audio/wav'))
+        ]
+        
+        data = {
+            'text': 'Hello! [Happy] I am so excited to talk to you!',
+            'model': 'Zonos',
+            'language': 'en',
+            'emotion': 'Normal',  # Let text brackets control emotion
+            'speed': 1.0
+        }
+        
+        response = requests.post(url, files=files, data=data)
+        
+        # Save the generated audio
+        with open('zonos_speech.wav', 'wb') as f:
+            f.write(response.content)
+        ```
+        
+        ## Response
+        
+        The API returns the generated audio file as an attachment.
+        
+        ## Tips for Best Results
+        
+        1. For Zonos, use a clear 5-15 second reference recording with minimal background noise
+        2. Keep emotion changes natural - too many quick changes can sound unnatural
+        3. For longer texts, consider breaking into smaller chunks with consistent emotion
+        4. Experiment with different speech speeds to find the most natural-sounding result
+        """
+        try:
+            # Check if text is provided
+            if not text or text.strip() == "":
+                raise HTTPException(status_code=400, detail="Please enter some text to speak")
+            
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_dir_path = Path(temp_dir)
+                
+                # Save speaker reference if provided
+                speaker_sample_path = None
+                if speaker_reference:
+                    speaker_file_path = temp_dir_path / speaker_reference.filename
+                    with speaker_file_path.open("wb") as f:
+                        content = await speaker_reference.read()
+                        f.write(content)
+                    speaker_sample_path = str(speaker_file_path)
+                
+                # Check if Zonos is requested
+                if model == "Zonos":
+                    # For Zonos, we need a speaker reference sample
+                    if not speaker_sample_path:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail="Zonos requires a speaker audio reference file"
+                        )
+                    
+                    # Generate using Zonos
+                    output_file = run_zonos_tts(language, emotion, text, speaker_sample_path, speed)
+                    
+                    # Check if output is an error message
+                    if isinstance(output_file, str) and output_file.startswith("Error:"):
+                        raise HTTPException(status_code=500, detail=output_file)
+                    
+                else:
+                    # Generate using regular TTS models
+                    try:
+                        tts_handler = TTSHandler(language=language)
+                        output_file = tts_handler.handle(
+                            text=text, 
+                            model_name=model, 
+                            speaker_wav=speaker_sample_path, 
+                            selected_speaker=speaker, 
+                            speed=speed
+                        )
+                    except Exception as e:
+                        logger.exception(f"Error in regular TTS generation with model {model}:")
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"Could not generate speech with {model}: {str(e)}"
+                        )
+                
+                # Return the generated audio file
+                if not os.path.exists(output_file):
+                    raise HTTPException(status_code=500, detail="Failed to generate output file")
+                
+                return FileResponse(
+                    output_file,
+                    media_type="audio/wav",
+                    filename=os.path.basename(output_file)
+                )
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error in TTS generation:")
+            raise HTTPException(status_code=500, detail=f"TTS generation error: {str(e)}")
+            
+    @api.get("/api/v1/tts/models", tags=["Standard TTS"])
+    async def api_list_tts_models():
+        """
+        List available TTS models
+        
+        This endpoint returns information about all available text-to-speech models in the system,
+        organized by language and type.
+        
+        ## Example Request
+        
+        ```python
+        import requests
+        
+        url = "http://localhost:7860/api/v1/tts/models"
+        response = requests.get(url)
+        models_data = response.json()
+        
+        # Check if Zonos is available
+        if models_data['zonos']['available']:
+            print("Zonos emotional TTS is available")
+            
+        # List available regular TTS models by language
+        for language, models in models_data['regular'].items():
+            print(f"\nLanguage: {language}")
+            for model in models:
+                print(f"  - {model}")
+                
+        # Select a specific model for English
+        if 'en' in models_data['regular']:
+            english_models = models_data['regular']['en']
+            if english_models:
+                selected_model = english_models[0]
+                print(f"\nSelected model: {selected_model}")
+        ```
+        
+        ## Response Format
+        
+        ```json
+        {
+            "regular": {
+                "en": [
+                    "tts_models/en/ljspeech/tacotron2-DDC",
+                    "tts_models/en/ljspeech/glow-tts",
+                    "..."
+                ],
+                "fr": [
+                    "tts_models/fr/...",
+                    "..."
+                ],
+                "...": ["..."]
+            },
+            "zonos": {
+                "available": true
+            }
+        }
+        ```
+        
+        The returned model identifiers can be used directly with the
+        `/api/v1/tts/generate` endpoint's `model` parameter.
+        """
+        try:
+            tts_handler = TTSHandler()
+            available_models = {"regular": {}, "zonos": {"available": True}}
+            
+            # Get regular TTS models
+            for language_code in tts_handler.available_languages():
+                tts_handler.language = language_code
+                models = tts_handler.available_models()
+                available_models["regular"][language_code] = models
+                
+            return available_models
+            
+        except Exception as e:
+            logger.exception("Error listing TTS models:")
+            raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+
 def register_descriptions(arg_handler: ArgHandler):
     descriptions = {
         "infer_language": "Select the language for text-to-speech synthesis.",

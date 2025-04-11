@@ -174,7 +174,7 @@ class Merge(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, create_model
         from typing import List, Optional
@@ -190,8 +190,11 @@ class Merge(BaseWrapper):
             fields[key] = (field_type, value.field)
         
         SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v1/process/merge")
+        @api.post("/api/v1/process/merge", tags=["Audio Processing"])
         async def process_merge(
             files: List[UploadFile] = File(...),
             settings: Optional[SettingsModel] = None
@@ -237,4 +240,68 @@ class Merge(BaseWrapper):
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
-        return process_merge
+        @api.post("/api/v2/process/merge", tags=["Audio Processing"])
+        async def process_merge_json(
+            request: JsonRequest = Body(...)
+        ):
+            """
+            Merge multiple audio files into a single track.
+            
+            This endpoint combines multiple audio stems or tracks into a single mixed output. 
+            It intelligently overlays all provided audio files while maintaining proper volume levels
+            and handling any necessary pitch adjustments. This is typically the final step in a
+            processing chain after separating and modifying individual stems.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "vocals.wav",
+                  "content": "base64_encoded_file_content..."
+                },
+                {
+                  "filename": "instrumental.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "prevent_clipping": true,
+                "pitch_shift": 0
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+            - **settings**: Merge settings with the following options:
+              - **prevent_clipping**: Normalize the final mix to prevent clipping (default: true)
+              - **pitch_shift**: Pitch shift in semitones for non-cloned tracks (default: 0)
+                - This is automatically applied to non-cloned tracks if a value is set
+                - Range: -24 to +24 semitones
+              - **selected_voice**: Voice model used for naming the output file (default: "Vocals")
+              - **pitch_extraction_method**: Pitch extraction method used for naming (default: "rmvpe+")
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "merged_track.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the merged audio file as a Base64-encoded string.
+            """
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
+
+        return process_merge_json
