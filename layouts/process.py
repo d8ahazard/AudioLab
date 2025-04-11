@@ -439,6 +439,143 @@ def register_api_endpoints(api):
     """
     # Note: The main processing endpoints are already registered in api.py
     # This function adds additional endpoints for managing projects
+    from fastapi import UploadFile, File, Form, HTTPException, Body
+    from fastapi.responses import FileResponse, JSONResponse
+    from typing import Optional, List, Dict, Any
+    from pydantic import BaseModel, Field
+    import base64
+    import tempfile
+    from pathlib import Path
+    
+    # Define Pydantic models for JSON requests
+    class FileData(BaseModel):
+        filename: str
+        content: str  # base64 encoded content
+        
+    class ProcessorSettings(BaseModel):
+        enabled: bool = True
+        parameters: Dict[str, Any] = {}
+        
+    class ProcessRequest(BaseModel):
+        files: List[FileData]
+        processors: Dict[str, ProcessorSettings] = {}
+        
+    @api.post("/api/v1/process/process_json", tags=["Multi-Processing"])
+    async def api_process_json(request: ProcessRequest = Body(...)):
+        """
+        Process audio files using configured processors (JSON API)
+        
+        This endpoint allows processing audio files through multiple processing steps
+        in a single request. Files are provided as base64-encoded data.
+        
+        Request body:
+        - files: Array of file objects, each containing filename and base64-encoded content
+        - processors: Dictionary of processors to use, with each key being the processor name
+          - Each processor has:
+            - enabled: Whether to enable this processor (default: true)
+            - parameters: Dictionary of parameter values for this processor
+        
+        Response:
+        - JSON response with base64-encoded processed files
+        
+        Example:
+        ```json
+        {
+          "files": [
+            {
+              "filename": "audio.mp3",
+              "content": "base64_encoded_content..."
+            }
+          ],
+          "processors": {
+            "separate": {
+              "enabled": true,
+              "parameters": {
+                "model_selection": "mdx",
+                "stem_types": ["Vocals", "Instrumental"],
+                "split_vocals": true
+              }
+            },
+            "convert": {
+              "enabled": true,
+              "parameters": {
+                "bitrate": "320k"
+              }
+            }
+          }
+        }
+        ```
+        """
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save uploaded files from base64
+                temp_files = []
+                for file_data in request.files:
+                    file_path = Path(temp_dir) / file_data.filename
+                    with file_path.open("wb") as f:
+                        content = base64.b64decode(file_data.content)
+                        f.write(content)
+                    temp_files.append(str(file_path))
+                
+                # Create project structure expected by processors
+                from util.data_classes import ProjectFiles
+                project_inputs = []
+                for file_path in temp_files:
+                    project = ProjectFiles(file_path)
+                    project.last_outputs = [file_path]  # Set initial output to input file
+                    project_inputs.append(project)
+                
+                # Configure processors
+                enabled_processors = []
+                processor_params = {}
+                
+                all_wrappers, _ = list_wrappers()
+                
+                # Process any explicitly enabled processors
+                for processor_name, settings in request.processors.items():
+                    if settings.enabled:
+                        # Find actual wrapper name (case-insensitive match)
+                        for wrapper_name in all_wrappers:
+                            if wrapper_name.lower() == processor_name.lower() or \
+                               get_processor(wrapper_name).title.lower().replace(" ", "_") == processor_name.lower():
+                                enabled_processors.append(wrapper_name)
+                                processor_params[wrapper_name] = settings.parameters
+                                break
+                
+                # Add default processors if none were explicitly enabled
+                if not enabled_processors:
+                    for wrapper_name in all_wrappers:
+                        processor = get_processor(wrapper_name)
+                        if processor and processor.default:
+                            enabled_processors.append(wrapper_name)
+                
+                # Run processors
+                processed_projects = process(enabled_processors, project_inputs, **processor_params)
+                
+                # Collect all output files
+                response_data = {
+                    "status": "success",
+                    "files": []
+                }
+                
+                for project in processed_projects:
+                    for output_file in project.all_outputs():
+                        if os.path.exists(output_file):
+                            # Read file and encode as base64
+                            with open(output_file, "rb") as f:
+                                file_content = base64.b64encode(f.read()).decode("utf-8")
+                                
+                            response_data["files"].append({
+                                "filename": os.path.basename(output_file),
+                                "content": file_content,
+                                "processor": os.path.dirname(output_file).split(os.path.sep)[-1]
+                            })
+                
+                return response_data
+                
+        except Exception as e:
+            logger.exception("Error in processing:")
+            raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
     
     @api.get("/api/v1/process/projects", tags=["Multi-Processing"])
     async def api_list_projects():

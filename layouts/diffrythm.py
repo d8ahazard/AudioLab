@@ -32,8 +32,10 @@ from modules.diffrythm.infer import (
     check_download_model
 )
 
-from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
+import base64
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -1154,13 +1156,48 @@ def register_api_endpoints(api):
     """
     Register API endpoints for DiffRhythm functionality
         
-        Args:
+    Args:
         api: FastAPI application instance
     """
-    from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+    from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks, Body
     from fastapi.responses import FileResponse, JSONResponse
     from typing import Optional, List
     
+    # Define Pydantic models for JSON requests
+    class FileData(BaseModel):
+        filename: str
+        content: str  # base64 encoded content
+    
+    class CreateProjectRequest(BaseModel):
+        project_name: str
+        audio_file: FileData
+        lyrics_file: Optional[FileData] = None
+        lyrics_text: Optional[str] = None
+        lyrics_format: str = "lrc"
+        bpm: Optional[float] = None
+        key: Optional[str] = None
+        time_signature: Optional[str] = None
+    
+    class TrainRequest(BaseModel):
+        project_name: str
+        batch_size: int = 16
+        num_epochs: int = 100
+        learning_rate: float = 1e-4
+        save_interval: int = 10
+    
+    class GenerateRequest(BaseModel):
+        project_name: str
+        lyrics_file: Optional[FileData] = None
+        lyrics_text: Optional[str] = None
+        lyrics_format: str = "lrc"
+        bpm: Optional[float] = None
+        key: Optional[str] = None
+        time_signature: Optional[str] = None
+        num_samples: int = 1
+        guidance_scale: float = 3.0
+        temperature: float = 1.0
+    
+    # Maintain backward compatibility with form/multipart
     @api.post("/api/v1/diffrythm/create_project", tags=["DiffRhythm"])
     async def api_create_project(
         project_name: str = Form(...),
@@ -1173,23 +1210,107 @@ def register_api_endpoints(api):
         time_signature: Optional[str] = Form(None)
     ):
         """Create a new DiffRhythm project with audio and lyrics"""
+        return await _create_project_impl(
+            project_name=project_name,
+            audio_file=audio_file,
+            lyrics_file=lyrics_file,
+            lyrics_text=lyrics_text,
+            lyrics_format=lyrics_format,
+            bpm=bpm,
+            key=key,
+            time_signature=time_signature
+        )
+    
+    # New JSON endpoint
+    @api.post("/api/v1/diffrythm/create_project_json", tags=["DiffRhythm"])
+    async def api_create_project_json(request: CreateProjectRequest = Body(...)):
+        """Create a new DiffRhythm project with audio and lyrics (JSON)"""
         try:
             # Create temporary directory for processing
             temp_dir = tempfile.mkdtemp(prefix="diffrythm_project_")
             
-            # Save uploaded files
-            audio_path = os.path.join(temp_dir, audio_file.filename)
+            # Save audio file from base64
+            audio_path = os.path.join(temp_dir, request.audio_file.filename)
             with open(audio_path, "wb") as f:
-                content = await audio_file.read()
+                content = base64.b64decode(request.audio_file.content)
                 f.write(content)
                 
             # Save lyrics file if provided
             lyrics_path = None
-            if lyrics_file:
-                lyrics_path = os.path.join(temp_dir, lyrics_file.filename)
+            if request.lyrics_file:
+                lyrics_path = os.path.join(temp_dir, request.lyrics_file.filename)
                 with open(lyrics_path, "wb") as f:
-                    content = await lyrics_file.read()
+                    content = base64.b64decode(request.lyrics_file.content)
                     f.write(content)
+            elif request.lyrics_text:
+                lyrics_path = os.path.join(temp_dir, f"{request.project_name}.{request.lyrics_format}")
+                with open(lyrics_path, "w", encoding="utf-8") as f:
+                    f.write(request.lyrics_text)
+            
+            # Create project directory
+            project_dir = os.path.join(output_path, "diffrythm_train", request.project_name)
+            os.makedirs(project_dir, exist_ok=True)
+            
+            # Process the audio and lyrics
+            input_files = [audio_path]
+            if lyrics_path:
+                input_files.append(lyrics_path)
+                
+            result = preprocess_data_global(
+                project_name=request.project_name,
+                existing_project="",  # No existing project
+                input_files=input_files,
+                separate_vocals=True,
+                transcribe_audio=True
+            )
+            
+            # Cleanup temp directory in the background
+            BackgroundTasks().add_task(cleanup_temp_files, temp_dir)
+            
+            return {"status": "success", "message": result}
+            
+        except Exception as e:
+            logger.exception("Error creating DiffRhythm project:")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    async def _create_project_impl(
+        project_name: str,
+        audio_file,  # Either UploadFile or bytes
+        lyrics_file=None,
+        lyrics_text=None,
+        lyrics_format="lrc",
+        bpm=None,
+        key=None,
+        time_signature=None
+    ):
+        """Implementation of create project logic that can be used by both APIs"""
+        try:
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="diffrythm_project_")
+            
+            # Save audio file
+            if hasattr(audio_file, 'filename'):  # UploadFile
+                audio_path = os.path.join(temp_dir, audio_file.filename)
+                with open(audio_path, "wb") as f:
+                    content = await audio_file.read()
+                    f.write(content)
+            else:  # Bytes from base64
+                audio_path = os.path.join(temp_dir, "audio.wav")
+                with open(audio_path, "wb") as f:
+                    f.write(audio_file)
+                
+            # Save lyrics if provided
+            lyrics_path = None
+            if lyrics_file:
+                if hasattr(lyrics_file, 'filename'):  # UploadFile
+                    lyrics_path = os.path.join(temp_dir, lyrics_file.filename)
+                    with open(lyrics_path, "wb") as f:
+                        content = await lyrics_file.read()
+                        f.write(content)
+                else:  # Bytes from base64
+                    lyrics_path = os.path.join(temp_dir, "lyrics.lrc")
+                    with open(lyrics_path, "wb") as f:
+                        f.write(lyrics_file)
             elif lyrics_text:
                 lyrics_path = os.path.join(temp_dir, f"{project_name}.{lyrics_format}")
                 with open(lyrics_path, "w", encoding="utf-8") as f:
@@ -1220,7 +1341,90 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception("Error creating DiffRhythm project:")
             raise HTTPException(status_code=500, detail=str(e))
-
+    
+    # Add JSON endpoints for the other functions
+    @api.post("/api/v1/diffrythm/train_json", tags=["DiffRhythm"])
+    async def api_train_json(request: TrainRequest = Body(...)):
+        """Train a DiffRhythm model on a prepared project (JSON)"""
+        try:
+            # Start training with parameters from request
+            result = start_training_global(
+                project_name=request.project_name,
+                existing_project="",  # No existing project, use project_name
+                base_model="ASLP-lab/DiffRhythm-base",
+                batch_size=request.batch_size,
+                epochs=request.num_epochs,
+                learning_rate=request.learning_rate,
+                num_workers=4,  # Default value
+                save_steps=request.save_interval * 1000,
+                warmup_steps=20,  # Default value
+                max_grad_norm=1.0,  # Default value
+                grad_accumulation=1,  # Default value
+                audio_drop_prob=0.3,  # Default value 
+                style_drop_prob=0.1,  # Default value
+                lrc_drop_prob=0.1    # Default value
+            )
+            
+            return {"status": "success", "message": result}
+            
+        except Exception as e:
+            logger.exception("Error training DiffRhythm model:")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.post("/api/v1/diffrythm/generate_json", tags=["DiffRhythm"])
+    async def api_generate_json(request: GenerateRequest = Body(...)):
+        """Generate audio with a trained DiffRhythm model (JSON)"""
+        try:
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="diffrythm_generate_")
+            
+            # Save lyrics if provided
+            lrc_path = None
+            if request.lyrics_file:
+                lrc_path = os.path.join(temp_dir, request.lyrics_file.filename)
+                with open(lrc_path, "wb") as f:
+                    content = base64.b64decode(request.lyrics_file.content)
+                    f.write(content)
+            elif request.lyrics_text:
+                lrc_path = os.path.join(temp_dir, f"lyrics.{request.lyrics_format}")
+                with open(lrc_path, "w", encoding="utf-8") as f:
+                    f.write(request.lyrics_text)
+            
+            # Find the trained model path
+            model_path = os.path.join(output_path, "diffrythm_train", request.project_name, "model.pt")
+            if not os.path.exists(model_path):
+                model_path = "ASLP-lab/DiffRhythm-base"  # Fall back to base model
+                
+            # Generate the audio
+            output_path_file, message = generate_song(
+                lrc_path=lrc_path,
+                style_prompt=f"BPM {request.bpm}, Key {request.key}, {request.time_signature}" if request.bpm and request.key and request.time_signature else "",
+                ref_audio_path=None,
+                model_name=model_path,
+                chunked=True
+            )
+            
+            if not output_path_file or not os.path.exists(output_path_file):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to generate audio: {message}"
+                )
+            
+            # Return the generated audio file as base64
+            with open(output_path_file, "rb") as f:
+                file_content = base64.b64encode(f.read()).decode("utf-8")
+                
+            return {
+                "status": "success",
+                "filename": os.path.basename(output_path_file),
+                "content": file_content
+            }
+            
+        except Exception as e:
+            logger.exception("Error generating audio with DiffRhythm:")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Keep the existing form/multipart endpoints for backward compatibility
     @api.post("/api/v1/diffrythm/train", tags=["DiffRhythm"])
     async def api_train(
         project_name: str = Form(...),
@@ -1349,14 +1553,12 @@ def register_api_endpoints(api):
                 model_size = os.path.getsize(model_path) / (1024 * 1024)  # Size in MB
                 
             return {
-                "name": project_name,
+                "project_name": project_name,
                 "dataset_size": dataset_size,
-                "model_trained": model_exists,
+                "model_exists": model_exists,
                 "model_size_mb": model_size
             }
             
-        except HTTPException:
-            raise
         except Exception as e:
             logger.exception("Error getting DiffRhythm project details:")
             raise HTTPException(status_code=500, detail=str(e))
@@ -1372,10 +1574,8 @@ def register_api_endpoints(api):
             # Delete the project directory
             shutil.rmtree(project_dir)
             
-            return {"status": "success", "message": f"Project {project_name} deleted successfully"}
+            return {"status": "success", "message": f"Project {project_name} deleted"}
             
-        except HTTPException:
-            raise
         except Exception as e:
             logger.exception("Error deleting DiffRhythm project:")
             raise HTTPException(status_code=500, detail=str(e))
@@ -1433,8 +1633,7 @@ def preprocess_data_global(
             progress(0.1, "Processing input files...")
         
         # Load models for latent conversion
-        if progress:
-            progress(0.15, "Loading models...")
+        progress(0.15, "Loading models...")
         vae_ckpt_path = check_download_model(repo_id="ASLP-lab/DiffRhythm-vae")
         vae = torch.jit.load(vae_ckpt_path)
         
@@ -1446,9 +1645,8 @@ def preprocess_data_global(
         processed_files = []
         for idx, f in enumerate(input_files):
             try:
-                if progress:
-                    progress((idx + 1) / len(input_files), 
-                           f"Processing file {idx + 1}/{len(input_files)}")
+                progress((idx + 1) / len(input_files), 
+                       f"Processing file {idx + 1}/{len(input_files)}")
                 
                 # Get base name without extension
                 base_name = os.path.splitext(os.path.basename(f))[0]
@@ -1460,9 +1658,8 @@ def preprocess_data_global(
                 
                 # Separate vocals if requested
                 if separate_vocals:
-                    if progress:
-                        progress((idx + 1) / len(input_files), 
-                               f"Separating vocals for {base_name}")
+                    progress((idx + 1) / len(input_files), 
+                           f"Separating vocals for {base_name}")
                     vocal_outputs, _ = separate_vocal([raw_path])
                     if vocal_outputs:
                         raw_path = vocal_outputs[0]
@@ -1477,9 +1674,8 @@ def preprocess_data_global(
                                 break
                     
                     if not matching_lyrics:
-                        if progress:
-                            progress((idx + 1) / len(input_files), 
-                                   f"Transcribing {base_name}")
+                        progress((idx + 1) / len(input_files), 
+                               f"Transcribing {base_name}")
                         transcription = process_transcription(
                             [raw_path],
                             language="auto",
@@ -1493,9 +1689,8 @@ def preprocess_data_global(
                             matching_lyrics = txt_file
                 
                 # Convert audio to latents and style embeddings
-                if progress:
-                    progress((idx + 1) / len(input_files), 
-                           f"Converting {base_name} to latents")
+                progress((idx + 1) / len(input_files), 
+                       f"Converting {base_name} to latents")
                 
                 latents, style_emb = convert_to_latents(raw_path, vae, muq)
                 if latents is not None and style_emb is not None:

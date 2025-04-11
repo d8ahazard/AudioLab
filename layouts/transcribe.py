@@ -7,10 +7,12 @@ from typing import List, Optional
 
 import gradio as gr
 import whisperx
-from fastapi import UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import UploadFile, File, Form, HTTPException, Body
+from fastapi.responses import FileResponse, JSONResponse
 import tempfile
 from pathlib import Path
+import base64
+from pydantic import BaseModel, Field
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
@@ -449,6 +451,21 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
+    # Define Pydantic models for JSON requests
+    class FileData(BaseModel):
+        filename: str
+        content: str  # base64 encoded content
+        
+    class TranscribeRequest(BaseModel):
+        files: List[FileData]
+        language: str = "auto"
+        align_output: bool = True
+        assign_speakers: bool = True
+        min_speakers: Optional[str] = None
+        max_speakers: Optional[str] = None
+        batch_size: int = 16
+        compute_type: str = "float16"
+    
     @api.post("/api/v1/transcribe", tags=["Transcription"])
     async def api_transcribe(
         files: List[UploadFile] = File(...),
@@ -482,69 +499,9 @@ def register_api_endpoints(api):
         - **compute_type**: Precision level for computation (default: "float16")
           - Options: "float16", "float32", "int8"
         
-        ## Example Request
-        
-        ```python
-        import requests
-        
-        url = "http://localhost:7860/api/v1/transcribe"
-        
-        # Upload audio file
-        files = [
-            ('files', ('interview.mp3', open('interview.mp3', 'rb'), 'audio/mpeg'))
-        ]
-        
-        # Configure transcription parameters
-        data = {
-            'language': 'en',  # English
-            'align_output': 'true',
-            'assign_speakers': 'true',
-            'min_speakers': '2',
-            'max_speakers': '4'
-        }
-        
-        # Send request
-        response = requests.post(url, files=files, data=data)
-        
-        # Process response
-        result = response.json()
-        print(f"Transcription Summary: {result['summary']}")
-        
-        # Get the detailed transcription from the JSON output
-        for output_file in result['output_files']:
-            file_url = output_file['url']
-            json_response = requests.get(file_url)
-            transcription_data = json_response.json()
-            
-            for segment in transcription_data['segments']:
-                speaker = segment['speaker']
-                text = segment['text']
-                start = segment['start']
-                end = segment['end']
-                print(f"[{start:.2f}s - {end:.2f}s] Speaker {speaker}: {text}")
-        ```
-        
         ## Response Format
         
-        ```json
-        {
-            "summary": "Transcription completed successfully. Found 3 speakers.",
-            "output_files": [
-                {
-                    "url": "http://localhost:7860/path/to/transcription.json",
-                    "media_type": "application/json",
-                    "filename": "transcription.json"
-                }
-            ]
-        }
-        ```
-        
-        The returned JSON files contain detailed transcription data including:
-        
-        - Segments with start/end timestamps
-        - Speaker identification
-        - Word-level timing information
-        - Confidence scores
+        The API returns a JSON object containing a summary and links to the generated transcription files.
         """
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -557,24 +514,119 @@ def register_api_endpoints(api):
                         f.write(content)
                     temp_files.append(str(file_path))
                 
-                # Process transcription
-                summary, output_files = process_transcription(
-                    temp_files,
+                # Process with shared implementation
+                return await _transcribe_impl(
+                    temp_dir=temp_dir,
+                    temp_files=temp_files,
                     language=language,
                     align_output=align_output,
                     assign_speakers=assign_speakers,
                     min_speakers=min_speakers,
                     max_speakers=max_speakers,
                     batch_size=batch_size,
-                    compute_type=compute_type
+                    compute_type=compute_type,
+                    return_json=False
                 )
-                
-                # Return results
-                return {
-                    "summary": summary,
-                    "output_files": [FileResponse(output) for output in output_files if output.endswith(".json")]
-                }
                 
         except Exception as e:
             logger.exception(f"API transcription error: {e}")
-            raise HTTPException(status_code=500, detail=str(e)) 
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.post("/api/v1/transcribe_json", tags=["Transcription"])
+    async def api_transcribe_json(request: TranscribeRequest = Body(...)):
+        """
+        Transcribe audio files using WhisperX with alignment and speaker diarization (JSON API)
+        
+        Request body:
+        - files: Array of file objects, each containing filename and base64-encoded content
+        - language: Language code or "auto" for automatic detection (default: "auto")
+        - align_output: Create word-level timestamps (default: true)
+        - assign_speakers: Detect and label different speakers (default: true)
+        - min_speakers: Minimum number of speakers to detect (optional)
+        - max_speakers: Maximum number of speakers to detect (optional)
+        - batch_size: Batch size for processing (default: 16)
+        - compute_type: Precision level for computation (default: "float16")
+        
+        Response:
+        - JSON response with base64-encoded transcription files
+        """
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save uploaded files from base64
+                temp_files = []
+                for file_data in request.files:
+                    file_path = Path(temp_dir) / file_data.filename
+                    with file_path.open("wb") as f:
+                        content = base64.b64decode(file_data.content)
+                        f.write(content)
+                    temp_files.append(str(file_path))
+                
+                # Process with shared implementation
+                return await _transcribe_impl(
+                    temp_dir=temp_dir,
+                    temp_files=temp_files,
+                    language=request.language,
+                    align_output=request.align_output,
+                    assign_speakers=request.assign_speakers,
+                    min_speakers=request.min_speakers,
+                    max_speakers=request.max_speakers,
+                    batch_size=request.batch_size,
+                    compute_type=request.compute_type,
+                    return_json=True
+                )
+                
+        except Exception as e:
+            logger.exception(f"API transcription error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    async def _transcribe_impl(
+        temp_dir,
+        temp_files,
+        language="auto",
+        align_output=True,
+        assign_speakers=True,
+        min_speakers=None,
+        max_speakers=None,
+        batch_size=16,
+        compute_type="float16",
+        return_json=False
+    ):
+        """Shared implementation for transcription"""
+        # Process transcription
+        summary, output_files = process_transcription(
+            temp_files,
+            language=language,
+            align_output=align_output,
+            assign_speakers=assign_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+            batch_size=batch_size,
+            compute_type=compute_type
+        )
+        
+        # Filter for JSON files
+        json_files = [output for output in output_files if output.endswith(".json")]
+        
+        if return_json:
+            # Return the transcriptions as base64-encoded content
+            response_data = {
+                "summary": summary,
+                "transcriptions": []
+            }
+            
+            for json_file in json_files:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    transcription_data = f.read()
+                
+                response_data["transcriptions"].append({
+                    "filename": os.path.basename(json_file),
+                    "content": transcription_data
+                })
+            
+            return response_data
+        else:
+            # Return results with file URLs
+            return {
+                "summary": summary,
+                "output_files": [FileResponse(output) for output in json_files]
+            } 

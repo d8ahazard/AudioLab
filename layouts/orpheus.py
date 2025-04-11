@@ -18,8 +18,10 @@ from handlers.config import output_path, model_path
 from modules.orpheus.model import OrpheusModel
 from modules.orpheus.finetune import OrpheusFinetune
 
-from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+import base64
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -596,6 +598,33 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
+    from fastapi import Body, File, Form, HTTPException, UploadFile, BackgroundTasks
+    from fastapi.responses import FileResponse
+    from typing import List, Optional
+    from pydantic import BaseModel, Field
+    import base64
+    
+    # Define Pydantic models for JSON requests
+    class FileData(BaseModel):
+        filename: str
+        content: str  # base64 encoded content
+        
+    class GenerateSpeechRequest(BaseModel):
+        text: str
+        voice: str = "tara"
+        emotion: str = "None"
+        temperature: float = 0.7
+        top_p: float = 0.9
+        repetition_penalty: float = 1.0
+        
+    class FinetuneModelRequest(BaseModel):
+        speaker_name: str
+        base_model: str = "canopylabs/orpheus-tts-0.1-finetune-prod"
+        learning_rate: float = 1e-5
+        epochs: int = 10
+        batch_size: int = 16
+        audio_files: List[FileData]
+    
     @api.post("/api/v1/orpheus/generate", tags=["Orpheus TTS"])
     async def api_generate_speech(
         text: str = Form(...),
@@ -619,6 +648,51 @@ def register_api_endpoints(api):
         Returns:
             Generated audio file
         """
+        return await _generate_speech_impl(
+            text=text,
+            voice=voice,
+            emotion=emotion,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty
+        )
+    
+    @api.post("/api/v1/orpheus/generate_json", tags=["Orpheus TTS"])
+    async def api_generate_speech_json(request: GenerateSpeechRequest = Body(...)):
+        """
+        Generate speech using the Orpheus TTS model (JSON)
+        
+        Request body:
+        - text: Text to convert to speech
+        - voice: Voice to use (default: "tara")
+        - emotion: Emotion to apply (default: "None")
+        - temperature: Sampling temperature (default: 0.7)
+        - top_p: Top-p sampling parameter (default: 0.9)
+        - repetition_penalty: Repetition penalty parameter (default: 1.0)
+        
+        Returns:
+        - JSON response with base64-encoded audio file
+        """
+        return await _generate_speech_impl(
+            text=request.text,
+            voice=request.voice,
+            emotion=request.emotion,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            repetition_penalty=request.repetition_penalty,
+            return_json=True
+        )
+    
+    async def _generate_speech_impl(
+        text: str,
+        voice: str = "tara",
+        emotion: str = "None",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        repetition_penalty: float = 1.0,
+        return_json: bool = False
+    ):
+        """Implementation of speech generation that can be used by both APIs"""
         try:
             # Validate input
             if not text or text.strip() == "":
@@ -653,12 +727,23 @@ def register_api_endpoints(api):
                     status_code=500,
                     detail=f"Failed to generate speech: {message}"
                 )
-                
-            return FileResponse(
-                output_file,
-                media_type="audio/wav",
-                filename=os.path.basename(output_file)
-            )
+            
+            if return_json:
+                # Return the generated audio file as base64
+                with open(output_file, "rb") as f:
+                    file_content = base64.b64encode(f.read()).decode("utf-8")
+                    
+                return {
+                    "status": "success",
+                    "filename": os.path.basename(output_file),
+                    "content": file_content
+                }
+            else:
+                return FileResponse(
+                    output_file,
+                    media_type="audio/wav",
+                    filename=os.path.basename(output_file)
+                )
             
         except HTTPException:
             # Re-raise HTTP exceptions
@@ -666,7 +751,7 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception("Error in Orpheus speech generation:")
             raise HTTPException(status_code=500, detail=f"Speech generation error: {str(e)}")
-            
+    
     @api.post("/api/v1/orpheus/finetune", tags=["Orpheus TTS"])
     async def api_finetune_model(
         background_tasks: BackgroundTasks,
@@ -737,7 +822,72 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception("Error starting Orpheus finetuning:")
             raise HTTPException(status_code=500, detail=f"Finetuning error: {str(e)}")
+    
+    @api.post("/api/v1/orpheus/finetune_json", tags=["Orpheus TTS"])
+    async def api_finetune_model_json(
+        background_tasks: BackgroundTasks,
+        request: FinetuneModelRequest = Body(...)
+    ):
+        """
+        Finetune the Orpheus TTS model on a custom voice (JSON)
+        
+        Request body:
+        - speaker_name: Name for the new voice
+        - base_model: Base model to finetune from (default: "canopylabs/orpheus-tts-0.1-finetune-prod")
+        - learning_rate: Learning rate for training (default: 1e-5)
+        - epochs: Number of training epochs (default: 10)
+        - batch_size: Training batch size (default: 16)
+        - audio_files: Array of audio files (each with filename and base64-encoded content)
+        
+        Returns:
+        - Status information and job ID
+        """
+        try:
+            # Validate input
+            if not request.speaker_name or request.speaker_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Speaker name cannot be empty")
+                
+            if not request.audio_files or len(request.audio_files) == 0:
+                raise HTTPException(status_code=400, detail="No audio files provided")
+                
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp(prefix="orpheus_finetune_")
+            dataset_dir = os.path.join(temp_dir, "dataset")
+            os.makedirs(dataset_dir, exist_ok=True)
             
+            # Save uploaded audio files from base64
+            for audio_file in request.audio_files:
+                file_path = os.path.join(dataset_dir, audio_file.filename)
+                with open(file_path, "wb") as f:
+                    content = base64.b64decode(audio_file.content)
+                    f.write(content)
+            
+            # Start finetuning in the background
+            job_id = f"finetune_{int(time.time())}"
+            background_tasks.add_task(
+                run_finetune_job,
+                job_id=job_id,
+                dataset_dir=dataset_dir,
+                speaker_name=request.speaker_name,
+                base_model=request.base_model,
+                learning_rate=request.learning_rate,
+                epochs=request.epochs,
+                batch_size=request.batch_size
+            )
+            
+            return {
+                "status": "started",
+                "job_id": job_id,
+                "message": f"Finetuning job started for speaker '{request.speaker_name}' with {len(request.audio_files)} audio files"
+            }
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error starting Orpheus finetuning:")
+            raise HTTPException(status_code=500, detail=f"Finetuning error: {str(e)}")
+    
     @api.get("/api/v1/orpheus/voices", tags=["Orpheus TTS"])
     async def api_list_voices():
         """
@@ -755,7 +905,7 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception("Error listing Orpheus voices:")
             raise HTTPException(status_code=500, detail=f"Error listing voices: {str(e)}")
-            
+
 def run_finetune_job(job_id, dataset_dir, speaker_name, base_model, learning_rate, epochs, batch_size):
     """Run a finetuning job in the background"""
     try:

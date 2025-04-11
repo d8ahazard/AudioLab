@@ -7,6 +7,8 @@ import time
 import zipfile
 from typing import List
 import random
+import shutil
+import base64
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
@@ -669,9 +671,27 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException
+    from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException, Body
     from fastapi.responses import FileResponse, JSONResponse
     from typing import Optional
+    from pydantic import BaseModel, Field
+    
+    # Define Pydantic models for JSON requests
+    class FileData(BaseModel):
+        filename: str
+        content: str  # base64 encoded content
+        
+    class GenerateAudioRequest(BaseModel):
+        prompt: str
+        negative_prompt: str = ""
+        duration: float = 5.0
+        num_waveforms: int = 1
+        inference_steps: int = 100
+        guidance_scale: float = 7.0
+        seed: int = -1
+        use_reference_audio: bool = False
+        reference_audio: Optional[FileData] = None
+        noise_level: float = 0.7
     
     @api.post("/api/v1/stable-audio/generate", tags=["Stable Audio"])
     async def api_generate_audio(
@@ -717,9 +737,6 @@ def register_api_endpoints(api):
                     detail="Duration must be between 1.0 and 47.0 seconds"
                 )
                 
-            # Initialize model
-            model = StableAudioModel()
-            
             # Create temporary directory for processing
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_dir_path = Path(temp_dir)
@@ -733,85 +750,21 @@ def register_api_endpoints(api):
                         f.write(content)
                     reference_audio_path = str(ref_file_path)
                 
-                # Generate audio
-                results = model.generate_audio(
+                # Generate audio with the shared implementation
+                return await _generate_audio_impl(
+                    background_tasks=background_tasks,
+                    temp_dir=temp_dir,
                     prompt=prompt,
                     negative_prompt=negative_prompt,
                     duration=duration,
                     num_waveforms=num_waveforms,
-                    num_inference_steps=inference_steps,
+                    inference_steps=inference_steps,
                     guidance_scale=guidance_scale,
                     seed=seed,
-                    init_audio_path=reference_audio_path,
-                    init_noise_level=noise_level
+                    reference_audio_path=reference_audio_path,
+                    noise_level=noise_level,
+                    return_json=False
                 )
-                
-                if not results:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="No output generated. Audio generation failed."
-                    )
-                
-                # Prepare response with file information
-                response = {
-                    "status": "success",
-                    "message": f"Generated {len(results)} audio file(s)",
-                    "outputs": []
-                }
-                
-                # Store files for download
-                temp_api_dir = os.path.join(output_path, "temp_api", "stable_audio")
-                os.makedirs(temp_api_dir, exist_ok=True)
-                
-                # Copy files to download location and add to response
-                for result in results:
-                    src_path = result["file_path"]
-                    file_name = os.path.basename(src_path)
-                    dst_path = os.path.join(temp_api_dir, file_name)
-                    
-                    # Copy file
-                    shutil.copy2(src_path, dst_path)
-                    
-                    # Schedule cleanup
-                    background_tasks.add_task(
-                        delete_temp_file,
-                        dst_path, 
-                        delay=3600  # 1 hour
-                    )
-                    
-                    # Add to response
-                    response["outputs"].append({
-                        "filename": file_name,
-                        "download_url": f"/api/v1/stable-audio/download/{file_name}",
-                        "seed": result["seed"],
-                        "duration": duration,
-                        "sample_rate": result["sample_rate"]
-                    })
-                
-                # If multiple files, create a zip file
-                if len(results) > 1:
-                    zip_filename = f"stable_audio_{int(time.time())}.zip"
-                    zip_path = os.path.join(temp_api_dir, zip_filename)
-                    
-                    with zipfile.ZipFile(zip_path, 'w') as zipf:
-                        for result in results:
-                            src_path = result["file_path"]
-                            zipf.write(src_path, os.path.basename(src_path))
-                    
-                    # Schedule cleanup
-                    background_tasks.add_task(
-                        delete_temp_file,
-                        zip_path, 
-                        delay=3600  # 1 hour
-                    )
-                    
-                    # Add zip file to response
-                    response["zip_file"] = {
-                        "filename": zip_filename,
-                        "download_url": f"/api/v1/stable-audio/download/{zip_filename}"
-                    }
-                
-                return response
                 
         except HTTPException:
             # Re-raise HTTP exceptions
@@ -819,6 +772,212 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception("Error in Stable Audio generation:")
             raise HTTPException(status_code=500, detail=f"Audio generation error: {str(e)}")
+    
+    @api.post("/api/v1/stable-audio/generate_json", tags=["Stable Audio"])
+    async def api_generate_audio_json(
+        background_tasks: BackgroundTasks,
+        request: GenerateAudioRequest = Body(...)
+    ):
+        """
+        Generate audio from text using Stable Audio (JSON API)
+        
+        Request body:
+        - prompt: Text description of the desired audio
+        - negative_prompt: Text description of what to avoid (default: "")
+        - duration: Duration of the generated audio in seconds (default: 5.0)
+        - num_waveforms: Number of audio samples to generate (default: 1)
+        - inference_steps: Number of denoising steps (default: 100)
+        - guidance_scale: Guidance scale for classifier-free guidance (default: 7.0)
+        - seed: Random seed for generation, -1 for random (default: -1)
+        - use_reference_audio: Whether to use a reference audio file (default: false)
+        - reference_audio: Optional reference audio object with filename and base64-encoded content
+        - noise_level: Amount of noise to add to reference audio, 0.0-1.0 (default: 0.7)
+        
+        Returns:
+        - JSON response with base64-encoded audio files
+        """
+        try:
+            # Validate inputs
+            if not request.prompt or not request.prompt.strip():
+                raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+                
+            if request.duration < 1.0 or request.duration > 47.0:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Duration must be between 1.0 and 47.0 seconds"
+                )
+                
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_dir_path = Path(temp_dir)
+                
+                # Save reference audio if provided
+                reference_audio_path = None
+                if request.use_reference_audio and request.reference_audio:
+                    ref_file_path = temp_dir_path / request.reference_audio.filename
+                    with ref_file_path.open("wb") as f:
+                        content = base64.b64decode(request.reference_audio.content)
+                        f.write(content)
+                    reference_audio_path = str(ref_file_path)
+                
+                # Generate audio with the shared implementation
+                return await _generate_audio_impl(
+                    background_tasks=background_tasks,
+                    temp_dir=temp_dir,
+                    prompt=request.prompt,
+                    negative_prompt=request.negative_prompt,
+                    duration=request.duration,
+                    num_waveforms=request.num_waveforms,
+                    inference_steps=request.inference_steps,
+                    guidance_scale=request.guidance_scale,
+                    seed=request.seed,
+                    reference_audio_path=reference_audio_path,
+                    noise_level=request.noise_level,
+                    return_json=True
+                )
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.exception("Error in Stable Audio generation:")
+            raise HTTPException(status_code=500, detail=f"Audio generation error: {str(e)}")
+    
+    async def _generate_audio_impl(
+        background_tasks,
+        temp_dir,
+        prompt,
+        negative_prompt,
+        duration,
+        num_waveforms,
+        inference_steps,
+        guidance_scale,
+        seed,
+        reference_audio_path,
+        noise_level,
+        return_json=False
+    ):
+        """Shared implementation for audio generation"""
+        # Initialize model
+        model = StableAudioModel()
+        
+        # Generate audio
+        results = model.generate_audio(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            duration=duration,
+            num_waveforms=num_waveforms,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            init_audio_path=reference_audio_path,
+            init_noise_level=noise_level
+        )
+        
+        if not results:
+            raise HTTPException(
+                status_code=500,
+                detail="No output generated. Audio generation failed."
+            )
+        
+        # Prepare response with file information
+        response = {
+            "status": "success",
+            "message": f"Generated {len(results)} audio file(s)",
+            "outputs": []
+        }
+        
+        if return_json:
+            # Return the outputs as base64-encoded content
+            for result in results:
+                src_path = result["file_path"]
+                file_name = os.path.basename(src_path)
+                
+                with open(src_path, "rb") as f:
+                    file_content = base64.b64encode(f.read()).decode("utf-8")
+                
+                response["outputs"].append({
+                    "filename": file_name,
+                    "content": file_content,
+                    "seed": result["seed"],
+                    "duration": duration,
+                    "sample_rate": result["sample_rate"]
+                })
+            
+            # If multiple files, create a zip file
+            if len(results) > 1:
+                zip_filename = f"stable_audio_{int(time.time())}.zip"
+                zip_path = os.path.join(temp_dir, zip_filename)
+                
+                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                    for result in results:
+                        src_path = result["file_path"]
+                        zipf.write(src_path, os.path.basename(src_path))
+                
+                # Add zip file to response as base64
+                with open(zip_path, "rb") as f:
+                    zip_content = base64.b64encode(f.read()).decode("utf-8")
+                
+                response["zip_file"] = {
+                    "filename": zip_filename,
+                    "content": zip_content
+                }
+            
+            return response
+        else:
+            # Store files for download
+            temp_api_dir = os.path.join(output_path, "temp_api", "stable_audio")
+            os.makedirs(temp_api_dir, exist_ok=True)
+            
+            # Copy files to download location and add to response
+            for result in results:
+                src_path = result["file_path"]
+                file_name = os.path.basename(src_path)
+                dst_path = os.path.join(temp_api_dir, file_name)
+                
+                # Copy file
+                shutil.copy2(src_path, dst_path)
+                
+                # Schedule cleanup
+                background_tasks.add_task(
+                    delete_temp_file,
+                    dst_path, 
+                    delay=3600  # 1 hour
+                )
+                
+                # Add to response
+                response["outputs"].append({
+                    "filename": file_name,
+                    "download_url": f"/api/v1/stable-audio/download/{file_name}",
+                    "seed": result["seed"],
+                    "duration": duration,
+                    "sample_rate": result["sample_rate"]
+                })
+            
+            # If multiple files, create a zip file
+            if len(results) > 1:
+                zip_filename = f"stable_audio_{int(time.time())}.zip"
+                zip_path = os.path.join(temp_api_dir, zip_filename)
+                
+                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                    for result in results:
+                        src_path = result["file_path"]
+                        zipf.write(src_path, os.path.basename(src_path))
+                
+                # Schedule cleanup
+                background_tasks.add_task(
+                    delete_temp_file,
+                    zip_path, 
+                    delay=3600  # 1 hour
+                )
+                
+                # Add zip file to response
+                response["zip_file"] = {
+                    "filename": zip_filename,
+                    "download_url": f"/api/v1/stable-audio/download/{zip_filename}"
+                }
+            
+            return response
     
     @api.get("/api/v1/stable-audio/download/{file_name}", tags=["Stable Audio"])
     async def download_stable_audio_file(file_name: str):
