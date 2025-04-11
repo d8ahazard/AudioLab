@@ -129,93 +129,12 @@ class Separate(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException, Body
-        from fastapi.responses import FileResponse
-        from pydantic import BaseModel, create_model
-        from typing import List, Optional
-        import tempfile
-        from pathlib import Path
-
-        # Create Pydantic model for settings
-        fields = {}
-        for key, value in self.allowed_kwargs.items():
-            field_type = value.type
-            if value.field.default == ...:
-                field_type = Optional[field_type]
-            fields[key] = (field_type, value.field)
-        
-        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        from fastapi import Body
         
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
 
         @api.post("/api/v1/process/separate", tags=["Audio Processing"])
-        async def process_separate(
-            files: List[UploadFile] = File(...),
-            settings: Optional[SettingsModel] = None
-        ):
-            """
-            Separate audio files into stems using multipart/form-data.
-            
-            This endpoint splits audio tracks into individual components (stems) such as vocals, instruments, 
-            and other elements. It uses advanced AI models to isolate different parts of a mix with high quality.
-            It also provides options for removing reverb, crowd noise, and general noise from the separated stems.
-            
-            ## Parameters
-            
-            - **files**: Audio files to separate (WAV, MP3, FLAC)
-            - **settings**: Separation settings with the following options:
-              - **vocals_only**: Only extract vocals and instrumental stems (default: true)
-              - **separate_bg_vocals**: Separate background vocals from main vocals (default: true)
-              - **delete_extra_stems**: Delete intermediate stem files after processing (default: true)
-              - **separate_drums**: Separate the drum track (default: false)
-              - **separate_woodwinds**: Separate woodwind instruments (default: false)
-              - **alt_bass_model**: Use alternative bass separation model (default: false)
-              - **store_reverb_ir**: Store impulse response for later reverb restoration (default: true)
-              - **reverb_removal**: Apply reverb removal to specified stems (default: "Main Vocals")
-                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
-              - **crowd_removal**: Apply crowd noise removal to specified stems (default: "Nothing")
-                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
-              - **noise_removal**: Apply general noise removal to specified stems (default: "Nothing")
-                - Options: "Nothing", "Main Vocals", "All Vocals", "All"
-              - **noise_removal_model**: Model to use for noise removal (default: "UVR-DeNoise.pth")
-                - Options: "UVR-DeNoise.pth", "UVR-DeNoise-Lite.pth"
-              - **crowd_removal_model**: Model to use for crowd noise removal (default: "UVR-MDX-NET_Crowd_HQ_1.onnx")
-                - Options: "UVR-MDX-NET_Crowd_HQ_1.onnx", "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
-            
-            ## Response
-            
-            The API returns the separated audio files as attachments.
-            """
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Process files
-                    settings_dict = settings.dict() if settings else {}
-                    processed_files = self.process_audio(input_files, **settings_dict)
-                    
-                    # Return separated files
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists():
-                                output_files.append(FileResponse(output))
-                    
-                    return output_files
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-                
-        @api.post("/api/v2/process/separate", tags=["Audio Processing"])
         async def process_separate_json(
             request: JsonRequest = Body(...)
         ):

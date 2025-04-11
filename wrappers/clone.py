@@ -332,17 +332,12 @@ class Clone(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import HTTPException, Body
-        from fastapi.responses import JSONResponse
-        from pydantic import BaseModel
-        from typing import List
-        import tempfile
-        from pathlib import Path
-
+        from fastapi import Body
+        
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v2/process/clone", tags=["Audio Processing"])
+        @api.post("/api/v1/process/clone", tags=["Audio Processing"])
         async def process_clone_json(
             request: JsonRequest = Body(...)
         ):
@@ -380,7 +375,7 @@ class Clone(BaseWrapper):
               - **filename**: Name of the file (with extension)
               - **content**: Base64-encoded file content
             - **settings**: Voice cloning settings with the following options:
-              - **selected_voice** (required): Voice model name from available models (get list from `/api/v2/clone/voices`)
+              - **selected_voice** (required): Voice model name from available models (get list from `/api/v1/clone/voices`)
               - **pitch_shift**: Pitch shift in semitones, from -24 to +24 (default: 0)
               - **clone_bg_vocals**: Whether to also clone background vocals (default: false)
               - **clone_stereo**: Preserve stereo information when cloning (default: true)
@@ -414,7 +409,7 @@ class Clone(BaseWrapper):
             # Use the handle_json_request helper from BaseWrapper
             return self.handle_json_request(request, self.process_audio)
 
-        @api.get("/api/v2/clone/voices", tags=["Audio Processing"])
+        @api.get("/api/v1/clone/voices", tags=["Audio Processing"])
         async def list_available_voices():
             """
             List available voice models for cloning.

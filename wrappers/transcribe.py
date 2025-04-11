@@ -91,62 +91,15 @@ class Transcribe(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException, Body
-        from fastapi.responses import FileResponse, JSONResponse
-        from pydantic import BaseModel
-        from typing import List, Optional, Dict, Any
+        from fastapi import Body, HTTPException
         import tempfile
         from pathlib import Path
-        import json
         import base64
-
+        
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
 
         @api.post("/api/v1/process/transcribe", tags=["Transcription"])
-        async def process_transcribe(
-            files: List[UploadFile] = File(...)
-        ):
-            """
-            Transcribe audio files using WhisperX.
-            
-            Args:
-                files: List of audio files to transcribe
-                
-            Returns:
-                List of transcription JSON files
-            """
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Process files
-                    processed_files = self.process_audio(input_files)
-                    
-                    # Return transcription files
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists() and output_path.suffix == '.json':
-                                # Load JSON content and return directly
-                                with open(output_path) as f:
-                                    json_content = json.load(f)
-                                    output_files.append(json_content)
-                    
-                    return JSONResponse(content=output_files)
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-
-        @api.post("/api/v2/process/transcribe", tags=["Transcription"])
         async def process_transcribe_json(
             request: JsonRequest = Body(...)
         ):
@@ -239,7 +192,7 @@ class Transcribe(BaseWrapper):
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
                 
-        return [process_transcribe, process_transcribe_json]
+        return process_transcribe_json
 
     def clean(self):
         for model in [self.model, self.model_a, self.diarize_model]:

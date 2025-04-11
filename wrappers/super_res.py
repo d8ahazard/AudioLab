@@ -133,68 +133,12 @@ class SuperResolution(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException, Body
-        from fastapi.responses import FileResponse
-        from pydantic import BaseModel, create_model
-        from typing import List, Optional
-        import tempfile
-        from pathlib import Path
-        
-        # Create Pydantic model for settings
-        fields = {}
-        for key, value in self.allowed_kwargs.items():
-            field_type = value.type
-            fields[key] = (field_type, value.field)
-        
-        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        from fastapi import Body
         
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
-        
-        @api.post("/api/v1/process/super_resolution", tags=["Audio Processing"])
-        async def process_super_resolution(
-            files: List[UploadFile] = File(...),
-            settings: Optional[SettingsModel] = None
-        ):
-            """
-            Process audio files with super resolution.
-            
-            Args:
-                files: List of audio files to process
-                settings: Super resolution settings
-                
-            Returns:
-                List of processed audio files
-            """
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Process files
-                    settings_dict = settings.dict() if settings else {}
-                    processed_files = self.process_audio(input_files, **settings_dict)
-                    
-                    # Return processed files
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists():
-                                output_files.append(FileResponse(output))
-                    
-                    return output_files
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
 
-        @api.post("/api/v2/process/super_resolution", tags=["Audio Processing"])
+        @api.post("/api/v1/process/super_resolution", tags=["Audio Processing"])
         async def process_super_resolution_json(
             request: JsonRequest = Body(...)
         ):

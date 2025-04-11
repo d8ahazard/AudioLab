@@ -125,28 +125,103 @@ class BaseWrapper:
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pass
 
-    @abstractmethod
     def register_api_endpoint(self, api) -> Any:
         """
         Register FastAPI endpoint for this wrapper.
+        
+        This method creates a standardized JSON API endpoint for the wrapper.
+        Subclasses can override this method for custom behavior, but should
+        follow the pattern of accepting only JSON requests.
         
         Args:
             api: FastAPI application instance
             
         Returns:
             The registered endpoint route
-            
-        Note:
-            When implementing this method, always use the 'Audio Processing' tag:
-            
-            @api.post("/api/v1/process/your_endpoint", tags=["Audio Processing"])
-            
-            For JSON API endpoints, follow this pattern:
-            
-            @api.post("/api/v1/json/your_endpoint", tags=["Audio Processing"])
         """
-        pass
+        from fastapi import Body, HTTPException
+        from typing import Dict, Any, List
+        import tempfile
+        from pathlib import Path
+        import base64
         
+        # Create Pydantic models for API documentation
+        FileData, JsonRequest = self.create_json_models()
+        
+        # Extract wrapper name for endpoint path
+        endpoint_name = self.title.lower().replace(" ", "_")
+        
+        # Create detailed description from wrapper metadata
+        description = f"""
+        {self.description}
+        
+        This endpoint processes audio files using the {self.title} processor.
+        
+        ## Request Body
+        
+        ```json
+        {{
+          "files": [
+            {{
+              "filename": "audio.wav",
+              "content": "base64_encoded_file_content..."
+            }}
+          ],
+          "settings": {{
+        """
+        
+        # Add settings documentation from allowed_kwargs
+        for key, value in self.allowed_kwargs.items():
+            default_val = "null" if value.field.default is None else value.field.default
+            if value.field.default == ...:
+                default_val = "required"
+            
+            # Format description based on field type
+            if value.type == bool:
+                description += f"    \"{key}\": true|false,  // {value.description} Default: {default_val}\n"
+            elif value.type == int:
+                description += f"    \"{key}\": 0,  // {value.description} Default: {default_val}\n"
+            elif value.type == float:
+                description += f"    \"{key}\": 0.0,  // {value.description} Default: {default_val}\n"
+            elif hasattr(value, 'choices') and value.choices:
+                choices_str = "|".join([f'"{c}"' for c in value.choices])
+                description += f"    \"{key}\": {choices_str},  // {value.description} Default: {default_val}\n"
+            else:
+                description += f"    \"{key}\": \"value\",  // {value.description} Default: {default_val}\n"
+        
+        description += """
+          }}
+        }}
+        ```
+        
+        ## Response
+        
+        ```json
+        {
+          "files": [
+            {
+              "filename": "processed_output.wav",
+              "content": "base64_encoded_file_content..."
+            }
+          ]
+        }
+        ```
+        
+        The API returns an object containing the processed files as Base64-encoded strings.
+        """
+        
+        @api.post(f"/api/v1/process/{endpoint_name}", tags=["Audio Processing"])
+        async def process_wrapper_json(
+            request: JsonRequest = Body(...)
+        ):
+            # Use docstring from the description
+            process_wrapper_json.__doc__ = description
+            
+            # Call the shared handler for JSON requests
+            return self.handle_json_request(request, self.process_audio)
+            
+        return process_wrapper_json
+
     def create_json_models(self):
         """
         Create Pydantic models for JSON API requests and responses.
@@ -161,11 +236,36 @@ class BaseWrapper:
             filename: str
             content: str  # Base64 encoded file content
             
+        # Create settings model from allowed_kwargs
+        SettingsModel = self.create_settings_model()
+        
         class JsonRequest(BaseModel):
             files: List[FileData]
-            settings: Optional[Dict[str, Any]] = None
+            settings: Optional[SettingsModel] = None
             
         return FileData, JsonRequest
+        
+    def create_settings_model(self):
+        """
+        Create a Pydantic model from allowed_kwargs for validation and documentation.
+        
+        Returns:
+            A Pydantic model class with fields based on allowed_kwargs
+        """
+        from pydantic import BaseModel, create_model
+        from typing import Optional, Dict, Any
+        
+        # Create fields dictionary
+        fields = {}
+        for key, value in self.allowed_kwargs.items():
+            field_type = value.type
+            if value.field.default == ...:
+                field_type = Optional[field_type]
+            fields[key] = (field_type, value.field)
+        
+        # Create model with dynamic name
+        model_name = f"{self.__class__.__name__}Settings"
+        return create_model(model_name, **fields)
         
     def handle_json_request(self, request_data, processor_func):
         """
@@ -199,7 +299,14 @@ class BaseWrapper:
                     input_files.append(ProjectFiles(str(file_path)))
                 
                 # Process files
-                settings_dict = request_data.settings if request_data.settings else {}
+                settings_dict = {}
+                if request_data.settings:
+                    # Convert Pydantic model to dict if needed
+                    if hasattr(request_data.settings, 'dict'):
+                        settings_dict = request_data.settings.dict()
+                    else:
+                        settings_dict = request_data.settings
+                
                 processed_files = processor_func(input_files, **settings_dict)
                 
                 # Return processed files as base64

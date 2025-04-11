@@ -174,73 +174,12 @@ class Merge(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException, Body
-        from fastapi.responses import FileResponse
-        from pydantic import BaseModel, create_model
-        from typing import List, Optional
-        import tempfile
-        from pathlib import Path
-
-        # Create Pydantic model for settings
-        fields = {}
-        for key, value in self.allowed_kwargs.items():
-            field_type = value.type
-            if value.field.default == ...:
-                field_type = Optional[field_type]
-            fields[key] = (field_type, value.field)
-        
-        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        from fastapi import Body
         
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
 
         @api.post("/api/v1/process/merge", tags=["Audio Processing"])
-        async def process_merge(
-            files: List[UploadFile] = File(...),
-            settings: Optional[SettingsModel] = None
-        ):
-            """
-            Merge multiple audio files into a single track.
-            
-            Args:
-                files: List of audio files to merge
-                settings: Merge settings including pitch shift and clipping prevention
-                
-            Returns:
-                Merged audio file
-            """
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Process files
-                    settings_dict = settings.dict() if settings else {}
-                    processed_files = self.process_audio(input_files, **settings_dict)
-                    
-                    # Return merged file
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists():
-                                output_files.append(FileResponse(output))
-                    
-                    if not output_files:
-                        raise HTTPException(status_code=500, detail="No merged file generated")
-                    
-                    return output_files[0]  # Return the first (and should be only) merged file
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-
-        @api.post("/api/v2/process/merge", tags=["Audio Processing"])
         async def process_merge_json(
             request: JsonRequest = Body(...)
         ):

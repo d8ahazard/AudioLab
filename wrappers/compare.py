@@ -175,17 +175,12 @@ class Compare(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException, Body
-        from fastapi.responses import FileResponse
-        from pydantic import BaseModel
-        from typing import List
-        import tempfile
-        from pathlib import Path
-
+        from fastapi import HTTPException, Body
+        
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v2/process/compare", tags=["Audio Processing"])
+        @api.post("/api/v1/process/compare", tags=["Audio Processing"])
         async def process_compare_json(
             request: JsonRequest = Body(...)
         ):

@@ -80,81 +80,12 @@ class Remaster(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException, Body
-        from fastapi.responses import FileResponse
-        from pydantic import BaseModel, create_model
-        from typing import List, Optional
-        import tempfile
-        from pathlib import Path
-
-        # Create Pydantic model for settings
-        fields = {}
-        for key, value in self.allowed_kwargs.items():
-            field_type = value.type
-            if value.field.default == ...:
-                field_type = Optional[field_type]
-            fields[key] = (field_type, value.field)
-        
-        SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        from fastapi import Body
         
         # Create models for JSON API
         FileData, JsonRequest = self.create_json_models()
 
         @api.post("/api/v1/process/remaster", tags=["Audio Processing"])
-        async def process_remaster(
-            files: List[UploadFile] = File(...),
-            reference_file: Optional[UploadFile] = File(None),
-            settings: Optional[SettingsModel] = None
-        ):
-            """
-            Remaster audio files using Matchering.
-            
-            Args:
-                files: List of audio files to remaster
-                reference_file: Optional reference track for remastering
-                settings: Remaster settings
-                
-            Returns:
-                List of remastered audio files
-            """
-            try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Save uploaded files
-                    input_files = []
-                    for file in files:
-                        file_path = Path(temp_dir) / file.filename
-                        with file_path.open("wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        input_files.append(ProjectFiles(str(file_path)))
-                    
-                    # Save reference file if provided
-                    settings_dict = settings.dict() if settings else {}
-                    if reference_file:
-                        ref_path = Path(temp_dir) / reference_file.filename
-                        with ref_path.open("wb") as f:
-                            content = await reference_file.read()
-                            f.write(content)
-                        settings_dict["reference_track"] = str(ref_path)
-                        settings_dict["use_source_track_as_reference"] = False
-                    
-                    # Process files
-                    processed_files = self.process_audio(input_files, **settings_dict)
-                    
-                    # Return remastered files
-                    output_files = []
-                    for project in processed_files:
-                        for output in project.last_outputs:
-                            output_path = Path(output)
-                            if output_path.exists():
-                                output_files.append(FileResponse(output))
-                    
-                    return output_files
-                    
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-
-        @api.post("/api/v2/process/remaster", tags=["Audio Processing"])
         async def process_remaster_json(
             request: JsonRequest = Body(...)
         ):
