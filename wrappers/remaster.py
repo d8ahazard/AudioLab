@@ -80,7 +80,7 @@ class Remaster(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, create_model
         from typing import List, Optional
@@ -96,8 +96,11 @@ class Remaster(BaseWrapper):
             fields[key] = (field_type, value.field)
         
         SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v1/process/remaster")
+        @api.post("/api/v1/process/remaster", tags=["Audio Processing"])
         async def process_remaster(
             files: List[UploadFile] = File(...),
             reference_file: Optional[UploadFile] = File(None),
@@ -106,73 +109,13 @@ class Remaster(BaseWrapper):
             """
             Remaster audio files using Matchering.
             
-            This endpoint applies professional-grade mastering to audio files by matching their 
-            sonic characteristics to a reference track. It uses the Matchering library to analyze 
-            the frequency spectrum, dynamics, and loudness of a reference track and applies those 
-            characteristics to your input files.
-            
-            ## Parameters
-            
-            - **files**: Audio files to remaster (WAV, MP3, FLAC)
-            - **reference_file**: Optional reference track to use as the sonic target
-              - If not provided and use_source_track_as_reference=true, the input file itself will be used
-            - **settings**: Remaster settings with the following options:
-              - **use_source_track_as_reference**: Use the source file as the reference (default: true)
-                - When true, any uploaded reference_file is ignored
-                - When false, a reference_file must be provided
-            
-            ## Example Request
-            
-            ```python
-            import requests
-            
-            url = "http://localhost:7860/api/v1/process/remaster"
-            
-            # Upload audio file to remaster
-            files = [
-                ('files', ('my_track.wav', open('my_track.wav', 'rb'), 'audio/wav'))
-            ]
-            
-            # Upload reference track for mastering target (optional)
-            reference = [
-                ('reference_file', ('reference.wav', open('reference.wav', 'rb'), 'audio/wav'))
-            ]
-            
-            # Configure remaster parameters
-            data = {
-                'use_source_track_as_reference': 'false'  # Use the provided reference file
-            }
-            
-            # Send request
-            response = requests.post(url, files=files + reference, data=data)
-            
-            # Save the remastered audio
-            with open('remastered_track.wav', 'wb') as f:
-                f.write(response.content)
-            ```
-            
-            ## How Matchering Works
-            
-            The remastering process performs these sophisticated steps:
-            
-            1. **Analysis**: Both target and reference audio are analyzed for their spectral balance, 
-              dynamics, and loudness profiles
-            2. **Matching**: A series of processing steps are applied to match the characteristics:
-               - Frequency spectrum equalization to match tonal balance
-               - Dynamic range processing to match compression profile
-               - Loudness normalization to match perceived volume
-            3. **Rendering**: The processed audio is exported as high-quality 24-bit audio
-            
-            ## Use Cases
-            
-            1. **Consistent Album Sound**: Make all tracks on an album sound cohesive
-            2. **Professional Polish**: Give your mixes a commercial-grade sound
-            3. **Genre Adaptation**: Make a track fit the sonic profile of a specific genre
-            4. **Loudness Optimization**: Achieve competitive loudness while preserving dynamics
-            
-            ## Response
-            
-            The API returns the remastered audio files as attachments.
+            Args:
+                files: List of audio files to remaster
+                reference_file: Optional reference track for remastering
+                settings: Remaster settings
+                
+            Returns:
+                List of remastered audio files
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -211,4 +154,72 @@ class Remaster(BaseWrapper):
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
-        return process_remaster
+        @api.post("/api/v2/process/remaster", tags=["Audio Processing"])
+        async def process_remaster_json(
+            request: JsonRequest = Body(...)
+        ):
+            """
+            Remaster audio files using Matchering.
+            
+            This endpoint applies professional-grade mastering to audio files by matching their 
+            sonic characteristics to a reference track. It uses the Matchering library to analyze 
+            the frequency spectrum, dynamics, and loudness of a reference track and applies those 
+            characteristics to your input files.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "my_track.wav",
+                  "content": "base64_encoded_file_content..."
+                },
+                {
+                  "filename": "reference.wav",  
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "use_source_track_as_reference": false
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+              - The first file is always the track to remaster
+              - If a second file is provided and use_source_track_as_reference=false, it's used as the reference
+            - **settings**: Remaster settings with the following options:
+              - **use_source_track_as_reference**: Use the source file as the reference (default: true)
+                - When true, any reference file is ignored
+                - When false, a reference_file must be provided as the second file
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "remastered_track.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the remastered audio file as a Base64-encoded string.
+            """
+            # Custom handling for reference file
+            if len(request.files) > 1 and request.settings and request.settings.get("use_source_track_as_reference", True) == False:
+                # Use the second file as reference
+                # This will be handled by the process_audio method
+                pass
+                
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
+
+        return process_remaster_json

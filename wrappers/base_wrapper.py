@@ -1,11 +1,16 @@
 import os
 import re
+import base64
 from abc import abstractmethod
 from typing import List, Dict, Any, Union, Tuple, Callable
 
 import pydantic
 import gradio as gr
 from annotated_types import Ge, Le
+from fastapi import Body, HTTPException
+from fastapi.responses import JSONResponse
+from pathlib import Path
+import tempfile
 
 from handlers.args import ArgHandler
 from util.data_classes import ProjectFiles
@@ -130,8 +135,189 @@ class BaseWrapper:
             
         Returns:
             The registered endpoint route
+            
+        Note:
+            When implementing this method, always use the 'Audio Processing' tag:
+            
+            @api.post("/api/v1/process/your_endpoint", tags=["Audio Processing"])
+            
+            For JSON API endpoints, follow this pattern:
+            
+            @api.post("/api/v1/json/your_endpoint", tags=["Audio Processing"])
         """
         pass
+        
+    def create_json_models(self):
+        """
+        Create Pydantic models for JSON API requests and responses.
+        
+        Returns:
+            Tuple containing (FileData, JsonRequest) models
+        """
+        from pydantic import BaseModel, Field
+        from typing import List, Optional, Dict, Any
+        
+        class FileData(BaseModel):
+            filename: str
+            content: str  # Base64 encoded file content
+            
+        class JsonRequest(BaseModel):
+            files: List[FileData]
+            settings: Optional[Dict[str, Any]] = None
+            
+        return FileData, JsonRequest
+        
+    def handle_json_request(self, request_data, processor_func):
+        """
+        Process a JSON API request with base64-encoded files.
+        
+        Args:
+            request_data: The parsed JSON request data
+            processor_func: Function to call for processing (usually self.process_audio)
+            
+        Returns:
+            Dictionary response with base64-encoded output files
+        """
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save uploaded files from base64
+                input_files = []
+                for file_data in request_data.files:
+                    file_path = Path(temp_dir) / file_data.filename
+                    
+                    # Decode base64
+                    try:
+                        file_content = base64.b64decode(file_data.content)
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"Invalid base64 content for file {file_data.filename}: {str(e)}"
+                        )
+                    
+                    with file_path.open("wb") as f:
+                        f.write(file_content)
+                    input_files.append(ProjectFiles(str(file_path)))
+                
+                # Process files
+                settings_dict = request_data.settings if request_data.settings else {}
+                processed_files = processor_func(input_files, **settings_dict)
+                
+                # Return processed files as base64
+                response_files = []
+                for project in processed_files:
+                    for output in project.last_outputs:
+                        output_path = Path(output)
+                        if output_path.exists():
+                            # Read file and encode as base64
+                            with open(output_path, "rb") as f:
+                                file_content = base64.b64encode(f.read()).decode("utf-8")
+                                
+                            response_files.append({
+                                "filename": output_path.name,
+                                "content": file_content
+                            })
+                
+                return {"files": response_files}
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def create_json_endpoint_docs(self, endpoint_name, description=""):
+        """
+        Generate documentation for a JSON API endpoint.
+        
+        Args:
+            endpoint_name: Name of the endpoint (e.g., "convert", "separate")
+            description: Brief description of what the endpoint does
+            
+        Returns:
+            Documentation string for the endpoint
+        """
+        base_docs = f"""
+        {description} using JSON request.
+        
+        This endpoint is a JSON alternative to the multipart/form-data endpoint, allowing you to
+        send files as Base64-encoded strings within a JSON payload. This can be more convenient 
+        for some clients and allows for a consistent API style.
+        
+        ## Request Body
+        
+        ```json
+        {{
+          "files": [
+            {{
+              "filename": "audio.wav",
+              "content": "base64_encoded_file_content..."
+            }}
+          ],
+          "settings": {{
+            "param1": "value1",
+            "param2": "value2"
+          }}
+        }}
+        ```
+        
+        ## Parameters
+        
+        - **files**: Array of file objects, each containing:
+          - **filename**: Name of the file (with extension)
+          - **content**: Base64-encoded file content
+        - **settings**: Processing settings with options specific to this endpoint
+          
+        ## Example Request
+        
+        ```python
+        import requests
+        import base64
+        
+        url = "http://localhost:7860/api/v1/json/{endpoint_name}"
+        
+        # Read and encode file content
+        with open('audio.wav', 'rb') as f:
+            file_content = base64.b64encode(f.read()).decode('utf-8')
+        
+        # Prepare JSON payload
+        payload = {{
+            "files": [
+                {{
+                    "filename": "audio.wav",
+                    "content": file_content
+                }}
+            ],
+            "settings": {{
+                "param1": "value1"
+            }}
+        }}
+        
+        # Send request
+        response = requests.post(url, json=payload)
+        
+        # Process response - files will be returned as Base64 in the response
+        result = response.json()
+        for i, file_data in enumerate(result["files"]):
+            with open(f"output_{{i}}.wav", "wb") as f:
+                f.write(base64.b64decode(file_data["content"]))
+        ```
+        
+        ## Response
+        
+        ```json
+        {{
+          "files": [
+            {{
+              "filename": "output.wav",
+              "content": "base64_encoded_file_content..."
+            }}
+          ]
+        }}
+        ```
+        
+        The API returns an object containing an array of files, each with filename and Base64-encoded content.
+        """
+        
+        return base_docs
 
     def render_options(self, container: gr.Column):
         """

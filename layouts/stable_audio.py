@@ -2,20 +2,13 @@ import os
 import logging
 import gradio as gr
 import torch
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import random
 import zipfile
-import json
-import tempfile
-import shutil
-import time
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
 from modules.stable_audio import StableAudioModel
-from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
-from pathlib import Path
 
 logger = logging.getLogger("ADLB.Layout.StableAudio")
 
@@ -613,26 +606,16 @@ def render(arg_handler: ArgHandler):
 def register_descriptions(arg_handler: ArgHandler):
     """Register descriptions for the Stable Audio module."""
     descriptions = {
-        "prompt": "Enter a detailed description of the audio you want to generate. The more specific and descriptive, the better the results.",
-        "negative_prompt": "Specify what you don't want to appear in the generated audio. Helps avoid unwanted characteristics.",
-        "duration": "Length of the generated audio in seconds. Maximum 47 seconds due to model constraints.",
-        "num_waveforms": "Number of different audio variations to generate from the same prompt.",
-        "inference_steps": "Number of denoising steps. Higher values may produce better quality but take longer.",
-        "guidance_scale": "How closely the model should follow your prompt. Higher values = more faithful to prompt but may sound less natural.",
-        "seed": "Control randomness with a specific seed. Use -1 for random seeds, or set a specific value for reproducibility.",
-        "use_init_audio": "Enable to use an existing audio file as reference for the structure of the generated audio.",
-        "init_audio_path": "Upload an audio file to use as a reference for generation.",
-        "init_audio_preview": "Preview of your reference audio.",
-        "init_noise_level": "Amount of noise to add to the reference audio. Higher values allow more creative freedom.",
-        "randomize_btn": "Click to get a new random seed.",
-        "generate_btn": "Start audio generation with current settings.",
-        "clear_btn": "Reset all settings to defaults and clear outputs.",
-        "download_btn": "Download the currently selected audio file.",
-        "download_all_btn": "Download all generated audio files as a ZIP archive.",
-        "use_as_reference_btn": "Use the currently selected audio as a reference for new generation.",
-        "output_selector": "Select between multiple generated audio files to preview.",
-        "status": "Current status and information about generation process.",
-        "send_to_process": "Send selected audio to the Process tab for further manipulation."
+        "prompt": "Describe the sound you want to generate in detail. The more specific, the better the results.",
+        "negative_prompt": "Describe characteristics you want to avoid in the generated audio.",
+        "duration": "Set the length of the generated audio in seconds (max 30 seconds).",
+        "num_waveforms": "Number of variations to generate from the same prompt.",
+        "inference_steps": "More steps can improve quality but take longer to generate.",
+        "guidance_scale": "How closely to follow the prompt. Higher values are more accurate but may be less creative.",
+        "seed": "Use -1 for random, or set a specific value for reproducible results.",
+        "use_init_audio": "Enable to use an existing audio file as reference for generation.",
+        "init_audio_path": "Upload an audio file to use as guidance for the generation.",
+        "init_noise_level": "Controls how much of the reference audio to preserve (0=exact copy, 1=complete recreation)."
     }
     
     for elem_id, description in descriptions.items():
@@ -684,7 +667,7 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    @api.post("/api/v1/stable-audio/generate")
+    @api.post("/api/v1/stable-audio/generate", tags=["Stable Audio"])
     async def api_generate_audio(
         background_tasks: BackgroundTasks,
         prompt: str = Form(...),
@@ -831,7 +814,7 @@ def register_api_endpoints(api):
             logger.exception("Error in Stable Audio generation:")
             raise HTTPException(status_code=500, detail=f"Audio generation error: {str(e)}")
     
-    @api.get("/api/v1/stable-audio/download/{file_name}")
+    @api.get("/api/v1/stable-audio/download/{file_name}", tags=["Stable Audio"])
     async def download_stable_audio_file(file_name: str):
         """
         Download a generated Stable Audio file

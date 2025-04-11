@@ -7,7 +7,7 @@ import sys
 import traceback
 from random import shuffle
 from time import sleep
-from typing import List, Optional, Dict, Any
+from typing import List
 
 import faiss
 import gradio as gr
@@ -17,16 +17,6 @@ import torchaudio
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 import librosa
-import glob
-import multiprocessing
-import random
-import re
-import subprocess
-import tempfile
-import time
-from pathlib import Path
-from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path, app_path
@@ -1167,7 +1157,7 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    @api.post("/api/v1/rvc/train")
+    @api.post("/api/v1/rvc/train", tags=["RVC"])
     async def api_train_rvc_model(
         background_tasks: BackgroundTasks,
         project_name: str = Form(...),
@@ -1261,7 +1251,7 @@ def register_api_endpoints(api):
             logger.exception("Error starting RVC training:")
             raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
             
-    @api.get("/api/v1/rvc/models")
+    @api.get("/api/v1/rvc/models", tags=["RVC"])
     async def api_list_rvc_models():
         """
         List available RVC voice models
@@ -1300,7 +1290,7 @@ def register_api_endpoints(api):
             logger.exception("Error listing RVC models:")
             raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
             
-    @api.get("/api/v1/rvc/job/{job_id}")
+    @api.get("/api/v1/rvc/job/{job_id}", tags=["RVC"])
     async def api_get_job_status(job_id: str):
         """
         Get status of a training job
@@ -1329,7 +1319,7 @@ def register_api_endpoints(api):
             logger.exception(f"Error getting job status for {job_id}:")
             raise HTTPException(status_code=500, detail=f"Error getting job status: {str(e)}")
             
-    @api.get("/api/v1/rvc/download/{project_name}/{weight_file}")
+    @api.get("/api/v1/rvc/download/{project_name}/{weight_file}", tags=["RVC"])
     async def api_download_model(project_name: str, weight_file: str):
         """
         Download a trained model weight file

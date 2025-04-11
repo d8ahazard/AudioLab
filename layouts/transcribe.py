@@ -126,7 +126,7 @@ def process_transcription(
                     del diarize_model
                     gc.collect()
                 
-                # Save results to file
+                # Save results to files
                 output_json = os.path.join(output_folder, f"{base_name}.json")
                 with open(output_json, 'w') as f:
                     json.dump(result, f, indent=4)
@@ -148,10 +148,27 @@ def process_transcription(
                             start = segment["start"]
                             end = segment["end"]
                             f.write(f"({start:.2f}s - {end:.2f}s): {text}\n")
+
+                # Generate LRC format file
+                output_lrc = os.path.join(output_folder, f"{base_name}.lrc")
+                with open(output_lrc, 'w', encoding='utf-8') as f:
+                    for segment in result["segments"]:
+                        # Convert seconds to MM:SS.xx format
+                        start_time = segment["start"]
+                        minutes = int(start_time // 60)
+                        seconds = start_time % 60
+                        timestamp = f"[{minutes:02d}:{seconds:05.2f}]"
+                        
+                        # Add speaker label if available
+                        text = segment["text"].strip()
+                        if assign_speakers and "speaker" in segment:
+                            text = f"[{segment['speaker']}] {text}"
+                        
+                        f.write(f"{timestamp}{text}\n")
                 
                 # Store results and output files
                 results.append(result)
-                output_files.extend([output_json, output_txt])
+                output_files.extend([output_json, output_txt, output_lrc])
                 
             except Exception as e:
                 logger.exception(f"Error processing file {audio_file}: {e}")
@@ -432,7 +449,7 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    @api.post("/api/v1/transcribe")
+    @api.post("/api/v1/transcribe", tags=["Transcription"])
     async def api_transcribe(
         files: List[UploadFile] = File(...),
         language: str = Form("auto"),
