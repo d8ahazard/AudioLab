@@ -1,17 +1,10 @@
 import json
 import os
 import random
-import shutil
-import time
 import zipfile
-from typing import Optional, Dict, List
 
 import gradio as gr
 import requests
-from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
-import tempfile
-from pathlib import Path
 
 from handlers.args import ArgHandler
 from handlers.config import model_path
@@ -88,7 +81,7 @@ def update_output_preview(selected_file):
 
 def render(arg_handler: ArgHandler):
     global SEND_TO_PROCESS_BUTTON, OUTPUT_MIX, OUTPUT_FILES
-    with gr.Blocks() as music:
+    with gr.Blocks() as app:
         gr.Markdown("# 🎵 YuE Music Generation")
         gr.Markdown("Create complete music tracks with vocals and instrumentals from text descriptions. Generate original songs using lyrics, genre tags, and optional audio references.")
 
@@ -400,7 +393,7 @@ def render(arg_handler: ArgHandler):
                     outputs=[gr.File(label="Download")]
                 )
 
-    return music
+    return app
 
 
 def listen():
@@ -447,7 +440,7 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    @api.post("/api/v1/music/generate")
+    @api.post("/api/v1/music/generate", tags=["YuE Music"])
     async def api_generate_music(
         background_tasks: BackgroundTasks,
         model_language: str = Form("English"),
@@ -597,7 +590,7 @@ def register_api_endpoints(api):
             logger.exception("Error in API music generation")
             raise HTTPException(status_code=500, detail=str(e))
     
-    @api.get("/api/v1/music/download/{file_id}")
+    @api.get("/api/v1/music/download/{file_id}", tags=["YuE Music"])
     async def download_music_file(file_id: str):
         """
         Download a generated music file by ID

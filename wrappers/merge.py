@@ -174,7 +174,7 @@ class Merge(BaseWrapper):
         Returns:
             The registered endpoint route
         """
-        from fastapi import File, UploadFile, HTTPException
+        from fastapi import File, UploadFile, HTTPException, Body
         from fastapi.responses import FileResponse
         from pydantic import BaseModel, create_model
         from typing import List, Optional
@@ -190,8 +190,11 @@ class Merge(BaseWrapper):
             fields[key] = (field_type, value.field)
         
         SettingsModel = create_model(f"{self.__class__.__name__}Settings", **fields)
+        
+        # Create models for JSON API
+        FileData, JsonRequest = self.create_json_models()
 
-        @api.post("/api/v1/process/merge")
+        @api.post("/api/v1/process/merge", tags=["Audio Processing"])
         async def process_merge(
             files: List[UploadFile] = File(...),
             settings: Optional[SettingsModel] = None
@@ -199,67 +202,12 @@ class Merge(BaseWrapper):
             """
             Merge multiple audio files into a single track.
             
-            This endpoint combines multiple audio stems or tracks into a single mixed output. 
-            It intelligently overlays all provided audio files while maintaining proper volume levels
-            and handling any necessary pitch adjustments. This is typically the final step in a
-            processing chain after separating and modifying individual stems.
-            
-            ## Parameters
-            
-            - **files**: Audio files to merge (WAV, MP3, FLAC)
-            - **settings**: Merge settings with the following options:
-              - **prevent_clipping**: Normalize the final mix to prevent clipping (default: true)
-              - **pitch_shift**: Pitch shift in semitones for non-cloned tracks (default: 0)
-                - This is automatically applied to non-cloned tracks if a value is set
-                - Range: -24 to +24 semitones
-              - **selected_voice**: Voice model used for naming the output file (default: "Vocals")
-              - **pitch_extraction_method**: Pitch extraction method used for naming (default: "rmvpe+")
-            
-            ## Example Request
-            
-            ```python
-            import requests
-            
-            url = "http://localhost:7860/api/v1/process/merge"
-            
-            # Upload audio files to merge
-            files = [
-                ('files', ('vocals.wav', open('vocals.wav', 'rb'), 'audio/wav')),
-                ('files', ('instrumental.wav', open('instrumental.wav', 'rb'), 'audio/wav'))
-            ]
-            
-            # Configure merge parameters
-            data = {
-                'prevent_clipping': 'true'
-            }
-            
-            # Send request
-            response = requests.post(url, files=files, data=data)
-            
-            # Save the merged audio
-            with open('merged_track.wav', 'wb') as f:
-                f.write(response.content)
-            ```
-            
-            ## How It Works
-            
-            The merge processor performs these steps:
-            
-            1. Loads all provided audio files
-            2. Applies pitch shift to non-cloned tracks if specified
-            3. Overlays all tracks sequentially, starting with the first file
-            4. Normalizes the resulting audio to prevent clipping (if enabled)
-            5. Exports the final mixed track
-            
-            ## Common Use Cases
-            
-            1. **After Voice Cloning**: Merge cloned vocals with instrumental track
-            2. **After Separation and Processing**: Recombine processed stems
-            3. **Custom Mixes**: Create a personalized mix of stems with adjusted levels
-            
-            ## Response
-            
-            The API returns the merged audio file as an attachment.
+            Args:
+                files: List of audio files to merge
+                settings: Merge settings including pitch shift and clipping prevention
+                
+            Returns:
+                Merged audio file
             """
             try:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -292,4 +240,68 @@ class Merge(BaseWrapper):
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
-        return process_merge
+        @api.post("/api/v2/process/merge", tags=["Audio Processing"])
+        async def process_merge_json(
+            request: JsonRequest = Body(...)
+        ):
+            """
+            Merge multiple audio files into a single track.
+            
+            This endpoint combines multiple audio stems or tracks into a single mixed output. 
+            It intelligently overlays all provided audio files while maintaining proper volume levels
+            and handling any necessary pitch adjustments. This is typically the final step in a
+            processing chain after separating and modifying individual stems.
+            
+            ## Request Body
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "vocals.wav",
+                  "content": "base64_encoded_file_content..."
+                },
+                {
+                  "filename": "instrumental.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ],
+              "settings": {
+                "prevent_clipping": true,
+                "pitch_shift": 0
+              }
+            }
+            ```
+            
+            ## Parameters
+            
+            - **files**: Array of file objects, each containing:
+              - **filename**: Name of the file (with extension)
+              - **content**: Base64-encoded file content
+            - **settings**: Merge settings with the following options:
+              - **prevent_clipping**: Normalize the final mix to prevent clipping (default: true)
+              - **pitch_shift**: Pitch shift in semitones for non-cloned tracks (default: 0)
+                - This is automatically applied to non-cloned tracks if a value is set
+                - Range: -24 to +24 semitones
+              - **selected_voice**: Voice model used for naming the output file (default: "Vocals")
+              - **pitch_extraction_method**: Pitch extraction method used for naming (default: "rmvpe+")
+            
+            ## Response
+            
+            ```json
+            {
+              "files": [
+                {
+                  "filename": "merged_track.wav",
+                  "content": "base64_encoded_file_content..."
+                }
+              ]
+            }
+            ```
+            
+            The API returns an object containing the merged audio file as a Base64-encoded string.
+            """
+            # Use the handle_json_request helper from BaseWrapper
+            return self.handle_json_request(request, self.process_audio)
+
+        return process_merge_json

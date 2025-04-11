@@ -1,18 +1,10 @@
 import os
 import logging
 import torch
-import json
-import re
-import tempfile
-import time
-from pathlib import Path
-from typing import List, Optional
 
 import gradio as gr
 from torch import Tensor
 from huggingface_hub import hf_hub_download
-from fastapi import UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
 
 from handlers.args import ArgHandler
 from handlers.tts import TTSHandler
@@ -496,7 +488,7 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    @api.post("/api/v1/tts/generate")
+    @api.post("/api/v1/tts/generate", tags=["Standard TTS"])
     async def api_generate_tts(
         text: str = Form(...),
         model: str = Form(...),
@@ -664,7 +656,7 @@ def register_api_endpoints(api):
             logger.exception("Error in TTS generation:")
             raise HTTPException(status_code=500, detail=f"TTS generation error: {str(e)}")
             
-    @api.get("/api/v1/tts/models")
+    @api.get("/api/v1/tts/models", tags=["Standard TTS"])
     async def api_list_tts_models():
         """
         List available TTS models

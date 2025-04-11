@@ -596,7 +596,7 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    @api.post("/api/v1/orpheus/generate")
+    @api.post("/api/v1/orpheus/generate", tags=["Orpheus TTS"])
     async def api_generate_speech(
         text: str = Form(...),
         voice: str = Form("tara"),
@@ -667,7 +667,7 @@ def register_api_endpoints(api):
             logger.exception("Error in Orpheus speech generation:")
             raise HTTPException(status_code=500, detail=f"Speech generation error: {str(e)}")
             
-    @api.post("/api/v1/orpheus/finetune")
+    @api.post("/api/v1/orpheus/finetune", tags=["Orpheus TTS"])
     async def api_finetune_model(
         background_tasks: BackgroundTasks,
         speaker_name: str = Form(...),
@@ -738,7 +738,7 @@ def register_api_endpoints(api):
             logger.exception("Error starting Orpheus finetuning:")
             raise HTTPException(status_code=500, detail=f"Finetuning error: {str(e)}")
             
-    @api.get("/api/v1/orpheus/voices")
+    @api.get("/api/v1/orpheus/voices", tags=["Orpheus TTS"])
     async def api_list_voices():
         """
         List available Orpheus voices

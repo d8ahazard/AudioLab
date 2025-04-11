@@ -1,7 +1,6 @@
 import os
-import json
-from typing import List, Tuple, Dict, Any, Optional
 
+from fastapi import HTTPException
 import gradio as gr
 from typing import List, Tuple
 from datetime import datetime
@@ -10,7 +9,6 @@ import logging
 import traceback
 import importlib
 import sys
-from fastapi import HTTPException
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
@@ -442,7 +440,7 @@ def register_api_endpoints(api):
     # Note: The main processing endpoints are already registered in api.py
     # This function adds additional endpoints for managing projects
     
-    @api.get("/api/v1/process/projects")
+    @api.get("/api/v1/process/projects", tags=["Multi-Processing"])
     async def api_list_projects():
         """
         List all available processing projects
@@ -460,7 +458,7 @@ def register_api_endpoints(api):
             logger.exception("Error listing projects:")
             raise HTTPException(status_code=500, detail=f"Error listing projects: {str(e)}")
             
-    @api.get("/api/v1/process/processors")
+    @api.get("/api/v1/process/processors", tags=["Multi-Processing"])
     async def api_list_processors():
         """
         List all available processors and their settings

@@ -686,8 +686,136 @@ def render(arg_handler: ArgHandler):
                 outputs=[info_box]
             )
             
+            def download_with_captions(url: str, output_dir: str) -> tuple[str, Optional[str]]:
+                """Download a video/audio file and its captions if available
+                
+                Args:
+                    url: URL to download from
+                    output_dir: Directory to save files
+                    
+                Returns:
+                    Tuple of (audio_path, caption_path or None)
+                """
+                try:
+                    import yt_dlp
+                    
+                    # Configure yt-dlp options
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'wav',
+                        }],
+                        'writeautomaticsub': True,  # Auto-generated subs if available
+                        'writesubtitles': True,     # Uploaded subs if available
+                        'subtitlesformat': 'vtt',   # VTT format includes timing info
+                        'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
+                        'quiet': True,
+                        'no_warnings': True
+                    }
+                    
+                    # Download video and subs
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        audio_path = os.path.join(output_dir, f"{info['title']}.wav")
+                        
+                        # Check for downloaded subtitles
+                        base_path = os.path.join(output_dir, info['title'])
+                        sub_path = None
+                        
+                        # Check for manual subs first, then auto subs
+                        sub_files = [
+                            f"{base_path}.{info['language']}.vtt",  # Manual subs
+                            f"{base_path}.{info['language']}-orig.vtt",  # Manual subs (alternate)
+                            f"{base_path}.{info['language']}.automated.vtt",  # Auto subs
+                        ]
+                        
+                        for sf in sub_files:
+                            if os.path.exists(sf):
+                                sub_path = sf
+                                break
+                        
+                        # Convert VTT to LRC if we have subs
+                        if sub_path:
+                            lrc_path = os.path.join(output_dir, f"{info['title']}.lrc")
+                            convert_vtt_to_lrc(sub_path, lrc_path)
+                            return audio_path, lrc_path
+                            
+                        return audio_path, None
+                        
+                except Exception as e:
+                    logger.error(f"Error downloading {url}: {e}")
+                    return None, None
+
+            def convert_vtt_to_lrc(vtt_path: str, lrc_path: str):
+                """Convert VTT subtitles to LRC format
+                
+                Args:
+                    vtt_path: Path to VTT file
+                    lrc_path: Path to output LRC file
+                """
+                try:
+                    import webvtt
+                    
+                    with open(lrc_path, 'w', encoding='utf-8') as f:
+                        for caption in webvtt.read(vtt_path):
+                            # Convert timestamp to LRC format
+                            start_parts = caption.start.split(':')
+                            if len(start_parts) == 3:  # HH:MM:SS.mmm
+                                mins = int(start_parts[0]) * 60 + int(start_parts[1])
+                                secs = float(start_parts[2])
+                            else:  # MM:SS.mmm
+                                mins = int(start_parts[0])
+                                secs = float(start_parts[1])
+                            
+                            # Format as [MM:SS.xx]
+                            timestamp = f"[{mins:02d}:{secs:05.2f}]"
+                            
+                            # Write each line
+                            for line in caption.text.strip().split('\n'):
+                                if line.strip():
+                                    f.write(f"{timestamp}{line.strip()}\n")
+                
+                except Exception as e:
+                    logger.error(f"Error converting subtitles: {e}")
+
+            def download_files(urls: str, existing_files: list = None, include_captions: bool = False) -> list:
+                """Download files from URLs and extract captions if available
+                
+                Args:
+                    urls: Newline-separated URLs
+                    existing_files: List of existing files
+                    include_captions: Whether to include captions in the download
+                    
+                Returns:
+                    Updated list of files
+                """
+                if not urls or urls.strip() == "":
+                    return existing_files if existing_files else []
+                
+                # Create temp directory for downloads
+                temp_dir = os.path.join(output_path, "diffrythm", "downloads")
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                # Process each URL
+                new_files = []
+                for url in urls.strip().split('\n'):
+                    if url.strip():
+                        audio_path, caption_path = download_with_captions(url.strip(), temp_dir)
+                        if audio_path:
+                            new_files.append(audio_path)
+                        if caption_path and include_captions:
+                            new_files.append(caption_path)
+                
+                # Combine with existing files
+                if existing_files:
+                    new_files.extend(existing_files)
+                
+                return new_files
+
+            # Update the input_url_button click handler
             input_url_button.click(
-                fn=download_files,
+                fn=lambda url, files: download_files(url, files, include_captions=True),
                 inputs=[input_url, input_files],
                 outputs=[input_files]
             )
@@ -1023,77 +1151,117 @@ File Naming:
         arg_handler.register_description("diffrythm", elem_id, description)
 
 def register_api_endpoints(api):
-    """Register API endpoints for DiffRhythm."""
-    @api.post("/api/v1/diffrythm/generate")
-    async def api_generate_song(
-        background_tasks: BackgroundTasks,
-        style_prompt: str = Form(""),
-        model_name: str = Form("ASLP-lab/DiffRhythm-base"),
-        lyrics: Optional[str] = Form(None),
-        reference_audio: Optional[UploadFile] = File(None),
-        chunked: bool = Form(True)
+    """
+    Register API endpoints for DiffRhythm functionality
+    
+    Args:
+        api: FastAPI application instance
+    """
+    @api.post("/api/v1/diffrythm/create_project", tags=["DiffRhythm"])
+    async def api_create_project(
+        project_name: str = Form(...),
+        audio_file: UploadFile = File(...),
+        lyrics_file: Optional[UploadFile] = File(None),
+        lyrics_text: Optional[str] = Form(None),
+        lyrics_format: str = Form("lrc"),
+        bpm: Optional[float] = Form(None),
+        key: Optional[str] = Form(None),
+        time_signature: Optional[str] = Form(None)
     ):
-        """
-        Generate a song using DiffRhythm
-        
-        Args:
-            background_tasks: FastAPI background tasks
-            style_prompt: Text description of the music style
-            model_name: DiffRhythm model to use
-            lyrics: Lyrics in LRC format (optional)
-            reference_audio: Audio file to use as style reference (optional)
-            chunked: Whether to use chunked decoding
-            
-        Returns:
-            Path to the generated audio file
-        """
         try:
-            # Create temporary directory for processing
-            temp_dir = tempfile.mkdtemp(prefix="diffrythm_")
-            
-            # Save reference audio if provided
-            ref_audio_path = None
-            if reference_audio:
-                ref_audio_path = os.path.join(temp_dir, "reference.wav")
-                with open(ref_audio_path, "wb") as f:
-                    f.write(await reference_audio.read())
-            
-            # Save lyrics if provided
-            lrc_path = None
-            if lyrics:
-                lrc_path = os.path.join(temp_dir, "lyrics.lrc")
-                with open(lrc_path, "w", encoding="utf-8") as f:
-                    f.write(lyrics)
-            
-            # Generate song
-            output_path, message = generate_song(
-                lrc_path=lrc_path,
-                style_prompt=style_prompt,
-                ref_audio_path=ref_audio_path,
-                model_name=model_name,
-                chunked=chunked
+            result = await create_project(
+                project_name=project_name,
+                audio_file=audio_file,
+                lyrics_file=lyrics_file,
+                lyrics_text=lyrics_text,
+                lyrics_format=lyrics_format,
+                bpm=bpm,
+                key=key,
+                time_signature=time_signature
             )
-            
-            if not output_path:
-                raise HTTPException(status_code=500, detail=f"Failed to generate song: {message}")
-            
-            # Prepare response
-            filename = os.path.basename(output_path)
-            copied_path = os.path.join(temp_dir, filename)
-            shutil.copy(output_path, copied_path)
-            
-            # Clean up temporary files after sending the response
-            background_tasks.add_task(cleanup_temp_files, temp_dir)
-            
-            return FileResponse(
-                output_path,
-                media_type="audio/wav",
-                filename=filename
-            )
-            
+            return result
         except Exception as e:
-            logger.exception("Error in DiffRhythm song generation:")
-            raise HTTPException(status_code=500, detail=f"Song generation error: {str(e)}")
+            logger.exception("Error creating DiffRhythm project:")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.post("/api/v1/diffrythm/train", tags=["DiffRhythm"])
+    async def api_train(
+        project_name: str = Form(...),
+        batch_size: int = Form(16),
+        num_epochs: int = Form(100),
+        learning_rate: float = Form(1e-4),
+        save_interval: int = Form(10)
+    ):
+        try:
+            result = await train_model(
+                project_name=project_name,
+                batch_size=batch_size,
+                num_epochs=num_epochs,
+                learning_rate=learning_rate,
+                save_interval=save_interval
+            )
+            return result
+        except Exception as e:
+            logger.exception("Error training DiffRhythm model:")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.post("/api/v1/diffrythm/generate", tags=["DiffRhythm"])
+    async def api_generate(
+        project_name: str = Form(...),
+        lyrics_file: Optional[UploadFile] = File(None),
+        lyrics_text: Optional[str] = Form(None),
+        lyrics_format: str = Form("lrc"),
+        bpm: Optional[float] = Form(None),
+        key: Optional[str] = Form(None),
+        time_signature: Optional[str] = Form(None),
+        num_samples: int = Form(1),
+        guidance_scale: float = Form(3.0),
+        temperature: float = Form(1.0)
+    ):
+        try:
+            result = await generate_audio(
+                project_name=project_name,
+                lyrics_file=lyrics_file,
+                lyrics_text=lyrics_text,
+                lyrics_format=lyrics_format,
+                bpm=bpm,
+                key=key,
+                time_signature=time_signature,
+                num_samples=num_samples,
+                guidance_scale=guidance_scale,
+                temperature=temperature
+            )
+            return result
+        except Exception as e:
+            logger.exception("Error generating audio with DiffRhythm:")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/diffrythm/projects", tags=["DiffRhythm"])
+    async def api_list_projects():
+        try:
+            projects = list_diffrythm_projects()
+            return {"projects": projects}
+        except Exception as e:
+            logger.exception("Error listing DiffRhythm projects:")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/diffrythm/project/{project_name}", tags=["DiffRhythm"])
+    async def api_get_project(project_name: str):
+        try:
+            project = get_project_details(project_name)
+            return project
+        except Exception as e:
+            logger.exception("Error getting DiffRhythm project details:")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.delete("/api/v1/diffrythm/project/{project_name}", tags=["DiffRhythm"])
+    async def api_delete_project(project_name: str):
+        try:
+            result = delete_project(project_name)
+            return result
+        except Exception as e:
+            logger.exception("Error deleting DiffRhythm project:")
+            raise HTTPException(status_code=500, detail=str(e))
 
 def cleanup_temp_files(temp_dir):
     """Clean up temporary files after a delay."""
