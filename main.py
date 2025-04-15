@@ -4,6 +4,7 @@ import os
 import sys
 import signal
 from pathlib import Path
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 # Configure logging and fix formatting so time, name, level, are each in []
@@ -28,10 +29,9 @@ logger.setLevel(logging.DEBUG)
 import gradio as gr
 import uvicorn
 from torchaudio._extension import _init_dll_path
-from fastapi.middleware.cors import CORSMiddleware
 
 import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
-from api import app
+from api import app as api_router
 from handlers.args import ArgHandler
 from handlers.config import model_path
 from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
@@ -67,32 +67,6 @@ project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-def setup_middleware(app):
-    """Set up the FastAPI middleware for CORS and other functionality."""
-    from starlette.middleware.base import BaseHTTPMiddleware
-    
-    # Add custom middleware to prevent the redirect from / to //
-    class NoRedirectMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            response = await call_next(request)
-            # If it's a redirect to // (which causes the HTTPS mixed content issue)
-            if response.status_code == 307 and response.headers.get('location') == '//':
-                # Return a 200 response to the original / path instead of redirecting
-                return RedirectResponse(url='/', status_code=200)
-            return response
-    
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    # Add our custom middleware to prevent the problematic redirect
-    app.add_middleware(NoRedirectMiddleware)
-
 if __name__ == '__main__':
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="AudioLab Web Server")
@@ -118,7 +92,7 @@ if __name__ == '__main__':
 
     if args.api_only:
         # Run only the FastAPI server
-        uvicorn.run(app, host=server_name, port=server_port)
+        uvicorn.run(api_router, host=server_name, port=server_port)
     else:
         # Set up the UI
         arg_handler = ArgHandler()
@@ -172,30 +146,28 @@ if __name__ == '__main__':
         demo.queue()
         
         # ---------------------------------------------------------------------------------
-        # Directly adapt Automatic1111's approach to prevent redirect issues
+        # Use Gradio's built-in server and add our API endpoints
         # ---------------------------------------------------------------------------------
         
-        # Set up CORS and other middleware
-        setup_middleware(app)
+        # Mount the API at /api path
+        demo.app.mount("/api", api_router)
         
-        # Mount Gradio app onto our FastAPI app
-        app = gr.mount_gradio_app(
-            app, 
-            demo,
-            path="/frontend",  # Mount at /frontend to avoid conflict with root path
-            favicon_path=os.path.join(project_root, 'res', 'favicon.ico')
+        # Add CORS middleware
+        demo.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
-        
-        # Add a redirect from root to frontend
-        @app.get("/")
-        async def root():
-            return RedirectResponse(url='/frontend')
         
         # Print startup information
         logger.info(f"Server running on http://{server_name}:{server_port}")
-        logger.info(f"API documentation available at http://{server_name}:{server_port}/docs")
+        logger.info(f"API documentation available at http://{server_name}:{server_port}/api/docs")
         
-        # Run the FastAPI server with specific config for clean shutdowns
-        config = uvicorn.Config(app=app, host=server_name, port=server_port)
-        server = uvicorn.Server(config)
-        server.run()
+        # Launch the Gradio app directly
+        demo.launch(
+            server_name=server_name,
+            server_port=server_port,
+            favicon_path=os.path.join(project_root, 'res', 'favicon.ico')
+        )
