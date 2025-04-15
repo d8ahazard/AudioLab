@@ -78,8 +78,8 @@ document.addEventListener("DOMContentLoaded", function() {
 function refresh() {
     const url = new URL(window.location);
     console.log("REFRESH:", url);
-    if (url.searchParams.get('__theme') !== 'dark') {
-        url.searchParams.set('__theme', 'dark');
-        window.location.href = url.href;
-    }
+    // if (url.searchParams.get('__theme') !== 'dark') {
+    //     url.searchParams.set('__theme', 'dark');
+    //     window.location.href = url.href;
+    // }
 }
