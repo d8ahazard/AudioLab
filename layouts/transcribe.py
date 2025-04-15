@@ -471,6 +471,8 @@ def register_api_endpoints(api):
 
     # Define Pydantic models for request validation
     class TranscriptionOptions(BaseModel):
+        """Request model for audio transcription"""
+        audio_file: str = Field(..., description="Base64 encoded audio file to transcribe")
         model: str = Field(
             "whisper-1", description="The model to use for audio transcription"
         )
@@ -534,6 +536,8 @@ def register_api_endpoints(api):
             return v
 
     class TranslationOptions(BaseModel):
+        """Request model for audio translation"""
+        audio_file: str = Field(..., description="Base64 encoded audio file to translate")
         model: str = Field(
             "whisper-1", description="The model to use for audio translation"
         )
@@ -587,64 +591,35 @@ def register_api_endpoints(api):
 
     @api.post("/api/v1/audio/transcriptions", tags=["Audio Transcription"])
     async def api_transcribe_audio(
-        file: UploadFile = File(...),
-        model: str = Form("whisper-1"),
-        language: Optional[str] = Form(None),
-        prompt: Optional[str] = Form(None),
-        response_format: str = Form("json"),
-        temperature: float = Form(0.0),
-        timestamp_granularities: Optional[List[str]] = Form(None),
+        request: TranscriptionOptions,
         background_tasks: BackgroundTasks = None
     ):
         """
         Transcribe audio to text
         
         This endpoint transcribes the uploaded audio file to text using the Whisper model.
-        
-        Parameters:
-        - file: The audio file to transcribe (required, max 25MB)
-        - model: The transcription model to use (default: "whisper-1")
-        - language: The language of the audio in ISO-639-1 format (optional, e.g., "en", "fr")
-        - prompt: Text to guide the transcription model (optional, max 1000 chars)
-        - response_format: Output format (default: "json", options: "json", "text", "srt", "vtt", "verbose_json")
-        - temperature: Sampling temperature (default: 0.0, range: 0.0-1.0)
-        - timestamp_granularities: Timestamp detail level (optional, options: "word", "segment")
-        
-        Returns:
-        - JSON with transcription details and results
         """
         try:
             # Check file size limit (25MB)
+            audio_data = base64.b64decode(request.audio_file)
+            file_size = len(audio_data)
             file_size_limit = 25 * 1024 * 1024  # 25MB in bytes
-            if file.size > file_size_limit:
+            if file_size > file_size_limit:
                 raise HTTPException(
                     status_code=400, 
-                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file.size / (1024 * 1024):.2f}MB"
+                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file_size / (1024 * 1024):.2f}MB"
                 )
-            
-            # Read file content
-            audio_content = await file.read()
-            
-            # Validate input parameters
-            options = TranscriptionOptions(
-                model=model,
-                language=language,
-                prompt=prompt,
-                response_format=response_format,
-                temperature=temperature,
-                timestamp_granularities=timestamp_granularities
-            )
             
             # Create a temporary file to store the uploaded audio
             temp_dir = os.path.join(output_path, "temp")
             os.makedirs(temp_dir, exist_ok=True)
             
             temp_audio_id = str(uuid.uuid4())
-            temp_audio_filename = f"temp_audio_{temp_audio_id}_{file.filename}"
+            temp_audio_filename = f"temp_audio_{temp_audio_id}.wav"
             temp_audio_path = os.path.join(temp_dir, temp_audio_filename)
             
             with open(temp_audio_path, "wb") as f:
-                f.write(audio_content)
+                f.write(audio_data)
             
             # Generate a unique ID for this transcription
             transcription_id = str(uuid.uuid4())
@@ -660,12 +635,12 @@ def register_api_endpoints(api):
             # Perform transcription
             result = transcriber.transcribe(
                 audio_file=temp_audio_path,
-                model=options.model,
-                language=options.language,
-                prompt=options.prompt,
-                response_format=options.response_format,
-                temperature=options.temperature,
-                timestamp_granularities=options.timestamp_granularities
+                model=request.model,
+                language=request.language,
+                prompt=request.prompt,
+                response_format=request.response_format,
+                temperature=request.temperature,
+                timestamp_granularities=request.timestamp_granularities
             )
             
             # Clean up temporary file
@@ -681,20 +656,20 @@ def register_api_endpoints(api):
                 raise HTTPException(status_code=500, detail="No transcription data generated")
             
             # Save transcription results based on format
-            if options.response_format == "json":
+            if request.response_format == "json":
                 output_filename = f"transcription_{transcription_id}.json"
                 output_filepath = os.path.join(transcription_dir, output_filename)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     json.dump(transcription_data, f, indent=2, ensure_ascii=False)
             
-            elif options.response_format == "verbose_json":
+            elif request.response_format == "verbose_json":
                 output_filename = f"transcription_{transcription_id}.json"
                 output_filepath = os.path.join(transcription_dir, output_filename)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     json.dump(transcription_data, f, indent=2, ensure_ascii=False)
             
-            elif options.response_format in ["text", "srt", "vtt"]:
-                output_filename = f"transcription_{transcription_id}.{options.response_format}"
+            elif request.response_format in ["text", "srt", "vtt"]:
+                output_filename = f"transcription_{transcription_id}.{request.response_format}"
                 output_filepath = os.path.join(transcription_dir, output_filename)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     f.write(transcription_data)
@@ -712,16 +687,16 @@ def register_api_endpoints(api):
             metadata = {
                 "id": transcription_id,
                 "timestamp": timestamp,
-                "original_filename": file.filename,
-                "model": options.model,
-                "language": options.language,
-                "prompt": options.prompt,
-                "response_format": options.response_format,
-                "temperature": options.temperature,
-                "timestamp_granularities": options.timestamp_granularities,
+                "original_filename": temp_audio_filename,
+                "model": request.model,
+                "language": request.language,
+                "prompt": request.prompt,
+                "response_format": request.response_format,
+                "temperature": request.temperature,
+                "timestamp_granularities": request.timestamp_granularities,
                 "output_file": {
                     "filename": output_filename,
-                    "format": options.response_format,
+                    "format": request.response_format,
                     "download_url": download_url,
                     "file_size_bytes": file_size
                 }
@@ -747,9 +722,9 @@ def register_api_endpoints(api):
             # Prepare response
             # For text format, include the text content directly
             transcription_content = None
-            if options.response_format == "text":
+            if request.response_format == "text":
                 transcription_content = transcription_data
-            elif options.response_format in ["json", "verbose_json"]:
+            elif request.response_format in ["json", "verbose_json"]:
                 transcription_content = transcription_data
             
             response_data = {
@@ -757,18 +732,18 @@ def register_api_endpoints(api):
                 "transcription_id": transcription_id,
                 "output_file": {
                     "filename": output_filename,
-                    "format": options.response_format,
+                    "format": request.response_format,
                     "download_url": download_url,
                     "file_size_bytes": file_size
                 },
                 "metadata": {
-                    "original_filename": file.filename,
-                    "model": options.model,
-                    "language": options.language,
-                    "prompt": options.prompt,
-                    "response_format": options.response_format,
-                    "temperature": options.temperature,
-                    "timestamp_granularities": options.timestamp_granularities,
+                    "original_filename": temp_audio_filename,
+                    "model": request.model,
+                    "language": request.language,
+                    "prompt": request.prompt,
+                    "response_format": request.response_format,
+                    "temperature": request.temperature,
+                    "timestamp_granularities": request.timestamp_granularities,
                     "timestamp": timestamp
                 }
             }
@@ -791,61 +766,35 @@ def register_api_endpoints(api):
 
     @api.post("/api/v1/audio/translations", tags=["Audio Transcription"])
     async def api_translate_audio(
-        file: UploadFile = File(...),
-        model: str = Form("whisper-1"),
-        prompt: Optional[str] = Form(None),
-        response_format: str = Form("json"),
-        temperature: float = Form(0.0),
-        timestamp_granularities: Optional[List[str]] = Form(None),
+        request: TranslationOptions,
         background_tasks: BackgroundTasks = None
     ):
         """
         Translate audio to English text
         
         This endpoint translates the uploaded audio file to English text using the Whisper model.
-        
-        Parameters:
-        - file: The audio file to translate (required, max 25MB)
-        - model: The translation model to use (default: "whisper-1")
-        - prompt: Text to guide the translation model (optional, max 1000 chars)
-        - response_format: Output format (default: "json", options: "json", "text", "srt", "vtt", "verbose_json")
-        - temperature: Sampling temperature (default: 0.0, range: 0.0-1.0)
-        - timestamp_granularities: Timestamp detail level (optional, options: "word", "segment")
-        
-        Returns:
-        - JSON with translation details and results
         """
         try:
             # Check file size limit (25MB)
+            audio_data = base64.b64decode(request.audio_file)
+            file_size = len(audio_data)
             file_size_limit = 25 * 1024 * 1024  # 25MB in bytes
-            if file.size > file_size_limit:
+            if file_size > file_size_limit:
                 raise HTTPException(
                     status_code=400, 
-                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file.size / (1024 * 1024):.2f}MB"
+                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file_size / (1024 * 1024):.2f}MB"
                 )
-            
-            # Read file content
-            audio_content = await file.read()
-            
-            # Validate input parameters
-            options = TranslationOptions(
-                model=model,
-                prompt=prompt,
-                response_format=response_format,
-                temperature=temperature,
-                timestamp_granularities=timestamp_granularities
-            )
             
             # Create a temporary file to store the uploaded audio
             temp_dir = os.path.join(output_path, "temp")
             os.makedirs(temp_dir, exist_ok=True)
             
             temp_audio_id = str(uuid.uuid4())
-            temp_audio_filename = f"temp_audio_{temp_audio_id}_{file.filename}"
+            temp_audio_filename = f"temp_audio_{temp_audio_id}.wav"
             temp_audio_path = os.path.join(temp_dir, temp_audio_filename)
             
             with open(temp_audio_path, "wb") as f:
-                f.write(audio_content)
+                f.write(audio_data)
             
             # Generate a unique ID for this translation
             translation_id = str(uuid.uuid4())
@@ -861,11 +810,11 @@ def register_api_endpoints(api):
             # Perform translation
             result = translator.translate(
                 audio_file=temp_audio_path,
-                model=options.model,
-                prompt=options.prompt,
-                response_format=options.response_format,
-                temperature=options.temperature,
-                timestamp_granularities=options.timestamp_granularities
+                model=request.model,
+                prompt=request.prompt,
+                response_format=request.response_format,
+                temperature=request.temperature,
+                timestamp_granularities=request.timestamp_granularities
             )
             
             # Clean up temporary file
@@ -881,20 +830,20 @@ def register_api_endpoints(api):
                 raise HTTPException(status_code=500, detail="No translation data generated")
             
             # Save translation results based on format
-            if options.response_format == "json":
+            if request.response_format == "json":
                 output_filename = f"translation_{translation_id}.json"
                 output_filepath = os.path.join(translation_dir, output_filename)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     json.dump(translation_data, f, indent=2, ensure_ascii=False)
             
-            elif options.response_format == "verbose_json":
+            elif request.response_format == "verbose_json":
                 output_filename = f"translation_{translation_id}.json"
                 output_filepath = os.path.join(translation_dir, output_filename)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     json.dump(translation_data, f, indent=2, ensure_ascii=False)
             
-            elif options.response_format in ["text", "srt", "vtt"]:
-                output_filename = f"translation_{translation_id}.{options.response_format}"
+            elif request.response_format in ["text", "srt", "vtt"]:
+                output_filename = f"translation_{translation_id}.{request.response_format}"
                 output_filepath = os.path.join(translation_dir, output_filename)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     f.write(translation_data)
@@ -912,15 +861,15 @@ def register_api_endpoints(api):
             metadata = {
                 "id": translation_id,
                 "timestamp": timestamp,
-                "original_filename": file.filename,
-                "model": options.model,
-                "prompt": options.prompt,
-                "response_format": options.response_format,
-                "temperature": options.temperature,
-                "timestamp_granularities": options.timestamp_granularities,
+                "original_filename": temp_audio_filename,
+                "model": request.model,
+                "prompt": request.prompt,
+                "response_format": request.response_format,
+                "temperature": request.temperature,
+                "timestamp_granularities": request.timestamp_granularities,
                 "output_file": {
                     "filename": output_filename,
-                    "format": options.response_format,
+                    "format": request.response_format,
                     "download_url": download_url,
                     "file_size_bytes": file_size
                 }
@@ -946,9 +895,9 @@ def register_api_endpoints(api):
             # Prepare response
             # For text format, include the text content directly
             translation_content = None
-            if options.response_format == "text":
+            if request.response_format == "text":
                 translation_content = translation_data
-            elif options.response_format in ["json", "verbose_json"]:
+            elif request.response_format in ["json", "verbose_json"]:
                 translation_content = translation_data
             
             response_data = {
@@ -956,17 +905,17 @@ def register_api_endpoints(api):
                 "translation_id": translation_id,
                 "output_file": {
                     "filename": output_filename,
-                    "format": options.response_format,
+                    "format": request.response_format,
                     "download_url": download_url,
                     "file_size_bytes": file_size
                 },
                 "metadata": {
-                    "original_filename": file.filename,
-                    "model": options.model,
-                    "prompt": options.prompt,
-                    "response_format": options.response_format,
-                    "temperature": options.temperature,
-                    "timestamp_granularities": options.timestamp_granularities,
+                    "original_filename": temp_audio_filename,
+                    "model": request.model,
+                    "prompt": request.prompt,
+                    "response_format": request.response_format,
+                    "temperature": request.temperature,
+                    "timestamp_granularities": request.timestamp_granularities,
                     "timestamp": timestamp
                 }
             }

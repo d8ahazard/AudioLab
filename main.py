@@ -6,9 +6,10 @@ import signal
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware  # Import BaseHTTPMiddleware for custom middleware handling
 
 # Configure logging and fix formatting so time, name, level, are each in []
-logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s',level=logging.DEBUG)
+logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s', level=logging.DEBUG)
 
 # Silence other loggers except our app logger
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -82,7 +83,6 @@ if __name__ == '__main__':
     # Define signal handler for graceful shutdown
     def signal_handler(sig, frame):
         logger.info("SIGINT or SIGTERM received, shutting down gracefully...")
-        # Clean up any resources if needed
         sys.exit(0)
 
     # Register the signal handler
@@ -142,32 +142,18 @@ if __name__ == '__main__':
             diffrythm_listen()
             transcribe_listen()
 
-        # Enable queue for handling concurrent requests
-        demo.queue()
+            demo.queue()
         
-        # ---------------------------------------------------------------------------------
-        # Use Gradio's built-in server and add our API endpoints
-        # ---------------------------------------------------------------------------------
-        
-        # Mount the API at /api path
-        demo.app.mount("/api", api_router)
-        
-        # Add CORS middleware
-        demo.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-        
-        # Print startup information
+        # Create a unified FastAPI app that serves both the API and the Gradio UI
+        from fastapi import FastAPI
+        main_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)  # Disable /docs, /redoc, and /openapi.json at the root
+        # Mount the API under /api so that endpoints are available at /api/v1/process/...
+        main_app.mount("/api", api_router)
+        # Mount the Gradio UI on the root path without including its routes in the schema
+        main_app.mount("/", demo.app, name="gradio")
+
         logger.info(f"Server running on http://{server_name}:{server_port}")
         logger.info(f"API documentation available at http://{server_name}:{server_port}/api/docs")
         
-        # Launch the Gradio app directly
-        demo.launch(
-            server_name=server_name,
-            server_port=server_port,
-            favicon_path=os.path.join(project_root, 'res', 'favicon.ico')
-        )
+        # Run the unified server
+        uvicorn.run(main_app, host=server_name, port=server_port)

@@ -18,6 +18,7 @@ import torchaudio
 from pydub import AudioSegment
 from sklearn.cluster import MiniBatchKMeans
 import librosa
+import base64
 
 from handlers.args import ArgHandler
 from handlers.config import model_path, output_path, app_path
@@ -32,6 +33,7 @@ from modules.rvc.infer.modules.train.train import train_main
 from modules.rvc.utils import HParams
 from util.data_classes import ProjectFiles
 from wrappers.separate import Separate
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 now_dir = os.getcwd()
@@ -1163,119 +1165,237 @@ def register_api_endpoints(api):
     from fastapi.responses import FileResponse, JSONResponse
     from typing import Optional, List
 
+    class TrainRVCRequest(BaseModel):
+        """Request model for training an RVC voice model"""
+        project_name: str = Field(..., description="Name for the voice project")
+        sample_rate: str = Field("48k", description="Target sample rate for the model (40k or 48k)")
+        use_pitch_guidance: bool = Field(True, description="Whether to use pitch guidance")
+        speaker_id: int = Field(0, description="Speaker ID for the model")
+        extraction_method: str = Field("rmvpe+", description="Method for extracting features")
+        epoch_save_freq: int = Field(10, description="How often to save checkpoints")
+        train_epochs: int = Field(200, description="Total number of training epochs")
+        batch_size: int = Field(16, description="Training batch size")
+        save_latest_only: str = Field("Yes", description="Whether to save only the latest checkpoint")
+        save_weights_every: str = Field("Yes", description="Whether to save weights with each checkpoint")
+        project_version: str = Field("v2", description="RVC model version (v1 or v2)")
+        gpus_rmvpe: str = Field("0", description="GPU indices for RMVPE")
+        separate_vocals: bool = Field(True, description="Whether to separate vocals from input")
+        cache_to_gpu: str = Field("Yes", description="Whether to cache dataset to GPU")
+        audio_files: List[str] = Field(..., description="Base64 encoded audio files for training")
+
+    class UploadDatasetsRequest(BaseModel):
+        """Request model for uploading dataset files"""
+        project_name: str = Field(..., description="Name of the voice project")
+        separate_vocals: bool = Field(True, description="Whether to separate vocals from instrumental")
+        dataset_files: List[str] = Field(..., description="Base64 encoded audio files to upload")
+
+    class BuildIndexRequest(BaseModel):
+        """Request model for building an index"""
+        project_name: str = Field(..., description="Name of the voice project")
+        project_version: str = Field("v2", description="RVC model version (v1 or v2)")
+
     @api.post("/api/v1/rvc/train", tags=["RVC"])
     async def api_train_rvc_model(
             background_tasks: BackgroundTasks,
-            project_name: str = Form(...),
-            sample_rate: str = Form("48k"),
-            use_pitch_guidance: bool = Form(True),
-            speaker_id: int = Form(0),
-            extraction_method: str = Form("rmvpe+"),
-            epoch_save_freq: int = Form(10),
-            train_epochs: int = Form(200),
-            batch_size: int = Form(16),
-            save_latest_only: str = Form("Yes"),
-            save_weights_every: str = Form("Yes"),
-            project_version: str = Form("v2"),
-            gpus_rmvpe: str = Form("0"),
-            separate_vocals: bool = Form(True),
-            cache_to_gpu: str = Form("Yes"),
-            audio_files: List[UploadFile] = File(...)
+            request: TrainRVCRequest
     ):
-        """
-        Train a new RVC voice model
-        
-        Args:
-            background_tasks: FastAPI background tasks
-            project_name: Name for the voice project
-            sample_rate: Target sample rate for the model (40k or 48k)
-            use_pitch_guidance: Whether to use pitch guidance
-            speaker_id: Speaker ID for the model
-            extraction_method: Method for extracting features
-            epoch_save_freq: How often to save checkpoints
-            train_epochs: Total number of training epochs
-            batch_size: Training batch size
-            save_latest_only: Whether to save only the latest checkpoint ("Yes" or "No")
-            save_weights_every: Whether to save weights with each checkpoint ("Yes" or "No")
-            project_version: RVC model version (v1 or v2)
-            gpus_rmvpe: GPU indices for RMVPE
-            separate_vocals: Whether to separate vocals from input
-            cache_to_gpu: Whether to cache dataset to GPU
-            audio_files: Audio files for training
-            
-        Returns:
-            Status information and job ID
-        """
+        """Train a new RVC voice model"""
         try:
             # Validate inputs
-            if not project_name or project_name.strip() == "":
+            if not request.project_name or request.project_name.strip() == "":
                 raise HTTPException(status_code=400, detail="Project name cannot be empty")
 
-            if not audio_files or len(audio_files) == 0:
+            if not request.audio_files or len(request.audio_files) == 0:
                 raise HTTPException(status_code=400, detail="No audio files provided")
                 
             # Validate sample rate
-            if sample_rate not in ["40k", "48k", "32k"]:
+            if request.sample_rate not in ["40k", "48k", "32k"]:
                 raise HTTPException(status_code=400, detail="Sample rate must be 32k, 40k, or 48k")
                 
             # Validate extraction method
             valid_extraction_methods = ["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", 
                                        "rmvpe+", "crepe", "crepe-tiny", "mangio-crepe", "mangio-crepe-tiny"]
-            if extraction_method not in valid_extraction_methods:
+            if request.extraction_method not in valid_extraction_methods:
                 raise HTTPException(status_code=400, detail=f"Invalid extraction method. Must be one of: {', '.join(valid_extraction_methods)}")
                 
             # Validate project version
-            if project_version not in ["v1", "v2"]:
+            if request.project_version not in ["v1", "v2"]:
                 raise HTTPException(status_code=400, detail="Project version must be v1 or v2")
 
             # Create temporary directory for processing
             temp_dir = tempfile.mkdtemp(prefix="rvc_train_")
 
-            # Save uploaded audio files
+            # Save decoded audio files
             audio_paths = []
-            for audio_file in audio_files:
-                file_path = os.path.join(temp_dir, audio_file.filename)
-                with open(file_path, "wb") as f:
-                    content = await audio_file.read()
-                    f.write(content)
-                audio_paths.append(file_path)
+            for i, audio_base64 in enumerate(request.audio_files):
+                try:
+                    audio_data = base64.b64decode(audio_base64)
+                    file_path = os.path.join(temp_dir, f"audio_{i}.wav")
+                    with open(file_path, "wb") as f:
+                        f.write(audio_data)
+                    audio_paths.append(file_path)
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid base64 audio data at index {i}: {str(e)}")
 
             # Start training in the background
             job_id = f"train_{int(time.time())}"
             background_tasks.add_task(
                 run_train_job,
                 job_id=job_id,
-                project_name=project_name,
+                project_name=request.project_name,
                 audio_files=audio_paths,
-                sample_rate=sample_rate,
-                use_pitch_guidance=use_pitch_guidance,
-                speaker_id=speaker_id,
-                extraction_method=extraction_method,
-                epoch_save_freq=epoch_save_freq,
-                train_epochs=train_epochs,
-                batch_size=batch_size,
-                save_latest_only=save_latest_only,
-                save_weights_every=save_weights_every,
-                project_version=project_version,
-                gpus_rmvpe=gpus_rmvpe,
-                separate_vocals=separate_vocals,
-                cache_to_gpu=cache_to_gpu,
+                sample_rate=request.sample_rate,
+                use_pitch_guidance=request.use_pitch_guidance,
+                speaker_id=request.speaker_id,
+                extraction_method=request.extraction_method,
+                epoch_save_freq=request.epoch_save_freq,
+                train_epochs=request.train_epochs,
+                batch_size=request.batch_size,
+                save_latest_only=request.save_latest_only,
+                save_weights_every=request.save_weights_every,
+                project_version=request.project_version,
+                gpus_rmvpe=request.gpus_rmvpe,
+                separate_vocals=request.separate_vocals,
+                cache_to_gpu=request.cache_to_gpu,
                 temp_dir=temp_dir
             )
 
             return {
                 "status": "started",
                 "job_id": job_id,
-                "message": f"Training job started for project '{project_name}' with {len(audio_files)} audio files",
-                "estimated_time": f"Estimated time: {len(audio_files) * 2 + train_epochs * 0.5:.1f} minutes"
+                "message": f"Training job started for project '{request.project_name}' with {len(request.audio_files)} audio files",
+                "estimated_time": f"Estimated time: {len(request.audio_files) * 2 + request.train_epochs * 0.5:.1f} minutes"
             }
 
         except HTTPException:
-            # Re-raise HTTP exceptions
             raise
         except Exception as e:
             logger.exception("Error starting RVC training:")
             raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
+
+    @api.post("/api/v1/rvc/upload", tags=["RVC"])
+    async def api_upload_datasets(request: UploadDatasetsRequest):
+        """Upload dataset files to an existing or new project"""
+        try:
+            # Validate project name
+            if not request.project_name or request.project_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Project name cannot be empty")
+                
+            # Validate files
+            if not request.dataset_files or len(request.dataset_files) == 0:
+                raise HTTPException(status_code=400, detail="No dataset files provided")
+            
+            # Create project directory structure
+            project_dir = os.path.join(output_path, "voices", request.project_name)
+            os.makedirs(project_dir, exist_ok=True)
+            
+            raw_dir = os.path.join(project_dir, "raw")
+            os.makedirs(raw_dir, exist_ok=True)
+            
+            # Save decoded audio files
+            file_paths = []
+            for i, audio_base64 in enumerate(request.dataset_files):
+                try:
+                    audio_data = base64.b64decode(audio_base64)
+                    file_path = os.path.join(raw_dir, f"audio_{i}.wav")
+                    with open(file_path, "wb") as f:
+                        f.write(audio_data)
+                    file_paths.append(file_path)
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid base64 audio data at index {i}: {str(e)}")
+            
+            # Separate vocals if requested
+            if request.separate_vocals and file_paths:
+                vocal_files, bg_vocal_files = separate_vocal(file_paths)
+                
+                # Move the separated files to the raw directory
+                for vocal_file in vocal_files:
+                    basename = os.path.basename(vocal_file)
+                    if "(Vocals)" in basename:
+                        # Rename to remove the (Vocals) suffix
+                        new_basename = basename.replace("(Vocals)", "").strip()
+                        new_path = os.path.join(raw_dir, new_basename)
+                        shutil.copy2(vocal_file, new_path)
+                
+                separated_count = len(vocal_files)
+            else:
+                separated_count = 0
+            
+            return {
+                "status": "success",
+                "message": f"Successfully uploaded {len(file_paths)} files to project '{request.project_name}'",
+                "project_name": request.project_name,
+                "file_count": len(file_paths),
+                "separated_count": separated_count,
+                "project_dir": project_dir
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error uploading dataset files:")
+            raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
+    
+    @api.post("/api/v1/rvc/build_index", tags=["RVC"])
+    async def api_build_index(
+            request: BuildIndexRequest,
+            background_tasks: BackgroundTasks = None
+    ):
+        """Build an index for an existing trained model"""
+        try:
+            # Validate project name
+            if not request.project_name or request.project_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Project name cannot be empty")
+                
+            # Validate project version
+            if request.project_version not in ["v1", "v2"]:
+                raise HTTPException(status_code=400, detail="Project version must be v1 or v2")
+                
+            # Check if project exists
+            project_dir = os.path.join(output_path, "voices", request.project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project {request.project_name} not found")
+                
+            # Check if features directory exists
+            feature_dir = os.path.join(project_dir, "3_feature256") if request.project_version == "v1" else os.path.join(project_dir, "3_feature768")
+            if not os.path.exists(feature_dir):
+                raise HTTPException(status_code=400, detail="Features not extracted. Please complete training first.")
+                
+            # Create job ID for tracking
+            job_id = f"index_{int(time.time())}"
+            
+            # Start index building in background
+            if background_tasks:
+                background_tasks.add_task(
+                    run_index_job,
+                    job_id=job_id,
+                    project_name=request.project_name,
+                    project_version=request.project_version
+                )
+                
+                return {
+                    "status": "started",
+                    "job_id": job_id,
+                    "message": f"Index building started for project '{request.project_name}'",
+                    "estimated_time": "This may take a few minutes"
+                }
+            else:
+                # Run synchronously
+                results = []
+                for result in train_index(request.project_name, request.project_version):
+                    results.append(result)
+                    
+                return {
+                    "status": "success",
+                    "message": "Index built successfully",
+                    "details": results
+                }
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error building index:")
+            raise HTTPException(status_code=500, detail=f"Index building error: {str(e)}")
 
     @api.get("/api/v1/rvc/models", tags=["RVC"])
     async def api_list_rvc_models():
@@ -1429,152 +1549,6 @@ def register_api_endpoints(api):
             logger.exception(f"Error downloading model {project_name}/{weight_file}:")
             raise HTTPException(status_code=500, detail=f"Error downloading model: {str(e)}")
 
-    @api.post("/api/v1/rvc/upload", tags=["RVC"])
-    async def api_upload_datasets(
-            project_name: str = Form(...),
-            separate_vocals: bool = Form(True),
-            dataset_files: List[UploadFile] = File(...)
-    ):
-        """
-        Upload dataset files to an existing or new project
-        
-        Args:
-            project_name: Name of the voice project
-            separate_vocals: Whether to separate vocals from instrumental
-            dataset_files: Audio files to upload
-            
-        Returns:
-            Status information about the upload
-        """
-        try:
-            # Validate project name
-            if not project_name or project_name.strip() == "":
-                raise HTTPException(status_code=400, detail="Project name cannot be empty")
-                
-            # Validate files
-            if not dataset_files or len(dataset_files) == 0:
-                raise HTTPException(status_code=400, detail="No dataset files provided")
-            
-            # Create project directory structure
-            project_dir = os.path.join(output_path, "voices", project_name)
-            os.makedirs(project_dir, exist_ok=True)
-            
-            raw_dir = os.path.join(project_dir, "raw")
-            os.makedirs(raw_dir, exist_ok=True)
-            
-            # Save uploaded audio files
-            file_paths = []
-            for audio_file in dataset_files:
-                file_path = os.path.join(raw_dir, audio_file.filename)
-                with open(file_path, "wb") as f:
-                    content = await audio_file.read()
-                    f.write(content)
-                file_paths.append(file_path)
-            
-            # Separate vocals if requested
-            if separate_vocals and file_paths:
-                vocal_files, bg_vocal_files = separate_vocal(file_paths)
-                
-                # Move the separated files to the raw directory
-                for vocal_file in vocal_files:
-                    basename = os.path.basename(vocal_file)
-                    if "(Vocals)" in basename:
-                        # Rename to remove the (Vocals) suffix
-                        new_basename = basename.replace("(Vocals)", "").strip()
-                        new_path = os.path.join(raw_dir, new_basename)
-                        shutil.copy2(vocal_file, new_path)
-                
-                separated_count = len(vocal_files)
-            else:
-                separated_count = 0
-            
-            return {
-                "status": "success",
-                "message": f"Successfully uploaded {len(file_paths)} files to project '{project_name}'",
-                "project_name": project_name,
-                "file_count": len(file_paths),
-                "separated_count": separated_count,
-                "project_dir": project_dir
-            }
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(f"Error uploading dataset files:")
-            raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
-    
-    @api.post("/api/v1/rvc/build_index", tags=["RVC"])
-    async def api_build_index(
-            project_name: str = Form(...),
-            project_version: str = Form("v2"),
-            background_tasks: BackgroundTasks = None
-    ):
-        """
-        Build an index for an existing trained model
-        
-        Args:
-            project_name: Name of the voice project
-            project_version: RVC model version (v1 or v2)
-            background_tasks: FastAPI background tasks
-            
-        Returns:
-            Status information about the index building process
-        """
-        try:
-            # Validate project name
-            if not project_name or project_name.strip() == "":
-                raise HTTPException(status_code=400, detail="Project name cannot be empty")
-                
-            # Validate project version
-            if project_version not in ["v1", "v2"]:
-                raise HTTPException(status_code=400, detail="Project version must be v1 or v2")
-                
-            # Check if project exists
-            project_dir = os.path.join(output_path, "voices", project_name)
-            if not os.path.exists(project_dir):
-                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
-                
-            # Check if features directory exists
-            feature_dir = os.path.join(project_dir, "3_feature256") if project_version == "v1" else os.path.join(project_dir, "3_feature768")
-            if not os.path.exists(feature_dir):
-                raise HTTPException(status_code=400, detail="Features not extracted. Please complete training first.")
-                
-            # Create job ID for tracking
-            job_id = f"index_{int(time.time())}"
-            
-            # Start index building in background
-            if background_tasks:
-                background_tasks.add_task(
-                    run_index_job,
-                    job_id=job_id,
-                    project_name=project_name,
-                    project_version=project_version
-                )
-                
-                return {
-                    "status": "started",
-                    "job_id": job_id,
-                    "message": f"Index building started for project '{project_name}'",
-                    "estimated_time": "This may take a few minutes"
-                }
-            else:
-                # Run synchronously
-                results = []
-                for result in train_index(project_name, project_version):
-                    results.append(result)
-                    
-                return {
-                    "status": "success",
-                    "message": "Index built successfully",
-                    "details": results
-                }
-                
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(f"Error building index:")
-            raise HTTPException(status_code=500, detail=f"Index building error: {str(e)}")
-    
     @api.get("/api/v1/rvc/analyze/{project_name}", tags=["RVC"])
     async def api_analyze_project(project_name: str):
         """

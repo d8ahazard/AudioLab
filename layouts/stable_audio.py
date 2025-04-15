@@ -8,6 +8,8 @@ import random
 import shutil
 import uuid
 import io
+import base64
+import json
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
@@ -684,6 +686,7 @@ def register_api_endpoints(api):
 
     # Define Pydantic models for request validation
     class StableAudioGenerationOptions(BaseModel):
+        """Request model for audio generation"""
         prompt: str = Field(
             ..., description="The text prompt describing the desired audio", min_length=1, max_length=1000
         )
@@ -757,7 +760,8 @@ def register_api_endpoints(api):
             return v
 
     class ContinuationOptions(BaseModel):
-        audio_file: str = Field(..., description="The reference audio file to continue from")
+        """Request model for audio continuation"""
+        audio_file: str = Field(..., description="Base64 encoded audio file to continue from")
         prompt: Optional[str] = Field(
             None, description="Optional text prompt to guide the continuation"
         )
@@ -778,6 +782,11 @@ def register_api_endpoints(api):
         def validate_audio_file(cls, v):
             if not v:
                 raise ValueError("Audio file reference cannot be empty")
+            try:
+                # Try to decode base64 to validate format
+                base64.b64decode(v)
+            except Exception as e:
+                raise ValueError(f"Invalid base64 audio data: {str(e)}")
             return v
         
         @validator('prompt')
@@ -816,44 +825,15 @@ def register_api_endpoints(api):
 
     @api.post("/api/v1/audio/generate", tags=["Stable Audio"])
     async def api_generate_audio(
-        prompt: str = Form(...),
-        negative_prompt: Optional[str] = Form(None),
-        duration_seconds: float = Form(10.0),
-        output_format: str = Form("mp3"),
-        seed: Optional[int] = Form(None),
-        num_outputs: int = Form(1),
-        model: str = Form("stable-audio-1"),
+        request: StableAudioGenerationOptions,
         background_tasks: BackgroundTasks = None
     ):
         """
         Generate audio from a text prompt
         
         This endpoint generates audio based on the provided text prompt using Stable Audio models.
-        
-        Parameters:
-        - prompt: Text description of the desired audio (required, max 1000 chars)
-        - negative_prompt: Text describing what to avoid in the audio (optional)
-        - duration_seconds: Length of the generated audio in seconds (default: 10.0, range: 1-120)
-        - output_format: Audio format (default: "mp3", options: "mp3", "wav", "flac", "ogg")
-        - seed: Random seed for reproducible generation (optional)
-        - num_outputs: Number of audio samples to generate (default: 1, max: 4)
-        - model: Stable Audio model to use (default: "stable-audio-1", options: "stable-audio-1", "stable-audio-1-high")
-        
-        Returns:
-        - JSON with generation details and download URLs
         """
         try:
-            # Validate input parameters
-            options = StableAudioGenerationOptions(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                duration_seconds=duration_seconds,
-                output_format=output_format,
-                seed=seed,
-                num_outputs=num_outputs,
-                model=model
-            )
-            
             # Generate a unique ID for this audio generation
             generation_id = str(uuid.uuid4())
             timestamp = int(time.time())
@@ -867,12 +847,12 @@ def register_api_endpoints(api):
             
             # Generate audio
             result = stable_audio.generate_audio(
-                prompt=options.prompt,
-                negative_prompt=options.negative_prompt,
-                duration_seconds=options.duration_seconds,
-                seed=options.seed,
-                num_outputs=options.num_outputs,
-                model=options.model
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt,
+                duration_seconds=request.duration_seconds,
+                seed=request.seed,
+                num_outputs=request.num_outputs,
+                model=request.model
             )
             
             if not result.get("success", False):
@@ -886,7 +866,7 @@ def register_api_endpoints(api):
             # Save audio files and create download URLs
             output_files = []
             for i, audio_data in enumerate(audio_data_list):
-                output_filename = f"stable_audio_{generation_id}_{i+1}.{options.output_format}"
+                output_filename = f"stable_audio_{generation_id}_{i+1}.{request.output_format}"
                 output_filepath = os.path.join(audio_dir, output_filename)
                 
                 # Save audio to file
@@ -919,13 +899,13 @@ def register_api_endpoints(api):
             metadata_filepath = os.path.join(audio_dir, metadata_filename)
             
             # Truncate prompt for metadata if too long
-            prompt_preview = options.prompt
+            prompt_preview = request.prompt
             if len(prompt_preview) > 100:
                 prompt_preview = prompt_preview[:100] + "..."
             
             negative_prompt_preview = None
-            if options.negative_prompt:
-                negative_prompt_preview = options.negative_prompt
+            if request.negative_prompt:
+                negative_prompt_preview = request.negative_prompt
                 if len(negative_prompt_preview) > 100:
                     negative_prompt_preview = negative_prompt_preview[:100] + "..."
             
@@ -934,11 +914,11 @@ def register_api_endpoints(api):
                 "timestamp": timestamp,
                 "prompt": prompt_preview,
                 "negative_prompt": negative_prompt_preview,
-                "duration_seconds": options.duration_seconds,
-                "output_format": options.output_format,
-                "seed": options.seed if options.seed is not None else "random",
-                "num_outputs": options.num_outputs,
-                "model": options.model,
+                "duration_seconds": request.duration_seconds,
+                "output_format": request.output_format,
+                "seed": request.seed if request.seed is not None else "random",
+                "num_outputs": request.num_outputs,
+                "model": request.model,
                 "output_files": output_files
             }
             
@@ -961,10 +941,10 @@ def register_api_endpoints(api):
                 "metadata": {
                     "prompt": prompt_preview,
                     "negative_prompt": negative_prompt_preview,
-                    "duration_seconds": options.duration_seconds,
-                    "seed": options.seed,
-                    "num_outputs": options.num_outputs,
-                    "model": options.model,
+                    "duration_seconds": request.duration_seconds,
+                    "seed": request.seed,
+                    "num_outputs": request.num_outputs,
+                    "model": request.model,
                     "timestamp": timestamp
                 }
             }
@@ -983,65 +963,37 @@ def register_api_endpoints(api):
 
     @api.post("/api/v1/audio/continue", tags=["Stable Audio"])
     async def api_continue_audio(
-        audio_file: UploadFile = File(...),
-        prompt: Optional[str] = Form(None),
-        continuation_seconds: float = Form(10.0),
-        output_format: str = Form("mp3"),
-        seed: Optional[int] = Form(None),
-        model: str = Form("stable-audio-1"),
+        request: ContinuationOptions,
         background_tasks: BackgroundTasks = None
     ):
         """
         Generate a continuation from an existing audio clip
         
         This endpoint creates a continuation of an uploaded audio file using Stable Audio models.
-        
-        Parameters:
-        - audio_file: The audio file to continue from (required, max 25MB)
-        - prompt: Optional text description to guide the continuation (optional)
-        - continuation_seconds: Length of the continuation in seconds (default: 10.0, range: 1-120)
-        - output_format: Audio format (default: "mp3", options: "mp3", "wav", "flac", "ogg")
-        - seed: Random seed for reproducible generation (optional)
-        - model: Stable Audio model to use (default: "stable-audio-1", options: "stable-audio-1", "stable-audio-1-high")
-        
-        Returns:
-        - JSON with generation details and download URL
         """
         try:
+            # Decode base64 audio data
+            audio_data = base64.b64decode(request.audio_file)
+            file_size = len(audio_data)
+            
             # Check file size limit (25MB)
             file_size_limit = 25 * 1024 * 1024  # 25MB in bytes
-            if audio_file.size > file_size_limit:
+            if file_size > file_size_limit:
                 raise HTTPException(
                     status_code=400, 
-                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {audio_file.size / (1024 * 1024):.2f}MB"
+                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file_size / (1024 * 1024):.2f}MB"
                 )
-            
-            # Read file content
-            audio_content = await audio_file.read()
-            
-            # Check if file is valid audio
-            # You can add more validation here if needed
             
             # Create a temporary file to store the uploaded audio
             temp_dir = os.path.join(output_path, "temp")
             os.makedirs(temp_dir, exist_ok=True)
             
             temp_audio_id = str(uuid.uuid4())
-            temp_audio_filename = f"temp_audio_{temp_audio_id}_{audio_file.filename}"
+            temp_audio_filename = f"temp_audio_{temp_audio_id}.wav"
             temp_audio_path = os.path.join(temp_dir, temp_audio_filename)
             
             with open(temp_audio_path, "wb") as f:
-                f.write(audio_content)
-            
-            # Validate input parameters
-            options = ContinuationOptions(
-                audio_file=temp_audio_path,
-                prompt=prompt,
-                continuation_seconds=continuation_seconds,
-                output_format=output_format,
-                seed=seed,
-                model=model
-            )
+                f.write(audio_data)
             
             # Generate a unique ID for this continuation
             continuation_id = str(uuid.uuid4())
@@ -1056,11 +1008,11 @@ def register_api_endpoints(api):
             
             # Generate continuation
             result = stable_audio.continue_audio(
-                audio_file=options.audio_file,
-                prompt=options.prompt,
-                continuation_seconds=options.continuation_seconds,
-                seed=options.seed,
-                model=options.model
+                audio_file=temp_audio_path,
+                prompt=request.prompt,
+                continuation_seconds=request.continuation_seconds,
+                seed=request.seed,
+                model=request.model
             )
             
             # Clean up temporary file
@@ -1076,7 +1028,7 @@ def register_api_endpoints(api):
                 raise HTTPException(status_code=500, detail="No audio data generated")
             
             # Set output filename and path
-            output_filename = f"stable_audio_cont_{continuation_id}.{options.output_format}"
+            output_filename = f"stable_audio_cont_{continuation_id}.{request.output_format}"
             output_filepath = os.path.join(audio_dir, output_filename)
             
             # Save audio to file
@@ -1092,7 +1044,7 @@ def register_api_endpoints(api):
             # Save combined audio if available
             combined_output_file = None
             if result.get("combined_audio_data"):
-                combined_filename = f"stable_audio_cont_{continuation_id}_combined.{options.output_format}"
+                combined_filename = f"stable_audio_cont_{continuation_id}_combined.{request.output_format}"
                 combined_filepath = os.path.join(audio_dir, combined_filename)
                 
                 with open(combined_filepath, "wb") as f:
@@ -1122,20 +1074,20 @@ def register_api_endpoints(api):
             
             # Truncate prompt for metadata if too long
             prompt_preview = None
-            if options.prompt:
-                prompt_preview = options.prompt
+            if request.prompt:
+                prompt_preview = request.prompt
                 if len(prompt_preview) > 100:
                     prompt_preview = prompt_preview[:100] + "..."
             
             metadata = {
                 "id": continuation_id,
                 "timestamp": timestamp,
-                "original_filename": audio_file.filename,
+                "original_filename": temp_audio_filename,
                 "prompt": prompt_preview,
-                "continuation_seconds": options.continuation_seconds,
-                "output_format": options.output_format,
-                "seed": options.seed if options.seed is not None else "random",
-                "model": options.model,
+                "continuation_seconds": request.continuation_seconds,
+                "output_format": request.output_format,
+                "seed": request.seed if request.seed is not None else "random",
+                "model": request.model,
                 "output_file": {
                     "id": continuation_id,
                     "filename": output_filename,
@@ -1173,11 +1125,11 @@ def register_api_endpoints(api):
                 },
                 "combined_file": combined_output_file,
                 "metadata": {
-                    "original_filename": audio_file.filename,
+                    "original_filename": temp_audio_filename,
                     "prompt": prompt_preview,
-                    "continuation_seconds": options.continuation_seconds,
-                    "seed": options.seed,
-                    "model": options.model,
+                    "continuation_seconds": request.continuation_seconds,
+                    "seed": request.seed,
+                    "model": request.model,
                     "timestamp": timestamp
                 }
             }

@@ -503,6 +503,7 @@ def register_api_endpoints(api):
 
     # Define Pydantic models for request validation
     class TTSOptions(BaseModel):
+        """Request model for speech generation"""
         model: str = Field(
             "tts-1", description="The TTS model to use"
         )
@@ -556,38 +557,15 @@ def register_api_endpoints(api):
 
     @api.post("/api/v1/audio/speech", tags=["Speech"])
     async def api_generate_speech(
-        model: str = Form("tts-1"),
-        voice: str = Form("alloy"),
-        input: str = Form(...),
-        response_format: str = Form("mp3"),
-        speed: float = Form(1.0),
+        request: TTSOptions,
         background_tasks: BackgroundTasks = None
     ):
         """
         Generate speech from text
         
         This endpoint generates audio from the input text using the specified voice and model.
-        
-        Parameters:
-        - model: The TTS model (default: "tts-1", options: "tts-1", "tts-1-hd")
-        - voice: The voice to use (default: "alloy", options: "alloy", "echo", "fable", "onyx", "nova", "shimmer")
-        - input: The text to convert to speech (required, max 4096 characters)
-        - response_format: The audio format (default: "mp3", options: "mp3", "opus", "aac", "flac", "wav")
-        - speed: The speed of the generated speech (default: 1.0, range: 0.25-4.0)
-        
-        Returns:
-        - JSON with generation details and download URL
         """
         try:
-            # Validate input parameters
-            tts_options = TTSOptions(
-                model=model,
-                voice=voice,
-                input=input,
-                response_format=response_format,
-                speed=speed
-            )
-            
             # Generate a unique ID for this speech generation
             speech_id = str(uuid.uuid4())
             timestamp = int(time.time())
@@ -601,11 +579,11 @@ def register_api_endpoints(api):
             
             # Generate speech
             result = tts_engine.generate_speech(
-                text=tts_options.input,
-                model=tts_options.model,
-                voice=tts_options.voice,
-                response_format=tts_options.response_format,
-                speed=tts_options.speed
+                text=request.input,
+                model=request.model,
+                voice=request.voice,
+                response_format=request.response_format,
+                speed=request.speed
             )
             
             if not result.get("success", False):
@@ -624,7 +602,7 @@ def register_api_endpoints(api):
                 "flac": ".flac",
                 "wav": ".wav"
             }
-            output_ext = format_extensions.get(tts_options.response_format, ".mp3")
+            output_ext = format_extensions.get(request.response_format, ".mp3")
             output_filename = f"speech_{speech_id}{output_ext}"
             output_filepath = os.path.join(speech_dir, output_filename)
             
@@ -635,27 +613,32 @@ def register_api_endpoints(api):
             # Create download URL
             download_url = f"/api/v1/audio/speech/download/{output_filename}"
             
+            # Get file size
+            file_size = os.path.getsize(output_filepath)
+            
             # Save metadata
             metadata_filename = f"speech_{speech_id}_metadata.json"
             metadata_filepath = os.path.join(speech_dir, metadata_filename)
             
             # Truncate input text for metadata if too long
-            input_preview = tts_options.input
+            input_preview = request.input
             if len(input_preview) > 100:
                 input_preview = input_preview[:100] + "..."
             
             metadata = {
                 "id": speech_id,
                 "timestamp": timestamp,
-                "model": tts_options.model,
-                "voice": tts_options.voice,
+                "model": request.model,
+                "voice": request.voice,
                 "input_text": input_preview,
-                "response_format": tts_options.response_format,
-                "speed": tts_options.speed,
-                "output_path": output_filepath,
-                "duration": result.get("duration", 0),
-                "character_count": len(tts_options.input),
-                "file_size_bytes": os.path.getsize(output_filepath)
+                "response_format": request.response_format,
+                "speed": request.speed,
+                "output_file": {
+                    "filename": output_filename,
+                    "format": request.response_format,
+                    "download_url": download_url,
+                    "file_size_bytes": file_size
+                }
             }
             
             with open(metadata_filepath, "w") as f:
@@ -679,16 +662,18 @@ def register_api_endpoints(api):
             response_data = {
                 "success": True,
                 "speech_id": speech_id,
-                "download_url": download_url,
+                "output_file": {
+                    "filename": output_filename,
+                    "format": request.response_format,
+                    "download_url": download_url,
+                    "file_size_bytes": file_size
+                },
                 "metadata": {
-                    "model": tts_options.model,
-                    "voice": tts_options.voice,
                     "input_text_preview": input_preview,
-                    "response_format": tts_options.response_format,
-                    "speed": tts_options.speed,
-                    "duration": result.get("duration", 0),
-                    "character_count": len(tts_options.input),
-                    "file_size_bytes": os.path.getsize(output_filepath),
+                    "model": request.model,
+                    "voice": request.voice,
+                    "response_format": request.response_format,
+                    "speed": request.speed,
                     "timestamp": timestamp
                 }
             }
