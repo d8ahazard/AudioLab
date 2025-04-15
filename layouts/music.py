@@ -1,20 +1,45 @@
-import json
 import os
-from pathlib import Path
 import random
 import shutil
 import tempfile
 import time
 import zipfile
+from fastapi import BackgroundTasks, HTTPException, Body
+from typing import Optional, List
+from pydantic import BaseModel, Field
+from fastapi import Body, HTTPException, BackgroundTasks
+from pydantic import BaseModel, Field
+from typing import List, Optional
+import base64
+import tempfile
+import time
+import zipfile
+import io
+from fastapi import Body, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+import base64
+import tempfile
+import os
+from pathlib import Path
+import zipfile
+import io
+
+
+import base64
+
 
 import gradio as gr
 import requests
 
 from handlers.args import ArgHandler
-from handlers.config import model_path, output_path
+from handlers.config import model_path
 from modules.yue.inference.infer import generate_music
 from modules.yue.inference.xcodec_mini_infer.utils.utils import seed_everything
 import logging
+import uuid
+import io
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 SEND_TO_PROCESS_BUTTON: gr.Button = None
@@ -439,352 +464,207 @@ def register_descriptions(arg_handler: ArgHandler):
 
 def register_api_endpoints(api):
     """
-    Register API endpoints for music generation
+    Register API endpoints for music generation.
     
     Args:
         api: FastAPI application instance
     """
-    from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException, Body
-    from fastapi.responses import FileResponse, JSONResponse
-    from typing import Optional
-    from pydantic import BaseModel, Field
-    import base64
     
-    # Define Pydantic models for JSON requests
-    class FileData(BaseModel):
-        filename: str
-        content: str  # base64 encoded content
-        
-    class GenerateMusicRequest(BaseModel):
-        model_language: str = "English"
-        genre_txt: str
-        lyrics_txt: str
-        use_audio_prompt: bool = False
-        audio_prompt: Optional[FileData] = None
-        prompt_start_time: float = 0.0
-        prompt_end_time: float = 30.0
-        max_new_tokens: int = 3000
-        run_n_segments: int = 2
-        stage2_batch_size: int = 4
-        keep_intermediate: bool = False
-        disable_offload_model: bool = False
-        cuda_idx: int = 0
-        rescale: bool = True
-        seed: int = -1
+    # Define models for JSON API
+    class YuEMusicRequest(BaseModel):
+        genre_txt: str = Field(..., description="Genre tags to guide music generation (e.g., 'uplifting pop airy vocal')")
+        lyrics_txt: str = Field(..., description="Structured lyrics with [verse], [chorus] labels")
+        model_language: str = Field("English", description="Model language to use")
+        use_audio_prompt: bool = Field(False, description="Whether to use audio reference")
+        audio_prompt: Optional[Dict[str, Any]] = Field(None, description="Base64 encoded audio file for reference")
+        prompt_start_time: float = Field(0.0, description="Start time in seconds for reference audio")
+        prompt_end_time: float = Field(30.0, description="End time in seconds for reference audio")
+        max_new_tokens: int = Field(3000, description="Maximum number of tokens to generate")
+        run_n_segments: int = Field(2, description="Number of segments to run")
+        stage2_batch_size: int = Field(4, description="Batch size for Stage 2")
+        keep_intermediate: bool = Field(False, description="Whether to keep intermediate files")
+        disable_offload_model: bool = Field(False, description="Whether to disable model offloading")
+        rescale: bool = Field(False, description="Whether to rescale output")
+        cuda_idx: int = Field(0, description="CUDA device index")
+        seed: int = Field(-1, description="Random seed (-1 for random)")
     
-    @api.post("/api/v1/music/generate", tags=["YuE Music"])
-    async def api_generate_music(
-        background_tasks: BackgroundTasks,
-        model_language: str = Form("English"),
-        genre_txt: str = Form(...),
-        lyrics_txt: str = Form(...),
-        use_audio_prompt: bool = Form(False),
-        audio_prompt: Optional[UploadFile] = File(None),
-        prompt_start_time: float = Form(0.0),
-        prompt_end_time: float = Form(30.0),
-        max_new_tokens: int = Form(3000),
-        run_n_segments: int = Form(2),
-        stage2_batch_size: int = Form(4),
-        keep_intermediate: bool = Form(False),
-        disable_offload_model: bool = Form(False),
-        cuda_idx: int = Form(0),
-        rescale: bool = Form(True),
-        seed: int = Form(-1)
+    @api.post("/api/v1/yue/generate", tags=["Music Generation"])
+    async def generate_yue_music(
+        request: YuEMusicRequest = Body(...),
+        background_tasks: BackgroundTasks = None
     ):
         """
-        Generate music using YuE with lyrics and genre prompts
+        Generate complete music tracks with vocals and instrumentals from text descriptions.
         
-        Args:
-            background_tasks: FastAPI background tasks
-            model_language: Language model to use (English, Mandarin/Cantonese, Japanese/Korean)
-            genre_txt: Genre tags for music generation
-            lyrics_txt: Lyrics for the song (must include [verse], [chorus], etc. markers)
-            use_audio_prompt: Whether to use an audio prompt
-            audio_prompt: Optional audio file to use as reference
-            prompt_start_time: Start time in seconds for audio prompt
-            prompt_end_time: End time in seconds for audio prompt
-            max_new_tokens: Maximum number of tokens to generate
-            run_n_segments: Number of segments to run
-            stage2_batch_size: Batch size for stage 2 processing
-            keep_intermediate: Whether to keep intermediate files
-            disable_offload_model: Whether to disable model offloading
-            cuda_idx: CUDA device index
-            rescale: Whether to rescale output audio
-            seed: Random seed (-1 for random)
-            
-        Returns:
-            Dictionary containing output file paths and download links
-        """
-        try:
-            # Initial validation
-            if not any(char in lyrics_txt for char in ['[', ']']):
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Lyrics must contain section markers like [verse] or [chorus]"
-                )
-            
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_dir_path = Path(temp_dir)
-                
-                # Save audio prompt if provided
-                audio_prompt_path = ""
-                if use_audio_prompt and audio_prompt:
-                    audio_file_path = temp_dir_path / audio_prompt.filename
-                    with audio_file_path.open("wb") as f:
-                        content = await audio_prompt.read()
-                        f.write(content)
-                    audio_prompt_path = str(audio_file_path)
-                
-                return await _generate_music_impl(
-                    background_tasks=background_tasks,
-                    temp_dir=temp_dir,
-                    model_language=model_language,
-                    genre_txt=genre_txt,
-                    lyrics_txt=lyrics_txt,
-                    use_audio_prompt=use_audio_prompt,
-                    audio_prompt_path=audio_prompt_path,
-                    prompt_start_time=prompt_start_time,
-                    prompt_end_time=prompt_end_time,
-                    max_new_tokens=max_new_tokens,
-                    run_n_segments=run_n_segments,
-                    stage2_batch_size=stage2_batch_size,
-                    keep_intermediate=keep_intermediate,
-                    disable_offload_model=disable_offload_model,
-                    cuda_idx=cuda_idx,
-                    rescale=rescale,
-                    seed=seed
-                )
-                
-        except Exception as e:
-            logger.exception("Error in API music generation")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @api.post("/api/v1/music/generate_json", tags=["YuE Music"])
-    async def api_generate_music_json(
-        background_tasks: BackgroundTasks,
-        request: GenerateMusicRequest = Body(...)
-    ):
-        """
-        Generate music using YuE with lyrics and genre prompts (JSON API)
-        
-        Request body:
-        - model_language: Language model to use (default: "English")
-        - genre_txt: Genre tags for music generation
-        - lyrics_txt: Lyrics for the song (must include [verse], [chorus], etc. markers)
-        - use_audio_prompt: Whether to use an audio prompt (default: false)
-        - audio_prompt: Optional audio file object with filename and base64-encoded content
-        - prompt_start_time: Start time in seconds for audio prompt (default: 0.0)
-        - prompt_end_time: End time in seconds for audio prompt (default: 30.0)
-        - max_new_tokens: Maximum number of tokens to generate (default: 3000)
-        - run_n_segments: Number of segments to run (default: 2)
-        - stage2_batch_size: Batch size for stage 2 processing (default: 4)
-        - keep_intermediate: Whether to keep intermediate files (default: false)
-        - disable_offload_model: Whether to disable model offloading (default: false)
-        - cuda_idx: CUDA device index (default: 0)
-        - rescale: Whether to rescale output audio (default: true)
-        - seed: Random seed (-1 for random) (default: -1)
+        This endpoint uses YuE to create original songs with lyrics, genre tags, and optional audio references.
         
         Returns:
-        - JSON response with base64-encoded output files
+        - JSON response with paths to generated audio files
         """
         try:
-            # Initial validation
-            if not any(char in request.lyrics_txt for char in ['[', ']']):
+            # Validate model language
+            valid_languages = ["English", "Mandarin/Cantonese", "Japanese/Korean"]
+            if request.model_language not in valid_languages:
                 raise HTTPException(
-                    status_code=400, 
-                    detail="Lyrics must contain section markers like [verse] or [chorus]"
+                    status_code=400,
+                    detail=f"Invalid model language. Must be one of: {', '.join(valid_languages)}"
                 )
             
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_dir_path = Path(temp_dir)
-                
-                # Save audio prompt if provided
-                audio_prompt_path = ""
-                if request.use_audio_prompt and request.audio_prompt:
-                    audio_file_path = temp_dir_path / request.audio_prompt.filename
-                    with audio_file_path.open("wb") as f:
-                        content = base64.b64decode(request.audio_prompt.content)
-                        f.write(content)
-                    audio_prompt_path = str(audio_file_path)
-                
-                response = await _generate_music_impl(
-                    background_tasks=background_tasks,
-                    temp_dir=temp_dir,
-                    model_language=request.model_language,
-                    genre_txt=request.genre_txt,
-                    lyrics_txt=request.lyrics_txt,
-                    use_audio_prompt=request.use_audio_prompt,
-                    audio_prompt_path=audio_prompt_path,
-                    prompt_start_time=request.prompt_start_time,
-                    prompt_end_time=request.prompt_end_time,
-                    max_new_tokens=request.max_new_tokens,
-                    run_n_segments=request.run_n_segments,
-                    stage2_batch_size=request.stage2_batch_size,
-                    keep_intermediate=request.keep_intermediate,
-                    disable_offload_model=request.disable_offload_model,
-                    cuda_idx=request.cuda_idx,
-                    rescale=request.rescale,
-                    seed=request.seed,
-                    return_json=True
+            # Validate lyrics format - check for [verse] or [chorus] tags
+            if not any(tag in request.lyrics_txt for tag in ['[verse', '[chorus']):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Lyrics must contain [verse] or [chorus] labels"
                 )
-                
-                return response
-                
-        except Exception as e:
-            logger.exception("Error in API music generation")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    async def _generate_music_impl(
-        background_tasks,
-        temp_dir,
-        model_language,
-        genre_txt,
-        lyrics_txt,
-        use_audio_prompt,
-        audio_prompt_path,
-        prompt_start_time,
-        prompt_end_time,
-        max_new_tokens,
-        run_n_segments,
-        stage2_batch_size,
-        keep_intermediate,
-        disable_offload_model,
-        cuda_idx,
-        rescale,
-        seed,
-        return_json=False
-    ):
-        """Shared implementation for music generation"""
-        # Initialize models
-        fetch_and_extxract_models()
-        
-        # Set seed
-        if seed != -1:
-            seed_everything(seed)
-        else:
-            seed_everything(random.randint(0, 4294967295))
-        
-        # Get appropriate stage1 model
-        model_type = "icl" if use_audio_prompt else "cot"
-        stage1_model = STAGE1_MODELS[model_language][model_type]
-        
-        # Generate music
-        output_paths = generate_music(
-            stage1_model, "m-a-p/YuE-s2-1B-general", genre_txt, lyrics_txt, use_audio_prompt,
-            audio_prompt_path, prompt_start_time, prompt_end_time, max_new_tokens,
-            run_n_segments, stage2_batch_size, keep_intermediate,
-            disable_offload_model, cuda_idx, rescale,
-            top_p=0.93, temperature=1.0, repetition_penalty=1.2
-        )
-        
-        if not output_paths:
-            raise HTTPException(
-                status_code=500,
-                detail="No output paths returned from music generation"
-            )
-        
-        # Validate outputs
-        valid_outputs = {}
-        for key, path in output_paths.items():
-            if os.path.exists(path):
-                valid_outputs[key] = path
-        
-        if not valid_outputs:
-            raise HTTPException(
-                status_code=500,
-                detail="No valid output files were generated"
-            )
-        
-        # Create a zip file of all outputs
-        output_zip = os.path.join(temp_dir, "music_outputs.zip")
-        with zipfile.ZipFile(output_zip, 'w') as zipf:
-            for key, path in valid_outputs.items():
-                if os.path.exists(path):
-                    zipf.write(path, os.path.basename(path))
-        
-        if return_json:
-            # Return the outputs as base64-encoded content
-            response = {
-                "status": "success",
-                "message": "Music generation complete",
-                "outputs": {}
-            }
             
-            for key, path in valid_outputs.items():
+            # Create a temporary directory for audio prompt if provided
+            temp_audio_path = None
+            if request.use_audio_prompt and request.audio_prompt:
+                try:
+                    # Extract file info
+                    if 'filename' not in request.audio_prompt or 'content' not in request.audio_prompt:
+                        raise HTTPException(status_code=400, detail="Audio prompt must contain filename and content")
+                    
+                    # Decode base64 content
+                    audio_content = base64.b64decode(request.audio_prompt['content'])
+                    
+                    # Create temporary file
+                    temp_dir = os.path.join(os.path.dirname(__file__), "temp")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    temp_audio_path = os.path.join(temp_dir, request.audio_prompt['filename'])
+                    
+                    # Write to file
+                    with open(temp_audio_path, "wb") as f:
+                        f.write(audio_content)
+                    
+                    # Schedule cleanup
+                    if background_tasks:
+                        background_tasks.add_task(lambda: os.remove(temp_audio_path) if os.path.exists(temp_audio_path) else None)
+                
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Error processing audio prompt: {str(e)}")
+            
+            # Fetch and extract models if needed
+            fetch_and_extxract_models()
+            
+            # Set random seed
+            if request.seed != -1:
+                seed_everything(request.seed)
+            else:
+                seed_everything(random.randint(0, 4294967295))
+            
+            # Determine model based on language and mode (COT vs ICL)
+            model_type = "icl" if request.use_audio_prompt else "cot"
+            stage1_model = STAGE1_MODELS[request.model_language][model_type]
+            
+            # Generate music
+            output_paths = generate_music(
+                stage1_model=stage1_model,
+                stage2_model="m-a-p/YuE-s2-1B-general",
+                genre_txt=request.genre_txt,
+                lyrics_txt=request.lyrics_txt,
+                use_audio_prompt=request.use_audio_prompt,
+                audio_prompt_path=temp_audio_path if temp_audio_path else "",
+                prompt_start_time=request.prompt_start_time,
+                prompt_end_time=request.prompt_end_time,
+                max_new_tokens=request.max_new_tokens,
+                run_n_segments=request.run_n_segments,
+                stage2_batch_size=request.stage2_batch_size,
+                keep_intermediate=request.keep_intermediate,
+                disable_offload_model=request.disable_offload_model,
+                cuda_idx=request.cuda_idx,
+                rescale=request.rescale,
+                top_p=0.93,
+                temperature=1.0,
+                repetition_penalty=1.2
+            )
+            
+            if not output_paths:
+                raise HTTPException(status_code=500, detail="No output paths returned from generation")
+            
+            # Format response with file paths and base64 encoded content
+            response_files = []
+            
+            for key, path in output_paths.items():
                 if os.path.exists(path):
+                    # Read and encode file content
                     with open(path, "rb") as f:
                         file_content = base64.b64encode(f.read()).decode("utf-8")
-                        response["outputs"][key] = {
-                            "filename": os.path.basename(path),
-                            "content": file_content
-                        }
+                    
+                    response_files.append({
+                        "type": key,
+                        "filename": os.path.basename(path),
+                        "path": path,
+                        "content": file_content
+                    })
             
-            # Add zip file
-            with open(output_zip, "rb") as f:
-                zip_content = base64.b64encode(f.read()).decode("utf-8")
-                response["all_files"] = {
-                    "filename": "music_outputs.zip",
-                    "content": zip_content
-                }
-                
-            return response
-        else:
-            # Set up response with download URLs
-            response = {
+            # Create zip file with all outputs
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+                for key, path in output_paths.items():
+                    if os.path.exists(path):
+                        zip_file.write(
+                            path,
+                            arcname=os.path.basename(path)
+                        )
+            
+            zip_content = base64.b64encode(zip_buffer.getvalue()).decode("utf-8")
+            
+            # Return response
+            return {
                 "status": "success",
                 "message": "Music generation complete",
-                "outputs": {}
-            }
-            
-            # Add file download endpoints for each output
-            for key, path in valid_outputs.items():
-                file_id = os.path.basename(path)
-                response["outputs"][key] = {
-                    "filename": file_id,
-                    "download_url": f"/api/v1/music/download/{file_id}"
+                "files": response_files,
+                "metadata": {
+                    "genre": request.genre_txt,
+                    "lyrics_length": len(request.lyrics_txt.split()),
+                    "model_language": request.model_language,
+                    "seed": request.seed
+                },
+                "zip": {
+                    "filename": "yue_generated_music.zip",
+                    "content": zip_content
                 }
-            
-            # Add complete download
-            all_files_id = os.path.basename(output_zip)
-            response["all_files"] = {
-                "filename": "music_outputs.zip",
-                "download_url": f"/api/v1/music/download/{all_files_id}"
             }
             
-            # Store files for download (temporary)
-            for key, path in valid_outputs.items():
-                file_id = os.path.basename(path)
-                target_path = os.path.join(output_path, "temp_api", file_id)
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                background_tasks.add_task(copy_temp_file, path, target_path)
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
             
-            # Store zip file
-            zip_target = os.path.join(output_path, "temp_api", all_files_id)
-            os.makedirs(os.path.dirname(zip_target), exist_ok=True)
-            background_tasks.add_task(copy_temp_file, output_zip, zip_target)
-            
-            return response
-    
-    @api.get("/api/v1/music/download/{file_id}", tags=["YuE Music"])
-    async def download_music_file(file_id: str):
+    @api.get("/api/v1/yue/stream/{file_id}", tags=["Music Generation"])
+    async def stream_music_file(file_id: str):
         """
-        Download a generated music file by ID
+        Stream a generated music file by ID.
         
-        Args:
-            file_id: File ID to download
-            
+        This endpoint streams an audio file that was previously generated.
+        
         Returns:
-            FileResponse containing the requested file
+        - Audio file stream
         """
-        file_path = os.path.join(output_path, "temp_api", file_id)
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        return FileResponse(
-            file_path,
-            filename=os.path.basename(file_path),
-            media_type="application/octet-stream"
-        )
+        try:
+            # Determine file path from ID
+            file_path = os.path.join(model_path, "output", "yue", f"{file_id}.wav")
+            
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="File not found")
+            
+            # Stream the file
+            def iterfile():
+                with open(file_path, "rb") as f:
+                    yield from f
+            
+            return StreamingResponse(
+                iterfile(),
+                media_type="audio/wav"
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 def copy_temp_file(src_path: str, dst_path: str):
     """Copy a file and clean up after a delay"""

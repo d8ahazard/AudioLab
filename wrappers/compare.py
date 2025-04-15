@@ -237,3 +237,82 @@ class Compare(BaseWrapper):
             return self.handle_json_request(request, self.process_audio)
 
         return process_compare_json
+        
+    def test(self):
+        """
+        Test method for the Compare wrapper.
+        This method creates simple test data and demonstrates the functionality of the wrapper.
+        """
+        print("Running Compare wrapper test...")
+        
+        # Create temporary directory for test
+        import tempfile
+        import shutil
+        import numpy as np
+        from scipy.io import wavfile
+        from util.data_classes import ProjectFiles
+        
+        temp_dir = tempfile.mkdtemp(prefix="audiolab_compare_test_")
+        print(f"Created temporary directory at: {temp_dir}")
+        
+        try:
+            # Create two simple test signals
+            duration = 3  # seconds
+            sample_rate = 44100
+            t = np.linspace(0, duration, sample_rate * duration)
+            
+            # Signal 1: Simple sine wave
+            signal1 = 0.5 * np.sin(2 * np.pi * 440 * t)  # 440 Hz A note
+            
+            # Signal 2: Slightly different sine wave with some noise
+            signal2 = 0.5 * np.sin(2 * np.pi * 445 * t)  # 445 Hz, slightly off from A
+            signal2 += 0.05 * np.random.normal(0, 1, len(signal2))  # Add noise
+            
+            # Save as WAV files
+            file1_path = os.path.join(temp_dir, "test_signal1.wav")
+            file2_path = os.path.join(temp_dir, "test_signal2.wav")
+            
+            wavfile.write(file1_path, sample_rate, signal1.astype(np.float32))
+            wavfile.write(file2_path, sample_rate, signal2.astype(np.float32))
+            
+            print(f"Created test signals at: {file1_path} and {file2_path}")
+            
+            # Create ProjectFiles object for testing
+            project = ProjectFiles(file1_path)
+            project.project_dir = temp_dir
+            project.add_raw_file(file2_path)
+            
+            # Define a simple callback function
+            def test_callback(progress, message, total):
+                print(f"Progress: {progress}/{total} - {message}")
+            
+            # Process the test data
+            print("Processing test data...")
+            results = self.process_audio([project], callback=test_callback)
+            
+            if not results:
+                raise Exception("Test failed: No results returned")
+            
+            # Check if output file was created
+            project_output = results[0]
+            if len(project_output.last_outputs) == 0:
+                raise Exception("Test failed: No output files created")
+                
+            output_file = project_output.last_outputs[0]
+            if not os.path.exists(output_file):
+                raise Exception(f"Test failed: Output file not found at {output_file}")
+                
+            print(f"Test successful! Output file created at: {output_file}")
+            
+        except Exception as e:
+            print(f"Test error: {e}")
+            raise
+        finally:
+            # Clean up the temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as cleanup_error:
+                print(f"Warning: Could not clean up temporary directory: {cleanup_error}")
+        
+        print("Compare wrapper test completed successfully!")

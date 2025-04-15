@@ -26,16 +26,17 @@ import os
 import torch
 from dataclasses import dataclass
 
-os.environ['OMP_NUM_THREADS']="1"
-os.environ['MKL_NUM_THREADS']="1"
+os.environ['OMP_NUM_THREADS'] = "1"
+os.environ['MKL_NUM_THREADS'] = "1"
+
 
 @dataclass
 class TrainingArgs:
     """Arguments for DiffRhythm training"""
     # Required parameters
     project_dir: str  # Path to preprocessed data directory
-    base_model: str   # Base model to start from
-    
+    base_model: str  # Base model to start from
+
     # Training parameters with defaults matching UI
     batch_size: int = 8
     epochs: int = 110
@@ -45,31 +46,32 @@ class TrainingArgs:
     warmup_steps: int = 20
     max_grad_norm: float = 1.0
     grad_accumulation: int = 1
-    
+
     # Dropout probabilities
     audio_drop_prob: float = 0.3
     style_drop_prob: float = 0.1
     lrc_drop_prob: float = 0.1
-    
+
     # Model parameters
     max_frames: int = 2048
     grad_ckpt: bool = False
     reset_lr: bool = False
-    
+
     # Other parameters
     resumable_with_seed: int = 42
 
-def train(args: TrainingArgs, progress=None):
+
+def train_diffrythm(args: TrainingArgs, progress=None):
     """Train a DiffRhythm model with the given arguments
     
     Args:
         args: Training arguments
         progress: Optional gradio progress callback
     """
-    
+
     if progress:
         progress(0.1, "Loading base model configuration...")
-        
+
     # Load base model config
     model_config_path = os.path.join(model_path, args.base_model, "config.json")
     with open(model_config_path) as f:
@@ -77,7 +79,7 @@ def train(args: TrainingArgs, progress=None):
 
     if progress:
         progress(0.2, "Initializing model...")
-        
+
     # Initialize model
     model_cls = DiT
     model = CFM(
@@ -92,7 +94,7 @@ def train(args: TrainingArgs, progress=None):
 
     if progress:
         progress(0.3, "Loading base model weights...")
-        
+
     # Load base model weights if they exist
     base_model_path = os.path.join(model_path, args.base_model, "model.pth")
     if os.path.exists(base_model_path):
@@ -104,7 +106,7 @@ def train(args: TrainingArgs, progress=None):
 
     if progress:
         progress(0.4, "Initializing trainer...")
-        
+
     # Initialize trainer
     trainer = Trainer(
         model=model,
@@ -128,27 +130,28 @@ def train(args: TrainingArgs, progress=None):
 
     if progress:
         progress(0.5, "Starting training...")
-        
+
     # Start training
     trainer.train(resumable_with_seed=args.resumable_with_seed)
-    
+
     if progress:
         progress(0.9, "Saving final model...")
-    
+
     # Save final model
     final_model_path = os.path.join(model_path, "diffrythm_custom", f"{os.path.basename(args.project_dir)}.pth")
     os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
-    
+
     # Save model state
     torch.save({
         "model_state_dict": model.state_dict(),
         "config": model_config
     }, final_model_path)
-    
+
     if progress:
         progress(1.0, "Training complete!")
-    
+
     return final_model_path
+
 
 def main():
     """

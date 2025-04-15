@@ -1,4 +1,6 @@
 import os
+import io
+import zipfile
 
 from fastapi import HTTPException
 import gradio as gr
@@ -9,6 +11,14 @@ import logging
 import traceback
 import importlib
 import sys
+from fastapi import HTTPException, Body
+from pydantic import BaseModel
+from typing import List, Dict, Any
+import base64
+import tempfile
+from pathlib import Path
+import os
+
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
@@ -432,155 +442,98 @@ def listen():
 
 def register_api_endpoints(api):
     """
-    Register API endpoints for the Process module
+    Register API endpoints for the Process layout.
     
     Args:
         api: FastAPI application instance
     """
-    # Note: The main processing endpoints are already registered in api.py
-    # This function adds additional endpoints for managing projects
-    from fastapi import UploadFile, File, Form, HTTPException, Body
-    from fastapi.responses import FileResponse, JSONResponse
-    from typing import Optional, List, Dict, Any
-    from pydantic import BaseModel, Field
-    import base64
-    import tempfile
-    from pathlib import Path
-    
     # Define Pydantic models for JSON requests
     class FileData(BaseModel):
         filename: str
-        content: str  # base64 encoded content
-        
-    class ProcessorSettings(BaseModel):
-        enabled: bool = True
-        parameters: Dict[str, Any] = {}
-        
+        content: str  # base64 encoded file content
+    
     class ProcessRequest(BaseModel):
         files: List[FileData]
-        processors: Dict[str, ProcessorSettings] = {}
+        processors: List[str]  # List of processor names in order of execution
+        settings: Dict[str, Dict[str, Any]] = {}  # Optional settings for processors
+    
+    class ProcessorSetting(BaseModel):
+        name: str
+        type: str
+        default: Any
+        description: str
+        options: List[str] = None
+        min_value: float = None
+        max_value: float = None
+    
+    class ProcessorInfo(BaseModel):
+        title: str
+        description: str
+        priority: int
+        default: bool
+        required: bool
+        settings: List[ProcessorSetting] = []
         
-    @api.post("/api/v1/process/process_json", tags=["Multi-Processing"])
-    async def api_process_json(request: ProcessRequest = Body(...)):
+    @api.get("/api/v1/process/processors", tags=["Audio Processing"])
+    async def list_processors():
         """
-        Process audio files using configured processors (JSON API)
+        List all available audio processors.
         
-        This endpoint allows processing audio files through multiple processing steps
-        in a single request. Files are provided as base64-encoded data.
-        
-        Request body:
-        - files: Array of file objects, each containing filename and base64-encoded content
-        - processors: Dictionary of processors to use, with each key being the processor name
-          - Each processor has:
-            - enabled: Whether to enable this processor (default: true)
-            - parameters: Dictionary of parameter values for this processor
-        
-        Response:
-        - JSON response with base64-encoded processed files
-        
-        Example:
-        ```json
-        {
-          "files": [
-            {
-              "filename": "audio.mp3",
-              "content": "base64_encoded_content..."
-            }
-          ],
-          "processors": {
-            "separate": {
-              "enabled": true,
-              "parameters": {
-                "model_selection": "mdx",
-                "stem_types": ["Vocals", "Instrumental"],
-                "split_vocals": true
-              }
-            },
-            "convert": {
-              "enabled": true,
-              "parameters": {
-                "bitrate": "320k"
-              }
-            }
-          }
-        }
-        ```
+        Returns:
+            List of audio processors with their information and available settings
         """
         try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Save uploaded files from base64
-                temp_files = []
-                for file_data in request.files:
-                    file_path = Path(temp_dir) / file_data.filename
-                    with file_path.open("wb") as f:
-                        content = base64.b64decode(file_data.content)
-                        f.write(content)
-                    temp_files.append(str(file_path))
+            all_wrappers, default_wrappers = list_wrappers()
+            result = []
+            
+            for wrapper_name in all_wrappers:
+                processor = get_processor(wrapper_name)
+                if not processor:
+                    continue
                 
-                # Create project structure expected by processors
-                from util.data_classes import ProjectFiles
-                project_inputs = []
-                for file_path in temp_files:
-                    project = ProjectFiles(file_path)
-                    project.last_outputs = [file_path]  # Set initial output to input file
-                    project_inputs.append(project)
+                # Extract settings information
+                settings = []
+                for key, kwarg in processor.allowed_kwargs.items():
+                    setting = {
+                        "name": key,
+                        "type": kwarg.type.__name__ if hasattr(kwarg.type, "__name__") else str(kwarg.type),
+                        "default": kwarg.default,
+                        "description": kwarg.description
+                    }
+                    
+                    # Add options for choices
+                    if hasattr(kwarg, "choices") and kwarg.choices:
+                        setting["options"] = kwarg.choices
+                    
+                    # Add min/max for numeric types
+                    if hasattr(kwarg, "min_value"):
+                        setting["min_value"] = kwarg.min_value
+                    if hasattr(kwarg, "max_value"):
+                        setting["max_value"] = kwarg.max_value
+                        
+                    settings.append(setting)
                 
-                # Configure processors
-                enabled_processors = []
-                processor_params = {}
-                
-                all_wrappers, _ = list_wrappers()
-                
-                # Process any explicitly enabled processors
-                for processor_name, settings in request.processors.items():
-                    if settings.enabled:
-                        # Find actual wrapper name (case-insensitive match)
-                        for wrapper_name in all_wrappers:
-                            if wrapper_name.lower() == processor_name.lower() or \
-                               get_processor(wrapper_name).title.lower().replace(" ", "_") == processor_name.lower():
-                                enabled_processors.append(wrapper_name)
-                                processor_params[wrapper_name] = settings.parameters
-                                break
-                
-                # Add default processors if none were explicitly enabled
-                if not enabled_processors:
-                    for wrapper_name in all_wrappers:
-                        processor = get_processor(wrapper_name)
-                        if processor and processor.default:
-                            enabled_processors.append(wrapper_name)
-                
-                # Run processors
-                processed_projects = process(enabled_processors, project_inputs, **processor_params)
-                
-                # Collect all output files
-                response_data = {
-                    "status": "success",
-                    "files": []
+                processor_info = {
+                    "title": processor.title,
+                    "description": processor.description,
+                    "priority": processor.priority,
+                    "default": processor.default,
+                    "required": processor.required,
+                    "settings": settings
                 }
-                
-                for project in processed_projects:
-                    for output_file in project.all_outputs():
-                        if os.path.exists(output_file):
-                            # Read file and encode as base64
-                            with open(output_file, "rb") as f:
-                                file_content = base64.b64encode(f.read()).decode("utf-8")
-                                
-                            response_data["files"].append({
-                                "filename": os.path.basename(output_file),
-                                "content": file_content,
-                                "processor": os.path.dirname(output_file).split(os.path.sep)[-1]
-                            })
-                
-                return response_data
-                
+                result.append(processor_info)
+            
+            # Sort by priority
+            result = sorted(result, key=lambda x: x["priority"])
+            return result
+            
         except Exception as e:
-            logger.exception("Error in processing:")
-            raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
     
-    @api.get("/api/v1/process/projects", tags=["Multi-Processing"])
-    async def api_list_projects():
+    @api.get("/api/v1/process/projects", tags=["Audio Processing"])
+    async def get_projects():
         """
-        List all available processing projects
+        List all available projects.
         
         Returns:
             List of project names
@@ -590,58 +543,213 @@ def register_api_endpoints(api):
             return {
                 "projects": projects
             }
-            
         except Exception as e:
-            logger.exception("Error listing projects:")
-            raise HTTPException(status_code=500, detail=f"Error listing projects: {str(e)}")
-            
-    @api.get("/api/v1/process/processors", tags=["Multi-Processing"])
-    async def api_list_processors():
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.post("/api/v1/process/chain", tags=["Audio Processing"])
+    async def process_chain(
+        request: ProcessRequest = Body(...)
+    ):
         """
-        List all available processors and their settings
+        Process multiple audio files through a chain of processors.
+        
+        This endpoint allows for executing multiple processing steps on audio files
+        in sequence, with the output of each step becoming input to the next step.
+        
+        Request body:
+        - files: List of files (base64 encoded) to process
+        - processors: List of processor names to apply in sequence
+        - settings: Dictionary of processor settings keyed by processor name
         
         Returns:
-            Dictionary of processors with their settings and descriptions
+        - JSON response with base64-encoded output files
         """
         try:
-            all_wrappers, _ = list_wrappers()
-            result = {}
+            # Validate request
+            if not request.files:
+                raise HTTPException(status_code=400, detail="No files provided")
+            if not request.processors:
+                raise HTTPException(status_code=400, detail="No processors specified")
             
-            for wrapper_name in all_wrappers:
-                processor = get_processor(wrapper_name)
+            # Validate processors
+            all_wrappers, _ = list_wrappers()
+            for processor_name in request.processors:
+                if processor_name not in all_wrappers:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Unknown processor: {processor_name}"
+                    )
+            
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save input files
+                input_paths = []
+                for file_data in request.files:
+                    try:
+                        file_content = base64.b64decode(file_data.content)
+                        file_path = os.path.join(temp_dir, file_data.filename)
+                        
+                        with open(file_path, "wb") as f:
+                            f.write(file_content)
+                        
+                        input_paths.append(file_path)
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to process file {file_data.filename}: {str(e)}"
+                        )
                 
-                # Skip if processor is None
-                if not processor:
-                    continue
+                # Initialize progress logger for API
+                class APIProgress:
+                    def __call__(self, progress=0, desc=""):
+                        logger.info(f"API Process Progress: {progress:.2f} - {desc}")
+                
+                # Process using the same logic as the UI
+                try:
+                    # Add required processors if not already included
+                    wrappers, _ = list_wrappers()
+                    required_wrappers = [wrapper for wrapper in wrappers if get_processor(wrapper).required]
+                    for wrapper in required_wrappers:
+                        if wrapper not in request.processors:
+                            request.processors.append(wrapper)
                     
-                processor_info = {
-                    "title": processor.title,
-                    "description": processor.description,
-                    "priority": processor.priority,
-                    "default": processor.default,
-                    "required": processor.required,
-                    "parameters": {}
-                }
-                
-                # Add parameter information
-                for param_name, param_info in processor.allowed_kwargs.items():
-                    processor_info["parameters"][param_name] = {
-                        "type": str(param_info.type.__name__),
-                        "description": param_info.description,
-                        "default": param_info.field.default if param_info.field.default != ... else None,
-                        "required": param_info.required,
-                        "render": param_info.render
+                    # Sort processors by priority
+                    request.processors = sorted(request.processors, key=lambda x: get_processor(x).priority)
+                    
+                    # Initialize ProjectFiles objects
+                    inputs = [ProjectFiles(file_path) for file_path in input_paths]
+                    outputs = []
+                    all_outputs = []
+                    
+                    # Store custom settings in ArgHandler format
+                    settings = {}
+                    for processor_name, processor_settings in request.settings.items():
+                        # Convert processor name to format used in settings
+                        processor_key = processor_name.replace(' ', '')
+                        settings[processor_key] = processor_settings
+                    
+                    # Store pitch shift value for chaining
+                    clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
+                    pitch_shift_vocals_only = settings.get("Clone", {}).get("pitch_shift_vocals_only", False)
+                    clone_voice = settings.get("Clone", {}).get("selected_voice", None)
+                    f0_method = settings.get("Clone", {}).get("pitch_extraction_method", "rmvpe+")
+                    
+                    # Process each processor in sequence
+                    for idx, processor_title in enumerate(request.processors):
+                        tgt_processor = get_processor(processor_title)
+                        processor_key = tgt_processor.title.replace(' ', '')
+                        processor_settings = settings.get(processor_key, {})
+                        
+                        # Handle special case for Merge and Export
+                        if processor_title == 'Merge' or processor_title == "Export":
+                            processor_settings['pitch_shift'] = clone_pitch_shift if pitch_shift_vocals_only else 0
+                            processor_settings['selected_voice'] = clone_voice
+                            processor_settings['pitch_extraction_method'] = f0_method
+                        
+                        # Process with current processor
+                        outputs = tgt_processor.process_audio(inputs, APIProgress(), **processor_settings)
+                        for output in outputs:
+                            all_outputs.extend(output.last_outputs)
+                        
+                        inputs = outputs
+                    
+                    # Reverse to get most recent outputs first
+                    all_outputs.reverse()
+                    final_outputs = all_outputs
+                    
+                    # Prepare response with file contents
+                    output_files = []
+                    for file_path in final_outputs:
+                        if os.path.exists(file_path):
+                            with open(file_path, "rb") as f:
+                                file_content = base64.b64encode(f.read()).decode("utf-8")
+                            
+                            output_files.append({
+                                "filename": os.path.basename(file_path),
+                                "path": file_path,
+                                "content": file_content,
+                                "type": "audio" if file_path.endswith((".wav", ".mp3", ".flac")) else "image"
+                            })
+                    
+                    # Create zip file with all outputs
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+                        for file_path in final_outputs:
+                            if os.path.exists(file_path):
+                                zip_file.write(
+                                    file_path,
+                                    arcname=os.path.basename(file_path)
+                                )
+                    
+                    zip_content = base64.b64encode(zip_buffer.getvalue()).decode("utf-8")
+                    
+                    return {
+                        "status": "success",
+                        "message": "Processing complete",
+                        "files": output_files,
+                        "processors_applied": request.processors,
+                        "zip": {
+                            "filename": "processed_outputs.zip",
+                            "content": zip_content
+                        }
                     }
                     
-                    # Add additional parameter metadata if available
-                    for meta_key in ["min", "max", "step", "choices"]:
-                        if hasattr(param_info, meta_key):
-                            processor_info["parameters"][param_name][meta_key] = getattr(param_info, meta_key)
+                except Exception as e:
+                    logger.error(f"Error in process chain: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Processing failed: {str(e)}"
+                    )
                 
-                result[processor.title.lower().replace(" ", "_")] = processor_info
-                
-            return result
-            
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception("Error listing processors:")
-            raise HTTPException(status_code=500, detail=f"Error listing processors: {str(e)}")
+            logger.error(f"Error in process chain: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    @api.post("/api/v1/process/load_project", tags=["Audio Processing"])
+    async def load_project_endpoint(
+        project_name: str = Body(..., embed=True)
+    ):
+        """
+        Load a project and return its source files.
+        
+        Returns:
+            List of files in the project
+        """
+        try:
+            if not project_name or project_name not in list_projects():
+                raise HTTPException(status_code=404, detail="Project not found")
+            
+            project_folder = os.path.join(output_path, "process", project_name, "source")
+            if not os.path.exists(project_folder):
+                raise HTTPException(status_code=404, detail="Project source folder not found")
+            
+            # Find all audio files in the project
+            project_files = []
+            for file in os.listdir(project_folder):
+                if file.endswith((".mp3", ".wav", ".flac")):
+                    file_path = os.path.join(project_folder, file)
+                    with open(file_path, "rb") as f:
+                        file_content = base64.b64encode(f.read()).decode("utf-8")
+                    
+                    project_files.append({
+                        "filename": file,
+                        "path": file_path,
+                        "content": file_content
+                    })
+            
+            return {
+                "status": "success",
+                "project": project_name,
+                "files": project_files
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))

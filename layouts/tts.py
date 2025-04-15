@@ -1,5 +1,7 @@
 import os
 import logging
+from pathlib import Path
+import tempfile
 import torch
 
 import gradio as gr
@@ -488,268 +490,386 @@ def register_api_endpoints(api):
     Args:
         api: FastAPI application instance
     """
-    from fastapi import UploadFile, File, Form, HTTPException, Body
-    from fastapi.responses import FileResponse, JSONResponse
-    from typing import Optional
-    from pydantic import BaseModel, Field
-    import base64
-    
-    # Define Pydantic models for JSON requests
-    class FileData(BaseModel):
-        filename: str
-        content: str  # base64 encoded content
+    from fastapi import HTTPException, BackgroundTasks, Form, Query
+    from fastapi.responses import JSONResponse, FileResponse
+    from fastapi.encoders import jsonable_encoder
+    from pydantic import BaseModel, Field, validator
+    from typing import Optional, List, Dict, Any, Union
+    import os
+    import uuid
+    import time
+    import json
+    import re
+
+    # Define Pydantic models for request validation
+    class TTSOptions(BaseModel):
+        model: str = Field(
+            "tts-1", description="The TTS model to use"
+        )
+        voice: str = Field(
+            "alloy", description="The voice to use for speech generation"
+        )
+        input: str = Field(
+            ..., description="The text to convert to speech", max_length=4096
+        )
+        response_format: str = Field(
+            "mp3", description="The format of the generated audio"
+        )
+        speed: float = Field(
+            1.0, description="The speed of the generated speech", ge=0.25, le=4.0
+        )
         
-    class GenerateTTSRequest(BaseModel):
-        text: str
-        model: str
-        language: str = "en"
-        emotion: str = "Normal"
-        speaker: str = ""
-        speed: float = 1.0
-        speaker_reference: Optional[FileData] = None
-    
-    @api.post("/api/v1/tts/generate", tags=["Standard TTS"])
-    async def api_generate_tts(
-        text: str = Form(...),
-        model: str = Form(...),
-        language: str = Form("en"),
-        emotion: str = Form("Normal"),
-        speaker: str = Form(""),
+        @validator('model')
+        def validate_model(cls, v):
+            valid_models = ["tts-1", "tts-1-hd"]
+            if v not in valid_models:
+                raise ValueError(f"Model must be one of: {', '.join(valid_models)}")
+            return v
+            
+        @validator('voice')
+        def validate_voice(cls, v):
+            valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+            if v not in valid_voices:
+                raise ValueError(f"Voice must be one of: {', '.join(valid_voices)}")
+            return v
+            
+        @validator('input')
+        def validate_input(cls, v):
+            if not v:
+                raise ValueError("Input text cannot be empty")
+            if len(v) > 4096:
+                raise ValueError("Input text cannot exceed 4096 characters")
+            return v
+            
+        @validator('response_format')
+        def validate_response_format(cls, v):
+            valid_formats = ["mp3", "opus", "aac", "flac", "wav"]
+            if v not in valid_formats:
+                raise ValueError(f"Response format must be one of: {', '.join(valid_formats)}")
+            return v
+            
+        @validator('speed')
+        def validate_speed(cls, v):
+            if v < 0.25 or v > 4.0:
+                raise ValueError("Speed must be between 0.25 and 4.0")
+            return v
+
+    @api.post("/api/v1/audio/speech", tags=["Speech"])
+    async def api_generate_speech(
+        model: str = Form("tts-1"),
+        voice: str = Form("alloy"),
+        input: str = Form(...),
+        response_format: str = Form("mp3"),
         speed: float = Form(1.0),
-        speaker_reference: Optional[UploadFile] = File(None)
+        background_tasks: BackgroundTasks = None
     ):
         """
-        Generate speech from text using selected TTS model
+        Generate speech from text
         
-        This endpoint converts text to speech using various text-to-speech models,
-        including specialized models like Zonos for emotional speech synthesis.
+        This endpoint generates audio from the input text using the specified voice and model.
         
-        ## Parameters
+        Parameters:
+        - model: The TTS model (default: "tts-1", options: "tts-1", "tts-1-hd")
+        - voice: The voice to use (default: "alloy", options: "alloy", "echo", "fable", "onyx", "nova", "shimmer")
+        - input: The text to convert to speech (required, max 4096 characters)
+        - response_format: The audio format (default: "mp3", options: "mp3", "opus", "aac", "flac", "wav")
+        - speed: The speed of the generated speech (default: 1.0, range: 0.25-4.0)
         
-        - **text**: Text content to convert to speech
-          - For Zonos, you can include emotion tags like [Happy] or [Sad] for specific sections
-          - Example: "Hello world! [Happy] I'm so excited to talk to you! [Sad] But I have to go now."
-        - **model**: TTS model to use
-          - Use "Zonos" for emotional voice cloning
-          - For other models, get available options from `/api/v1/tts/models`
-        - **language**: Language code for the speech (default: "en")
-          - ISO 639-1 language codes: "en", "fr", "de", "es", etc.
-        - **emotion**: Overall emotion for Zonos TTS (default: "Normal")
-          - Options: "Normal", "Happy", "Sad", "Angry", "Surprised", "Fear", "Disgust"
-          - "Normal" lets text brackets control emotion, otherwise applies globally
-        - **speaker**: Speaker ID for models with multiple speakers (default: "")
-          - See available speakers in the response from `/api/v1/tts/models`
-        - **speed**: Speech speed factor (default: 1.0)
-          - Range: 0.5 (slow) to 2.0 (fast)
-        - **speaker_reference**: Optional reference audio for voice cloning
-          - Required for Zonos TTS
-          - Should be a 5-15 second clear speech sample
-        
-        ## Response
-        
-        The API returns the generated audio file as an attachment.
+        Returns:
+        - JSON with generation details and download URL
         """
-        # Create temporary directory for processing
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_dir_path = Path(temp_dir)
-            
-            # Save speaker reference if provided
-            speaker_sample_path = None
-            if speaker_reference:
-                speaker_file_path = temp_dir_path / speaker_reference.filename
-                with speaker_file_path.open("wb") as f:
-                    content = await speaker_reference.read()
-                    f.write(content)
-                speaker_sample_path = str(speaker_file_path)
-            
-            # Process with the shared implementation
-            return await _generate_tts_impl(
-                temp_dir=temp_dir,
-                text=text,
+        try:
+            # Validate input parameters
+            tts_options = TTSOptions(
                 model=model,
-                language=language,
-                emotion=emotion,
-                speaker=speaker,
-                speed=speed,
-                speaker_sample_path=speaker_sample_path,
-                return_json=False
+                voice=voice,
+                input=input,
+                response_format=response_format,
+                speed=speed
             )
-    
-    @api.post("/api/v1/tts/generate_json", tags=["Standard TTS"])
-    async def api_generate_tts_json(request: GenerateTTSRequest = Body(...)):
-        """
-        Generate speech from text using selected TTS model (JSON API)
-        
-        Request body:
-        - text: Text content to convert to speech
-        - model: TTS model to use
-        - language: Language code for the speech (default: "en")
-        - emotion: Overall emotion for Zonos TTS (default: "Normal")
-        - speaker: Speaker ID for models with multiple speakers (default: "")
-        - speed: Speech speed factor (default: 1.0)
-        - speaker_reference: Optional reference audio object with filename and base64-encoded content
-        
-        Response:
-        - JSON response with base64-encoded audio file
-        """
-        # Create temporary directory for processing
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_dir_path = Path(temp_dir)
             
-            # Save speaker reference if provided
-            speaker_sample_path = None
-            if request.speaker_reference:
-                speaker_file_path = temp_dir_path / request.speaker_reference.filename
-                with speaker_file_path.open("wb") as f:
-                    content = base64.b64decode(request.speaker_reference.content)
-                    f.write(content)
-                speaker_sample_path = str(speaker_file_path)
+            # Generate a unique ID for this speech generation
+            speech_id = str(uuid.uuid4())
+            timestamp = int(time.time())
             
-            # Process with the shared implementation
-            return await _generate_tts_impl(
-                temp_dir=temp_dir,
-                text=request.text,
-                model=request.model,
-                language=request.language,
-                emotion=request.emotion,
-                speaker=request.speaker,
-                speed=request.speed,
-                speaker_sample_path=speaker_sample_path,
-                return_json=True
+            # Create output directory if it doesn't exist
+            speech_dir = os.path.join(output_path, "speech")
+            os.makedirs(speech_dir, exist_ok=True)
+            
+            # Initialize TTS engine
+            tts_engine = TTSEngine()
+            
+            # Generate speech
+            result = tts_engine.generate_speech(
+                text=tts_options.input,
+                model=tts_options.model,
+                voice=tts_options.voice,
+                response_format=tts_options.response_format,
+                speed=tts_options.speed
             )
-    
-    async def _generate_tts_impl(
-        temp_dir,
-        text,
-        model,
-        language="en",
-        emotion="Normal",
-        speaker="",
-        speed=1.0,
-        speaker_sample_path=None,
-        return_json=False
-    ):
-        """Shared implementation for TTS generation"""
-        try:
-            # Check if text is provided
-            if not text or text.strip() == "":
-                raise HTTPException(status_code=400, detail="Please enter some text to speak")
             
-            # Check if Zonos is requested
-            if model == "Zonos":
-                # For Zonos, we need a speaker reference sample
-                if not speaker_sample_path:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="Zonos requires a speaker audio reference file"
-                    )
-                
-                # Generate using Zonos
-                output_file = run_zonos_tts(language, emotion, text, speaker_sample_path, speed)
-                
-                # Check if output is an error message
-                if isinstance(output_file, str) and output_file.startswith("Error:"):
-                    raise HTTPException(status_code=500, detail=output_file)
-                
-            else:
-                # Generate using regular TTS models
-                try:
-                    tts_handler = TTSHandler(language=language)
-                    output_file = tts_handler.handle(
-                        text=text, 
-                        model_name=model, 
-                        speaker_wav=speaker_sample_path, 
-                        selected_speaker=speaker, 
-                        speed=speed
-                    )
-                except Exception as e:
-                    logger.exception(f"Error in regular TTS generation with model {model}:")
-                    raise HTTPException(
-                        status_code=500, 
-                        detail=f"Could not generate speech with {model}: {str(e)}"
-                    )
+            if not result.get("success", False):
+                raise HTTPException(status_code=500, detail=result.get("error", "Failed to generate speech"))
             
-            # Return the generated audio file
-            if not os.path.exists(output_file):
-                raise HTTPException(status_code=500, detail="Failed to generate output file")
+            # Get audio data and save to file
+            audio_data = result.get("audio_data")
+            if not audio_data:
+                raise HTTPException(status_code=500, detail="No audio data generated")
             
-            if return_json:
-                # Return as base64-encoded content
-                with open(output_file, "rb") as f:
-                    file_content = base64.b64encode(f.read()).decode("utf-8")
-                    
-                return {
-                    "status": "success",
-                    "filename": os.path.basename(output_file),
-                    "content": file_content
-                }
-            else:
-                return FileResponse(
-                    output_file,
-                    media_type="audio/wav",
-                    filename=os.path.basename(output_file)
-                )
-                
-        except HTTPException:
-            # Re-raise HTTP exceptions
-            raise
-        except Exception as e:
-            logger.exception("Error in TTS generation:")
-            raise HTTPException(status_code=500, detail=f"TTS generation error: {str(e)}")
+            # Determine file extension based on response format
+            format_extensions = {
+                "mp3": ".mp3",
+                "opus": ".opus",
+                "aac": ".aac",
+                "flac": ".flac",
+                "wav": ".wav"
+            }
+            output_ext = format_extensions.get(tts_options.response_format, ".mp3")
+            output_filename = f"speech_{speech_id}{output_ext}"
+            output_filepath = os.path.join(speech_dir, output_filename)
             
-    @api.get("/api/v1/tts/models", tags=["Standard TTS"])
-    async def api_list_tts_models():
-        """
-        List available TTS models
-        
-        This endpoint returns information about all available text-to-speech models in the system,
-        organized by language and type.
-        """
-        try:
-            models_info = {
-                "zonos": {
-                    "available": True,
-                    "description": "Zonos voice cloning with emotional control",
-                    "requires_reference": True,
-                    "emotions": [
-                        "Normal", "Happy", "Sad", "Angry", 
-                        "Surprised", "Fear", "Disgust"
-                    ]
-                },
-                "languages": {}
+            # Save audio to file
+            with open(output_filepath, "wb") as f:
+                f.write(audio_data)
+            
+            # Create download URL
+            download_url = f"/api/v1/audio/speech/download/{output_filename}"
+            
+            # Save metadata
+            metadata_filename = f"speech_{speech_id}_metadata.json"
+            metadata_filepath = os.path.join(speech_dir, metadata_filename)
+            
+            # Truncate input text for metadata if too long
+            input_preview = tts_options.input
+            if len(input_preview) > 100:
+                input_preview = input_preview[:100] + "..."
+            
+            metadata = {
+                "id": speech_id,
+                "timestamp": timestamp,
+                "model": tts_options.model,
+                "voice": tts_options.voice,
+                "input_text": input_preview,
+                "response_format": tts_options.response_format,
+                "speed": tts_options.speed,
+                "output_path": output_filepath,
+                "duration": result.get("duration", 0),
+                "character_count": len(tts_options.input),
+                "file_size_bytes": os.path.getsize(output_filepath)
             }
             
-            # Get models for supported languages
-            supported_languages = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "nl", "ru", "cs", "ar", "zh-cn", "ja", "ko"]
+            with open(metadata_filepath, "w") as f:
+                json.dump(metadata, f, indent=2)
             
-            for lang in supported_languages:
-                try:
-                    # Only create handler if we need to check models
-                    handler = TTSHandler(language=lang)
-                    models = handler.list_models()
-                    
-                    if models:
-                        # Get available speakers for each model
-                        models_with_speakers = {}
-                        for model_path in models:
-                            model_name = os.path.basename(model_path)
-                            speakers = handler.list_speakers(model_path)
-                            
-                            models_with_speakers[model_name] = {
-                                "path": model_path,
-                                "speakers": speakers
-                            }
-                        
-                        models_info["languages"][lang] = models_with_speakers
-                except Exception as e:
-                    logger.warning(f"Could not load models for language {lang}: {e}")
-                    # Skip this language
+            # Schedule file deletions after 24 hours
+            if background_tasks:
+                background_tasks.add_task(
+                    lambda p: os.remove(p) if os.path.exists(p) else None,
+                    output_filepath,
+                    delay=86400  # 24 hours
+                )
+                
+                background_tasks.add_task(
+                    lambda p: os.remove(p) if os.path.exists(p) else None,
+                    metadata_filepath,
+                    delay=86400  # 24 hours
+                )
             
-            return models_info
+            # Prepare response
+            response_data = {
+                "success": True,
+                "speech_id": speech_id,
+                "download_url": download_url,
+                "metadata": {
+                    "model": tts_options.model,
+                    "voice": tts_options.voice,
+                    "input_text_preview": input_preview,
+                    "response_format": tts_options.response_format,
+                    "speed": tts_options.speed,
+                    "duration": result.get("duration", 0),
+                    "character_count": len(tts_options.input),
+                    "file_size_bytes": os.path.getsize(output_filepath),
+                    "timestamp": timestamp
+                }
+            }
             
+            return JSONResponse(content=jsonable_encoder(response_data))
+            
+        except ValueError as e:
+            # Handle validation errors
+            raise HTTPException(status_code=400, detail=str(e))
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception("Error listing TTS models:")
-            raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+            import traceback
+            logger.exception(f"API speech generation error: {e}\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/audio/speech/download/{filename}", tags=["Speech"])
+    async def api_speech_download(filename: str):
+        """
+        Download a generated speech file
+        
+        Parameters:
+        - filename: The name of the speech file to download
+        
+        Returns:
+        - The audio file
+        """
+        try:
+            # Validate filename format (prevent path traversal)
+            if not re.match(r'^speech_[a-f0-9-]+\.(mp3|opus|aac|flac|wav)$', filename):
+                raise HTTPException(status_code=400, detail="Invalid filename format")
+            
+            # Build the file path
+            file_path = os.path.join(output_path, "speech", filename)
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Speech file not found")
+            
+            # Determine content type based on file extension
+            file_ext = filename.split(".")[-1].lower()
+            content_type_map = {
+                "mp3": "audio/mpeg",
+                "opus": "audio/opus",
+                "aac": "audio/aac",
+                "flac": "audio/flac",
+                "wav": "audio/wav"
+            }
+            
+            content_type = content_type_map.get(file_ext, "audio/mpeg")
+            
+            # Return the file
+            return FileResponse(
+                path=file_path,
+                filename=filename,
+                media_type=content_type
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"API speech download error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/audio/speech/models", tags=["Speech"])
+    async def api_get_speech_models():
+        """
+        Get available speech models
+        
+        Returns information about available models for text-to-speech generation.
+        """
+        models = [
+            {
+                "id": "tts-1",
+                "name": "TTS-1",
+                "description": "Standard text-to-speech model optimized for quality and speed",
+                "max_input_length": 4096,
+                "supported_formats": ["mp3", "opus", "aac", "flac", "wav"]
+            },
+            {
+                "id": "tts-1-hd",
+                "name": "TTS-1-HD",
+                "description": "High-definition text-to-speech model for premium audio quality",
+                "max_input_length": 4096,
+                "supported_formats": ["mp3", "opus", "aac", "flac", "wav"]
+            }
+        ]
+        return {"models": models}
+
+    @api.get("/api/v1/audio/speech/voices", tags=["Speech"])
+    async def api_get_speech_voices():
+        """
+        Get available speech voices
+        
+        Returns information about available voices for text-to-speech generation.
+        """
+        voices = [
+            {
+                "id": "alloy",
+                "name": "Alloy",
+                "description": "Versatile neutral voice with balanced tone",
+                "gender": "neutral"
+            },
+            {
+                "id": "echo",
+                "name": "Echo",
+                "description": "Soft-spoken and professional voice with clarity",
+                "gender": "male"
+            },
+            {
+                "id": "fable",
+                "name": "Fable",
+                "description": "Narrative voice with warm and animated quality",
+                "gender": "female"
+            },
+            {
+                "id": "onyx",
+                "name": "Onyx",
+                "description": "Deep and authoritative voice with gravitas",
+                "gender": "male"
+            },
+            {
+                "id": "nova",
+                "name": "Nova",
+                "description": "Bright and energetic female voice",
+                "gender": "female"
+            },
+            {
+                "id": "shimmer",
+                "name": "Shimmer",
+                "description": "Melodic and dynamic voice with clear articulation",
+                "gender": "female"
+            }
+        ]
+        return {"voices": voices}
+    
+    @api.get("/api/v1/audio/speech/formats", tags=["Speech"])
+    async def api_get_speech_formats():
+        """
+        Get available speech formats
+        
+        Returns information about supported output formats for speech generation.
+        """
+        formats = [
+            {
+                "id": "mp3",
+                "name": "MP3",
+                "description": "Compressed audio format with good quality and small file size (default)",
+                "mime_type": "audio/mpeg",
+                "extension": ".mp3"
+            },
+            {
+                "id": "opus",
+                "name": "Opus",
+                "description": "Modern compressed audio format with excellent quality at low bitrates",
+                "mime_type": "audio/opus",
+                "extension": ".opus"
+            },
+            {
+                "id": "aac",
+                "name": "AAC",
+                "description": "Advanced audio coding format with good compression and quality",
+                "mime_type": "audio/aac",
+                "extension": ".aac"
+            },
+            {
+                "id": "flac",
+                "name": "FLAC",
+                "description": "Lossless audio compression format with larger file size",
+                "mime_type": "audio/flac",
+                "extension": ".flac"
+            },
+            {
+                "id": "wav",
+                "name": "WAV",
+                "description": "Uncompressed audio format with highest quality and largest file size",
+                "mime_type": "audio/wav",
+                "extension": ".wav"
+            }
+        ]
+        return {"formats": formats}
 
 def register_descriptions(arg_handler: ArgHandler):
     descriptions = {
@@ -766,3 +886,22 @@ def register_descriptions(arg_handler: ArgHandler):
     }
     for elem_id, description in descriptions.items():
         arg_handler.register_description("tts", elem_id, description)
+
+def estimate_audio_duration(text_length, speed=1.0):
+    """
+    Estimate the duration of generated audio based on text length and speed
+    
+    Args:
+        text_length: Length of the text in characters
+        speed: Speaking speed factor
+        
+    Returns:
+        Estimated duration in seconds
+    """
+    # Approximate speaking rate is about 150 words per minute or 1000 characters per minute at normal speed
+    # This is a rough estimate and may vary by voice and content
+    chars_per_second = (1000 / 60) * speed
+    estimated_seconds = text_length / chars_per_second
+    
+    # Round to one decimal place
+    return round(estimated_seconds, 1)

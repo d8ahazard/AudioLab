@@ -17,6 +17,12 @@ from pydantic import BaseModel, Field
 from handlers.args import ArgHandler
 from handlers.config import output_path
 from util.data_classes import ProjectFiles
+from fastapi import UploadFile, File, Form, HTTPException, Body
+from fastapi.responses import JSONResponse
+from typing import Optional, List
+from pydantic import BaseModel, Field
+import base64
+import shutil
 
 logger = logging.getLogger(__name__)
 arg_handler = ArgHandler()
@@ -446,187 +452,775 @@ def register_descriptions(arg_handler: ArgHandler):
 
 def register_api_endpoints(api):
     """
-    Register API endpoints for transcription functionality
+    Register API endpoints for audio transcription functionality
     
     Args:
         api: FastAPI application instance
     """
-    # Define Pydantic models for JSON requests
-    class FileData(BaseModel):
-        filename: str
-        content: str  # base64 encoded content
-        
-    class TranscribeRequest(BaseModel):
-        files: List[FileData]
-        language: str = "auto"
-        align_output: bool = True
-        assign_speakers: bool = True
-        min_speakers: Optional[str] = None
-        max_speakers: Optional[str] = None
-        batch_size: int = 16
-        compute_type: str = "float16"
-    
-    @api.post("/api/v1/transcribe", tags=["Transcription"])
-    async def api_transcribe(
-        files: List[UploadFile] = File(...),
-        language: str = Form("auto"),
-        align_output: bool = Form(True),
-        assign_speakers: bool = Form(True),
-        min_speakers: Optional[str] = Form(None),
-        max_speakers: Optional[str] = Form(None),
-        batch_size: int = Form(16),
-        compute_type: str = Form("float16")
-    ):
-        """
-        Transcribe audio files using WhisperX with alignment and speaker diarization.
-        
-        This endpoint provides high-quality speech-to-text transcription with additional
-        features like precise word-level timestamps and speaker identification.
-        
-        ## Parameters
-        
-        - **files**: Audio files to transcribe (WAV, MP3, FLAC, etc.)
-        - **language**: Language code (ISO 639-1) or "auto" for automatic detection
-          - Examples: "en", "fr", "de", "ja", "zh", "es", etc.
-        - **align_output**: Create word-level timestamps using phoneme alignment (default: true)
-        - **assign_speakers**: Detect and label different speakers in the audio (default: true)
-        - **min_speakers**: Minimum number of speakers to detect (optional)
-          - Leave empty for automatic detection
-        - **max_speakers**: Maximum number of speakers to detect (optional)
-          - Leave empty for automatic detection
-        - **batch_size**: Batch size for processing (default: 16)
-          - Higher values use more memory but may be faster
-        - **compute_type**: Precision level for computation (default: "float16")
-          - Options: "float16", "float32", "int8"
-        
-        ## Response Format
-        
-        The API returns a JSON object containing a summary and links to the generated transcription files.
-        """
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Save uploaded files
-                temp_files = []
-                for file in files:
-                    file_path = Path(temp_dir) / file.filename
-                    with file_path.open("wb") as f:
-                        content = await file.read()
-                        f.write(content)
-                    temp_files.append(str(file_path))
-                
-                # Process with shared implementation
-                return await _transcribe_impl(
-                    temp_dir=temp_dir,
-                    temp_files=temp_files,
-                    language=language,
-                    align_output=align_output,
-                    assign_speakers=assign_speakers,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                    batch_size=batch_size,
-                    compute_type=compute_type,
-                    return_json=False
-                )
-                
-        except Exception as e:
-            logger.exception(f"API transcription error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @api.post("/api/v1/transcribe_json", tags=["Transcription"])
-    async def api_transcribe_json(request: TranscribeRequest = Body(...)):
-        """
-        Transcribe audio files using WhisperX with alignment and speaker diarization (JSON API)
-        
-        Request body:
-        - files: Array of file objects, each containing filename and base64-encoded content
-        - language: Language code or "auto" for automatic detection (default: "auto")
-        - align_output: Create word-level timestamps (default: true)
-        - assign_speakers: Detect and label different speakers (default: true)
-        - min_speakers: Minimum number of speakers to detect (optional)
-        - max_speakers: Maximum number of speakers to detect (optional)
-        - batch_size: Batch size for processing (default: 16)
-        - compute_type: Precision level for computation (default: "float16")
-        
-        Response:
-        - JSON response with base64-encoded transcription files
-        """
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Save uploaded files from base64
-                temp_files = []
-                for file_data in request.files:
-                    file_path = Path(temp_dir) / file_data.filename
-                    with file_path.open("wb") as f:
-                        content = base64.b64decode(file_data.content)
-                        f.write(content)
-                    temp_files.append(str(file_path))
-                
-                # Process with shared implementation
-                return await _transcribe_impl(
-                    temp_dir=temp_dir,
-                    temp_files=temp_files,
-                    language=request.language,
-                    align_output=request.align_output,
-                    assign_speakers=request.assign_speakers,
-                    min_speakers=request.min_speakers,
-                    max_speakers=request.max_speakers,
-                    batch_size=request.batch_size,
-                    compute_type=request.compute_type,
-                    return_json=True
-                )
-                
-        except Exception as e:
-            logger.exception(f"API transcription error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    async def _transcribe_impl(
-        temp_dir,
-        temp_files,
-        language="auto",
-        align_output=True,
-        assign_speakers=True,
-        min_speakers=None,
-        max_speakers=None,
-        batch_size=16,
-        compute_type="float16",
-        return_json=False
-    ):
-        """Shared implementation for transcription"""
-        # Process transcription
-        summary, output_files = process_transcription(
-            temp_files,
-            language=language,
-            align_output=align_output,
-            assign_speakers=assign_speakers,
-            min_speakers=min_speakers,
-            max_speakers=max_speakers,
-            batch_size=batch_size,
-            compute_type=compute_type
+    from fastapi import HTTPException, BackgroundTasks, Query, Form, UploadFile, File
+    from fastapi.responses import JSONResponse, FileResponse
+    from fastapi.encoders import jsonable_encoder
+    from pydantic import BaseModel, Field, validator
+    from typing import Optional, List, Dict, Any, Union
+    import os
+    import uuid
+    import time
+    import json
+    import re
+    from io import BytesIO
+
+    # Define Pydantic models for request validation
+    class TranscriptionOptions(BaseModel):
+        model: str = Field(
+            "whisper-1", description="The model to use for audio transcription"
+        )
+        language: Optional[str] = Field(
+            None, description="The language of the audio (ISO-639-1 code)"
+        )
+        prompt: Optional[str] = Field(
+            None, description="Text to guide the transcription model"
+        )
+        response_format: str = Field(
+            "json", description="The format of the transcription response"
+        )
+        temperature: float = Field(
+            0.0, description="Sampling temperature", ge=0.0, le=1.0
+        )
+        timestamp_granularities: Optional[List[str]] = Field(
+            None, description="Timestamp granularity levels"
         )
         
-        # Filter for JSON files
-        json_files = [output for output in output_files if output.endswith(".json")]
+        @validator('model')
+        def validate_model(cls, v):
+            valid_models = ["whisper-1"]
+            if v not in valid_models:
+                raise ValueError(f"Model must be one of: {', '.join(valid_models)}")
+            return v
         
-        if return_json:
-            # Return the transcriptions as base64-encoded content
-            response_data = {
-                "summary": summary,
-                "transcriptions": []
+        @validator('language')
+        def validate_language(cls, v):
+            if v is not None:
+                # Validate ISO-639-1 code (2-letter language code)
+                if not re.match(r'^[a-z]{2}$', v):
+                    raise ValueError("Language must be a valid ISO-639-1 two-letter language code")
+            return v
+        
+        @validator('prompt')
+        def validate_prompt(cls, v):
+            if v is not None and len(v) > 1000:
+                raise ValueError("Prompt cannot exceed 1000 characters")
+            return v
+        
+        @validator('response_format')
+        def validate_response_format(cls, v):
+            valid_formats = ["json", "text", "srt", "vtt", "verbose_json"]
+            if v not in valid_formats:
+                raise ValueError(f"Response format must be one of: {', '.join(valid_formats)}")
+            return v
+        
+        @validator('temperature')
+        def validate_temperature(cls, v):
+            if v < 0.0 or v > 1.0:
+                raise ValueError("Temperature must be between 0.0 and 1.0")
+            return v
+        
+        @validator('timestamp_granularities')
+        def validate_timestamp_granularities(cls, v):
+            if v is not None:
+                valid_granularities = ["word", "segment"]
+                for item in v:
+                    if item not in valid_granularities:
+                        raise ValueError(f"Timestamp granularity must be one of: {', '.join(valid_granularities)}")
+            return v
+
+    class TranslationOptions(BaseModel):
+        model: str = Field(
+            "whisper-1", description="The model to use for audio translation"
+        )
+        prompt: Optional[str] = Field(
+            None, description="Text to guide the translation model"
+        )
+        response_format: str = Field(
+            "json", description="The format of the translation response"
+        )
+        temperature: float = Field(
+            0.0, description="Sampling temperature", ge=0.0, le=1.0
+        )
+        timestamp_granularities: Optional[List[str]] = Field(
+            None, description="Timestamp granularity levels"
+        )
+        
+        @validator('model')
+        def validate_model(cls, v):
+            valid_models = ["whisper-1"]
+            if v not in valid_models:
+                raise ValueError(f"Model must be one of: {', '.join(valid_models)}")
+            return v
+        
+        @validator('prompt')
+        def validate_prompt(cls, v):
+            if v is not None and len(v) > 1000:
+                raise ValueError("Prompt cannot exceed 1000 characters")
+            return v
+        
+        @validator('response_format')
+        def validate_response_format(cls, v):
+            valid_formats = ["json", "text", "srt", "vtt", "verbose_json"]
+            if v not in valid_formats:
+                raise ValueError(f"Response format must be one of: {', '.join(valid_formats)}")
+            return v
+        
+        @validator('temperature')
+        def validate_temperature(cls, v):
+            if v < 0.0 or v > 1.0:
+                raise ValueError("Temperature must be between 0.0 and 1.0")
+            return v
+        
+        @validator('timestamp_granularities')
+        def validate_timestamp_granularities(cls, v):
+            if v is not None:
+                valid_granularities = ["word", "segment"]
+                for item in v:
+                    if item not in valid_granularities:
+                        raise ValueError(f"Timestamp granularity must be one of: {', '.join(valid_granularities)}")
+            return v
+
+    @api.post("/api/v1/audio/transcriptions", tags=["Audio Transcription"])
+    async def api_transcribe_audio(
+        file: UploadFile = File(...),
+        model: str = Form("whisper-1"),
+        language: Optional[str] = Form(None),
+        prompt: Optional[str] = Form(None),
+        response_format: str = Form("json"),
+        temperature: float = Form(0.0),
+        timestamp_granularities: Optional[List[str]] = Form(None),
+        background_tasks: BackgroundTasks = None
+    ):
+        """
+        Transcribe audio to text
+        
+        This endpoint transcribes the uploaded audio file to text using the Whisper model.
+        
+        Parameters:
+        - file: The audio file to transcribe (required, max 25MB)
+        - model: The transcription model to use (default: "whisper-1")
+        - language: The language of the audio in ISO-639-1 format (optional, e.g., "en", "fr")
+        - prompt: Text to guide the transcription model (optional, max 1000 chars)
+        - response_format: Output format (default: "json", options: "json", "text", "srt", "vtt", "verbose_json")
+        - temperature: Sampling temperature (default: 0.0, range: 0.0-1.0)
+        - timestamp_granularities: Timestamp detail level (optional, options: "word", "segment")
+        
+        Returns:
+        - JSON with transcription details and results
+        """
+        try:
+            # Check file size limit (25MB)
+            file_size_limit = 25 * 1024 * 1024  # 25MB in bytes
+            if file.size > file_size_limit:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file.size / (1024 * 1024):.2f}MB"
+                )
+            
+            # Read file content
+            audio_content = await file.read()
+            
+            # Validate input parameters
+            options = TranscriptionOptions(
+                model=model,
+                language=language,
+                prompt=prompt,
+                response_format=response_format,
+                temperature=temperature,
+                timestamp_granularities=timestamp_granularities
+            )
+            
+            # Create a temporary file to store the uploaded audio
+            temp_dir = os.path.join(output_path, "temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            temp_audio_id = str(uuid.uuid4())
+            temp_audio_filename = f"temp_audio_{temp_audio_id}_{file.filename}"
+            temp_audio_path = os.path.join(temp_dir, temp_audio_filename)
+            
+            with open(temp_audio_path, "wb") as f:
+                f.write(audio_content)
+            
+            # Generate a unique ID for this transcription
+            transcription_id = str(uuid.uuid4())
+            timestamp = int(time.time())
+            
+            # Create output directory if it doesn't exist
+            transcription_dir = os.path.join(output_path, "transcriptions")
+            os.makedirs(transcription_dir, exist_ok=True)
+            
+            # Initialize transcription engine
+            transcriber = WhisperTranscriber()
+            
+            # Perform transcription
+            result = transcriber.transcribe(
+                audio_file=temp_audio_path,
+                model=options.model,
+                language=options.language,
+                prompt=options.prompt,
+                response_format=options.response_format,
+                temperature=options.temperature,
+                timestamp_granularities=options.timestamp_granularities
+            )
+            
+            # Clean up temporary file
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
+            
+            if not result.get("success", False):
+                raise HTTPException(status_code=500, detail=result.get("error", "Failed to transcribe audio"))
+            
+            # Get transcription data
+            transcription_data = result.get("transcription")
+            if not transcription_data:
+                raise HTTPException(status_code=500, detail="No transcription data generated")
+            
+            # Save transcription results based on format
+            if options.response_format == "json":
+                output_filename = f"transcription_{transcription_id}.json"
+                output_filepath = os.path.join(transcription_dir, output_filename)
+                with open(output_filepath, "w", encoding="utf-8") as f:
+                    json.dump(transcription_data, f, indent=2, ensure_ascii=False)
+            
+            elif options.response_format == "verbose_json":
+                output_filename = f"transcription_{transcription_id}.json"
+                output_filepath = os.path.join(transcription_dir, output_filename)
+                with open(output_filepath, "w", encoding="utf-8") as f:
+                    json.dump(transcription_data, f, indent=2, ensure_ascii=False)
+            
+            elif options.response_format in ["text", "srt", "vtt"]:
+                output_filename = f"transcription_{transcription_id}.{options.response_format}"
+                output_filepath = os.path.join(transcription_dir, output_filename)
+                with open(output_filepath, "w", encoding="utf-8") as f:
+                    f.write(transcription_data)
+            
+            # Create download URL
+            download_url = f"/api/v1/audio/transcription/download/{output_filename}"
+            
+            # Get file size
+            file_size = os.path.getsize(output_filepath)
+            
+            # Save metadata
+            metadata_filename = f"transcription_{transcription_id}_metadata.json"
+            metadata_filepath = os.path.join(transcription_dir, metadata_filename)
+            
+            metadata = {
+                "id": transcription_id,
+                "timestamp": timestamp,
+                "original_filename": file.filename,
+                "model": options.model,
+                "language": options.language,
+                "prompt": options.prompt,
+                "response_format": options.response_format,
+                "temperature": options.temperature,
+                "timestamp_granularities": options.timestamp_granularities,
+                "output_file": {
+                    "filename": output_filename,
+                    "format": options.response_format,
+                    "download_url": download_url,
+                    "file_size_bytes": file_size
+                }
             }
             
-            for json_file in json_files:
-                with open(json_file, "r", encoding="utf-8") as f:
-                    transcription_data = f.read()
-                
-                response_data["transcriptions"].append({
-                    "filename": os.path.basename(json_file),
-                    "content": transcription_data
-                })
+            with open(metadata_filepath, "w") as f:
+                json.dump(metadata, f, indent=2)
             
-            return response_data
-        else:
-            # Return results with file URLs
-            return {
-                "summary": summary,
-                "output_files": [FileResponse(output) for output in json_files]
-            } 
+            # Schedule file deletions after 24 hours
+            if background_tasks:
+                background_tasks.add_task(
+                    lambda p: os.remove(p) if os.path.exists(p) else None,
+                    output_filepath,
+                    delay=86400  # 24 hours
+                )
+                
+                background_tasks.add_task(
+                    lambda p: os.remove(p) if os.path.exists(p) else None,
+                    metadata_filepath,
+                    delay=86400  # 24 hours
+                )
+            
+            # Prepare response
+            # For text format, include the text content directly
+            transcription_content = None
+            if options.response_format == "text":
+                transcription_content = transcription_data
+            elif options.response_format in ["json", "verbose_json"]:
+                transcription_content = transcription_data
+            
+            response_data = {
+                "success": True,
+                "transcription_id": transcription_id,
+                "output_file": {
+                    "filename": output_filename,
+                    "format": options.response_format,
+                    "download_url": download_url,
+                    "file_size_bytes": file_size
+                },
+                "metadata": {
+                    "original_filename": file.filename,
+                    "model": options.model,
+                    "language": options.language,
+                    "prompt": options.prompt,
+                    "response_format": options.response_format,
+                    "temperature": options.temperature,
+                    "timestamp_granularities": options.timestamp_granularities,
+                    "timestamp": timestamp
+                }
+            }
+            
+            # Include transcription content in the response
+            if transcription_content:
+                response_data["transcription"] = transcription_content
+            
+            return JSONResponse(content=jsonable_encoder(response_data))
+            
+        except ValueError as e:
+            # Handle validation errors
+            raise HTTPException(status_code=400, detail=str(e))
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            logger.exception(f"API transcription error: {e}\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.post("/api/v1/audio/translations", tags=["Audio Transcription"])
+    async def api_translate_audio(
+        file: UploadFile = File(...),
+        model: str = Form("whisper-1"),
+        prompt: Optional[str] = Form(None),
+        response_format: str = Form("json"),
+        temperature: float = Form(0.0),
+        timestamp_granularities: Optional[List[str]] = Form(None),
+        background_tasks: BackgroundTasks = None
+    ):
+        """
+        Translate audio to English text
+        
+        This endpoint translates the uploaded audio file to English text using the Whisper model.
+        
+        Parameters:
+        - file: The audio file to translate (required, max 25MB)
+        - model: The translation model to use (default: "whisper-1")
+        - prompt: Text to guide the translation model (optional, max 1000 chars)
+        - response_format: Output format (default: "json", options: "json", "text", "srt", "vtt", "verbose_json")
+        - temperature: Sampling temperature (default: 0.0, range: 0.0-1.0)
+        - timestamp_granularities: Timestamp detail level (optional, options: "word", "segment")
+        
+        Returns:
+        - JSON with translation details and results
+        """
+        try:
+            # Check file size limit (25MB)
+            file_size_limit = 25 * 1024 * 1024  # 25MB in bytes
+            if file.size > file_size_limit:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Audio file exceeds size limit of 25MB. Uploaded file size: {file.size / (1024 * 1024):.2f}MB"
+                )
+            
+            # Read file content
+            audio_content = await file.read()
+            
+            # Validate input parameters
+            options = TranslationOptions(
+                model=model,
+                prompt=prompt,
+                response_format=response_format,
+                temperature=temperature,
+                timestamp_granularities=timestamp_granularities
+            )
+            
+            # Create a temporary file to store the uploaded audio
+            temp_dir = os.path.join(output_path, "temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            temp_audio_id = str(uuid.uuid4())
+            temp_audio_filename = f"temp_audio_{temp_audio_id}_{file.filename}"
+            temp_audio_path = os.path.join(temp_dir, temp_audio_filename)
+            
+            with open(temp_audio_path, "wb") as f:
+                f.write(audio_content)
+            
+            # Generate a unique ID for this translation
+            translation_id = str(uuid.uuid4())
+            timestamp = int(time.time())
+            
+            # Create output directory if it doesn't exist
+            translation_dir = os.path.join(output_path, "translations")
+            os.makedirs(translation_dir, exist_ok=True)
+            
+            # Initialize translation engine
+            translator = WhisperTranslator()
+            
+            # Perform translation
+            result = translator.translate(
+                audio_file=temp_audio_path,
+                model=options.model,
+                prompt=options.prompt,
+                response_format=options.response_format,
+                temperature=options.temperature,
+                timestamp_granularities=options.timestamp_granularities
+            )
+            
+            # Clean up temporary file
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
+            
+            if not result.get("success", False):
+                raise HTTPException(status_code=500, detail=result.get("error", "Failed to translate audio"))
+            
+            # Get translation data
+            translation_data = result.get("translation")
+            if not translation_data:
+                raise HTTPException(status_code=500, detail="No translation data generated")
+            
+            # Save translation results based on format
+            if options.response_format == "json":
+                output_filename = f"translation_{translation_id}.json"
+                output_filepath = os.path.join(translation_dir, output_filename)
+                with open(output_filepath, "w", encoding="utf-8") as f:
+                    json.dump(translation_data, f, indent=2, ensure_ascii=False)
+            
+            elif options.response_format == "verbose_json":
+                output_filename = f"translation_{translation_id}.json"
+                output_filepath = os.path.join(translation_dir, output_filename)
+                with open(output_filepath, "w", encoding="utf-8") as f:
+                    json.dump(translation_data, f, indent=2, ensure_ascii=False)
+            
+            elif options.response_format in ["text", "srt", "vtt"]:
+                output_filename = f"translation_{translation_id}.{options.response_format}"
+                output_filepath = os.path.join(translation_dir, output_filename)
+                with open(output_filepath, "w", encoding="utf-8") as f:
+                    f.write(translation_data)
+            
+            # Create download URL
+            download_url = f"/api/v1/audio/translation/download/{output_filename}"
+            
+            # Get file size
+            file_size = os.path.getsize(output_filepath)
+            
+            # Save metadata
+            metadata_filename = f"translation_{translation_id}_metadata.json"
+            metadata_filepath = os.path.join(translation_dir, metadata_filename)
+            
+            metadata = {
+                "id": translation_id,
+                "timestamp": timestamp,
+                "original_filename": file.filename,
+                "model": options.model,
+                "prompt": options.prompt,
+                "response_format": options.response_format,
+                "temperature": options.temperature,
+                "timestamp_granularities": options.timestamp_granularities,
+                "output_file": {
+                    "filename": output_filename,
+                    "format": options.response_format,
+                    "download_url": download_url,
+                    "file_size_bytes": file_size
+                }
+            }
+            
+            with open(metadata_filepath, "w") as f:
+                json.dump(metadata, f, indent=2)
+            
+            # Schedule file deletions after 24 hours
+            if background_tasks:
+                background_tasks.add_task(
+                    lambda p: os.remove(p) if os.path.exists(p) else None,
+                    output_filepath,
+                    delay=86400  # 24 hours
+                )
+                
+                background_tasks.add_task(
+                    lambda p: os.remove(p) if os.path.exists(p) else None,
+                    metadata_filepath,
+                    delay=86400  # 24 hours
+                )
+            
+            # Prepare response
+            # For text format, include the text content directly
+            translation_content = None
+            if options.response_format == "text":
+                translation_content = translation_data
+            elif options.response_format in ["json", "verbose_json"]:
+                translation_content = translation_data
+            
+            response_data = {
+                "success": True,
+                "translation_id": translation_id,
+                "output_file": {
+                    "filename": output_filename,
+                    "format": options.response_format,
+                    "download_url": download_url,
+                    "file_size_bytes": file_size
+                },
+                "metadata": {
+                    "original_filename": file.filename,
+                    "model": options.model,
+                    "prompt": options.prompt,
+                    "response_format": options.response_format,
+                    "temperature": options.temperature,
+                    "timestamp_granularities": options.timestamp_granularities,
+                    "timestamp": timestamp
+                }
+            }
+            
+            # Include translation content in the response
+            if translation_content:
+                response_data["translation"] = translation_content
+            
+            return JSONResponse(content=jsonable_encoder(response_data))
+            
+        except ValueError as e:
+            # Handle validation errors
+            raise HTTPException(status_code=400, detail=str(e))
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            logger.exception(f"API translation error: {e}\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/audio/transcription/download/{filename}", tags=["Audio Transcription"])
+    async def api_download_transcription(filename: str):
+        """
+        Download a transcription file
+        
+        Parameters:
+        - filename: The name of the transcription file to download
+        
+        Returns:
+        - The transcription file
+        """
+        try:
+            # Validate filename format (prevent path traversal)
+            valid_pattern = r'^transcription_[a-f0-9-]+\.(json|text|srt|vtt)$'
+            if not re.match(valid_pattern, filename):
+                raise HTTPException(status_code=400, detail="Invalid filename format")
+            
+            # Build the file path
+            file_path = os.path.join(output_path, "transcriptions", filename)
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Transcription file not found")
+            
+            # Determine content type based on file extension
+            file_ext = filename.split(".")[-1].lower()
+            content_type_map = {
+                "json": "application/json",
+                "text": "text/plain",
+                "srt": "application/x-subrip",
+                "vtt": "text/vtt"
+            }
+            
+            content_type = content_type_map.get(file_ext, "application/octet-stream")
+            
+            # Return the file
+            return FileResponse(
+                path=file_path,
+                filename=filename,
+                media_type=content_type
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"API transcription download error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/audio/translation/download/{filename}", tags=["Audio Transcription"])
+    async def api_download_translation(filename: str):
+        """
+        Download a translation file
+        
+        Parameters:
+        - filename: The name of the translation file to download
+        
+        Returns:
+        - The translation file
+        """
+        try:
+            # Validate filename format (prevent path traversal)
+            valid_pattern = r'^translation_[a-f0-9-]+\.(json|text|srt|vtt)$'
+            if not re.match(valid_pattern, filename):
+                raise HTTPException(status_code=400, detail="Invalid filename format")
+            
+            # Build the file path
+            file_path = os.path.join(output_path, "translations", filename)
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Translation file not found")
+            
+            # Determine content type based on file extension
+            file_ext = filename.split(".")[-1].lower()
+            content_type_map = {
+                "json": "application/json",
+                "text": "text/plain",
+                "srt": "application/x-subrip",
+                "vtt": "text/vtt"
+            }
+            
+            content_type = content_type_map.get(file_ext, "application/octet-stream")
+            
+            # Return the file
+            return FileResponse(
+                path=file_path,
+                filename=filename,
+                media_type=content_type
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"API translation download error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @api.get("/api/v1/audio/transcription/models", tags=["Audio Transcription"])
+    async def api_get_transcription_models():
+        """
+        Get available transcription models
+        
+        Returns information about available models for audio transcription.
+        """
+        models = [
+            {
+                "id": "whisper-1",
+                "name": "Whisper v1",
+                "description": "General-purpose speech recognition model supporting transcription in multiple languages",
+                "supported_languages": [
+                    {"code": "en", "name": "English"},
+                    {"code": "zh", "name": "Chinese"},
+                    {"code": "de", "name": "German"},
+                    {"code": "es", "name": "Spanish"},
+                    {"code": "ru", "name": "Russian"},
+                    {"code": "ko", "name": "Korean"},
+                    {"code": "fr", "name": "French"},
+                    {"code": "ja", "name": "Japanese"},
+                    {"code": "pt", "name": "Portuguese"},
+                    {"code": "tr", "name": "Turkish"},
+                    {"code": "pl", "name": "Polish"},
+                    {"code": "ca", "name": "Catalan"},
+                    {"code": "nl", "name": "Dutch"},
+                    {"code": "ar", "name": "Arabic"},
+                    {"code": "sv", "name": "Swedish"},
+                    {"code": "it", "name": "Italian"},
+                    {"code": "id", "name": "Indonesian"},
+                    {"code": "hi", "name": "Hindi"},
+                    {"code": "fi", "name": "Finnish"},
+                    {"code": "vi", "name": "Vietnamese"}
+                ],
+                "supported_formats": ["json", "text", "srt", "vtt", "verbose_json"]
+            }
+        ]
+        return {"models": models}
+
+    @api.get("/api/v1/audio/transcription/formats", tags=["Audio Transcription"])
+    async def api_get_transcription_formats():
+        """
+        Get available transcription formats
+        
+        Returns information about supported output formats for audio transcription.
+        """
+        formats = [
+            {
+                "id": "json",
+                "name": "JSON",
+                "description": "Simple JSON containing the transcription text (default)",
+                "mime_type": "application/json",
+                "extension": ".json"
+            },
+            {
+                "id": "text",
+                "name": "Text",
+                "description": "Plain text transcription",
+                "mime_type": "text/plain",
+                "extension": ".text"
+            },
+            {
+                "id": "srt",
+                "name": "SRT",
+                "description": "SubRip subtitle format with timestamps",
+                "mime_type": "application/x-subrip",
+                "extension": ".srt"
+            },
+            {
+                "id": "vtt",
+                "name": "VTT",
+                "description": "WebVTT subtitle format with timestamps",
+                "mime_type": "text/vtt",
+                "extension": ".vtt"
+            },
+            {
+                "id": "verbose_json",
+                "name": "Verbose JSON",
+                "description": "Detailed JSON with additional information including word-level timestamps",
+                "mime_type": "application/json",
+                "extension": ".json"
+            }
+        ]
+        return {"formats": formats}
+
+# Example test function
+def test():
+    """
+    Test function for the transcribe module.
+    
+    This function tests the core functionality of the transcribe module
+    without requiring external dependencies or actual transcription.
+    """
+    print("Running transcribe layout test...")
+    
+    # Test the audio file duration detection function
+    import numpy as np
+    from scipy.io import wavfile
+    import os
+    
+    # Create a temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a test audio file
+        sample_rate = 16000
+        duration = 2  # seconds
+        audio_data = np.sin(2 * np.pi * 440 * np.linspace(0, duration, int(sample_rate * duration)))
+        
+        # Save as WAV
+        test_file = os.path.join(temp_dir, "test_audio.wav")
+        wavfile.write(test_file, sample_rate, audio_data.astype(np.float32))
+        
+        # Test duration detection
+        detected_duration = get_audio_duration(test_file)
+        expected_duration = duration
+        
+        # Allow for small floating point differences
+        duration_diff = abs(detected_duration - expected_duration)
+        if duration_diff > 0.1:  # Allow 100ms difference for processing overhead
+            raise ValueError(f"Duration detection failed. Expected ~{expected_duration}s, got {detected_duration}s")
+        
+        print(f"Duration detection passed: {detected_duration}s")
+        
+        # Test audio loading
+        audio, sr = load_audio_file(test_file)
+        if sr != sample_rate:
+            raise ValueError(f"Sample rate mismatch. Expected {sample_rate}, got {sr}")
+        
+        if len(audio) != int(sample_rate * duration):
+            raise ValueError(f"Audio length mismatch. Expected {int(sample_rate * duration)}, got {len(audio)}")
+        
+        print(f"Audio loading passed: {len(audio)} samples at {sr}Hz")
+        
+        # Test audio preview generation
+        preview_image = get_audio_preview(test_file)
+        if preview_image is None or not isinstance(preview_image, np.ndarray):
+            raise ValueError("Audio preview generation failed")
+        
+        print(f"Audio preview generation passed: {preview_image.shape}")
+    
+    print("Transcribe layout test completed successfully!")
+    return True 

@@ -1,11 +1,7 @@
-import os
-import tempfile
 import xml.etree.ElementTree as ET
 from typing import Union, Tuple
 
-import ffmpeg
 import numpy as np
-import soundfile as sf
 from pydub import AudioSegment
 
 

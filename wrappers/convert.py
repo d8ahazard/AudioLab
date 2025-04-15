@@ -125,3 +125,90 @@ class Convert(BaseWrapper):
             project.add_output("converted", outputs)
             pj_outputs.append(project)
         return pj_outputs
+        
+    def test(self):
+        """
+        Test method for the Convert wrapper.
+        
+        This method creates a test WAV file and converts it to MP3 format to verify
+        the conversion functionality works correctly.
+        """
+        print("Running Convert wrapper test...")
+        
+        # Create temporary directory for test
+        import tempfile
+        import shutil
+        import numpy as np
+        from scipy.io import wavfile
+        from util.data_classes import ProjectFiles
+        import os.path
+        
+        temp_dir = tempfile.mkdtemp(prefix="audiolab_convert_test_")
+        print(f"Created temporary directory at: {temp_dir}")
+        
+        try:
+            # Create a simple test signal
+            duration = 2  # seconds
+            sample_rate = 44100
+            t = np.linspace(0, duration, sample_rate * duration)
+            
+            # Generate a simple sine wave
+            signal = 0.5 * np.sin(2 * np.pi * 440 * t)  # 440 Hz A note
+            
+            # Save as WAV file
+            wav_path = os.path.join(temp_dir, "test_audio.wav")
+            wavfile.write(wav_path, sample_rate, signal.astype(np.float32))
+            
+            print(f"Created test WAV file at: {wav_path}")
+            
+            # Create ProjectFiles object for testing
+            project = ProjectFiles(wav_path)
+            project.project_dir = temp_dir
+            
+            # Define a simple callback function
+            def test_callback(progress, message, total):
+                print(f"Progress: {progress}/{total} - {message}")
+            
+            # Process the test data with different bitrates
+            for bitrate in ["128k", "320k"]:
+                print(f"\nTesting conversion with bitrate: {bitrate}")
+                results = self.process_audio([project], callback=test_callback, bitrate=bitrate)
+                
+                if not results:
+                    raise Exception("Test failed: No results returned")
+                
+                # Check if output file was created
+                project_output = results[0]
+                if len(project_output.last_outputs) == 0:
+                    raise Exception("Test failed: No output files created")
+                    
+                mp3_output = project_output.last_outputs[0]
+                if not os.path.exists(mp3_output):
+                    raise Exception(f"Test failed: Output MP3 file not found at {mp3_output}")
+                    
+                # Check if output file has .mp3 extension
+                if not mp3_output.endswith(".mp3"):
+                    raise Exception(f"Test failed: Output file does not have .mp3 extension: {mp3_output}")
+                
+                # Check file size to ensure it's not empty
+                file_size = os.path.getsize(mp3_output)
+                if file_size == 0:
+                    raise Exception(f"Test failed: Output MP3 file is empty: {mp3_output}")
+                    
+                print(f"Test successful! MP3 file created at: {mp3_output} (size: {file_size} bytes)")
+                
+                # Clean up MP3 file before next test
+                os.remove(mp3_output)
+                
+        except Exception as e:
+            print(f"Test error: {e}")
+            raise
+        finally:
+            # Clean up the temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as cleanup_error:
+                print(f"Warning: Could not clean up temporary directory: {cleanup_error}")
+        
+        print("Convert wrapper test completed successfully!")

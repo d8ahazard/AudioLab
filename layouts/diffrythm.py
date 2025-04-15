@@ -2,40 +2,35 @@
 DiffRhythm UI Layout for AudioLab.
 """
 
-import os
 import logging
-import torch
-import gradio as gr
-from pathlib import Path
-import tempfile
+import os
+import shutil
 import time
 import zipfile
-import shutil
-import random
-from typing import Optional, Dict, List
-import json
-from pydub import AudioSegment
+from typing import Optional
+
+import gradio as gr
 import numpy as np
+import torch
+from fastapi import Body, HTTPException
 from muq import MuQMuLan
+from pydantic import BaseModel, Field
+from pydub import AudioSegment
+
 from handlers.args import ArgHandler
 from handlers.config import output_path, model_path
-from handlers.download import download_files
 from layouts.rvc_train import separate_vocal
 from layouts.transcribe import process_transcription
 from modules.diffrythm.infer import (
-    prepare_model, 
-    get_lrc_token, 
-    get_style_prompt, 
-    get_negative_style_prompt, 
-    get_reference_latent, 
+    prepare_model,
+    get_lrc_token,
+    get_style_prompt,
+    get_negative_style_prompt,
+    get_reference_latent,
     inference,
     check_download_model
 )
-
-from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks, Body
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
-import base64
+from modules.diffrythm.train.train import train_diffrythm, TrainingArgs
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -46,22 +41,24 @@ logger = logging.getLogger("ADLB.DiffRhythm")
 AVAILABLE_MODELS = ["ASLP-lab/DiffRhythm-base", "ASLP-lab/DiffRhythm-full"]
 MAX_LENGTHS = {"ASLP-lab/DiffRhythm-base": 95, "ASLP-lab/DiffRhythm-full": 285}
 
+
 def download_output_files(output_files):
     """Create a zip file of all output files and return the path to download."""
     if not output_files or len(output_files) == 0:
         return None
-    
+
     # Create a zip file with all the output files
     output_dir = os.path.dirname(output_files[0])
     zip_filename = os.path.join(output_dir, "diffrythm_outputs.zip")
-    
+
     with zipfile.ZipFile(zip_filename, 'w') as zipf:
         for file in output_files:
             if os.path.exists(file):
                 # Add file to zip with just the filename, not the full path
                 zipf.write(file, os.path.basename(file))
-    
+
     return zip_filename
+
 
 def list_diffrythm_projects():
     """List all available DiffRhythm projects in the output directory."""
@@ -71,6 +68,7 @@ def list_diffrythm_projects():
         projects = [d for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
     return projects
 
+
 def convert_to_latents(audio_path, vae_model, muq_model):
     """Convert audio to latents and style embeddings"""
     try:
@@ -78,44 +76,45 @@ def convert_to_latents(audio_path, vae_model, muq_model):
         audio = AudioSegment.from_file(audio_path)
         audio = audio.set_channels(2)  # Convert to stereo
         audio = audio.set_frame_rate(44100)  # Convert to 44.1kHz
-        
+
         # Convert to tensor
         audio_tensor = torch.tensor(audio.get_array_of_samples(), dtype=torch.float32)
         audio_tensor = audio_tensor.reshape(-1, 2)  # Reshape to [samples, channels]
         audio_tensor = audio_tensor / 32768.0  # Normalize to [-1, 1]
-        
+
         # Convert to batch format [batch, channels, samples]
         audio_tensor = audio_tensor.transpose(0, 1).unsqueeze(0)
-        
+
         # Get device
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if device == "cuda" else torch.float32
-        
+
         # Move models to device
         vae_model = vae_model.to(device)
         muq_model = muq_model.to(device)
-        
+
         # Convert audio to latents using VAE
         with torch.inference_mode():
             audio_tensor = audio_tensor.to(device, dtype)
             latents = vae_model.encode_export(audio_tensor)
-            
+
             # Get style embeddings using MuQ
             style_emb = muq_model.get_music_embedding(audio_tensor, use_tensor=True)
-            
+
         return latents.cpu().numpy(), style_emb.cpu().numpy()
-        
+
     except Exception as e:
         logger.error(f"Error converting {audio_path} to latents: {e}")
         return None, None
 
+
 def generate_song(
-    lrc_path, 
-    style_prompt, 
-    ref_audio_path, 
-    model_name, 
-    chunked, 
-    progress=gr.Progress(track_tqdm=True)
+        lrc_path,
+        style_prompt,
+        ref_audio_path,
+        model_name,
+        chunked,
+        progress=gr.Progress(track_tqdm=True)
 ):
     """
     Generate a song using DiffRhythm.
@@ -135,25 +134,25 @@ def generate_song(
         # Set device
         device = "cuda" if torch.cuda.is_available() else "cpu"
         progress(0.1, f"Using device: {device}")
-        
+
         # Determine audio length based on model
         audio_length = MAX_LENGTHS.get(model_name, 95)
         max_frames = 2048 if audio_length == 95 else 6144
-        
+
         # Check and download model if needed
         progress(0.15, f"Checking model availability: {model_name}...")
         model_path = check_download_model(model_name)
         if model_path:
             progress(0.2, f"Model found at: {model_path}")
-        
+
         # Load models and run inference with appropriate precision
         using_half = device == "cuda"
         progress(0.25, f"Loading models to {device} with {'half' if using_half else 'full'} precision...")
-        
+
         # Use mixed precision on CUDA to match the original implementation
         with torch.amp.autocast('cuda' if using_half else 'cpu'):
             cfm, tokenizer, muq, vae = prepare_model(max_frames, device, repo_id=model_name)
-            
+
             # Process lyrics if provided
             if lrc_path and os.path.exists(lrc_path):
                 progress(0.3, "Processing lyrics...")
@@ -162,11 +161,11 @@ def generate_song(
             else:
                 progress(0.3, "No lyrics file provided. Generating instrumental music.")
                 lrc = ""
-            
+
             progress(0.4, "Preparing model inputs...")
             # Get tokens and other inputs for inference
             lrc_prompt, start_time = get_lrc_token(max_frames, lrc, tokenizer, device)
-            
+
             # Style prompt handling
             if ref_audio_path and os.path.exists(ref_audio_path):
                 progress(0.5, "Processing reference audio...")
@@ -174,10 +173,10 @@ def generate_song(
             else:
                 progress(0.5, "Using text style prompt...")
                 style_prompt_emb = get_style_prompt(muq, prompt=style_prompt)
-            
+
             negative_style_prompt = get_negative_style_prompt(device)
             latent_prompt = get_reference_latent(device, max_frames)
-            
+
             # Generate song
             progress(0.6, f"Generating a {audio_length}s song...")
             generated_song = inference(
@@ -191,24 +190,25 @@ def generate_song(
                 start_time=start_time,
                 chunked=chunked,
             )
-        
+
         # Save output
         os.makedirs(os.path.join(output_path, "diffrythm"), exist_ok=True)
         timestamp = int(time.time())
         output_path_file = os.path.join(output_path, "diffrythm", f"diffrythm_output_{timestamp}.wav")
-        
+
         progress(0.9, f"Saving output to {output_path_file}...")
         import torchaudio
         torchaudio.save(output_path_file, generated_song, sample_rate=44100)
-        
+
         progress(1.0, "Generation complete!")
         return output_path_file, f"Generated a {audio_length}s song successfully!"
-        
+
     except Exception as e:
         logger.error(f"Error generating song: {e}")
         import traceback
         traceback.print_exc()
         return None, f"Error: {str(e)}"
+
 
 def send_to_process(file_to_send, existing_inputs):
     """
@@ -223,25 +223,27 @@ def send_to_process(file_to_send, existing_inputs):
     """
     if not file_to_send:
         return existing_inputs
-    
+
     # If the existing_inputs is None, initialize it as an empty list
     if existing_inputs is None:
         existing_inputs = []
-        
+
     # Add the file to the existing inputs
     existing_inputs.append(file_to_send)
-    
+
     return existing_inputs
+
 
 def render(arg_handler: ArgHandler):
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
-    
+
     with gr.Tabs():
         # Inference Tab
         with gr.TabItem("Generate", id="diffrythm_generate"):
             gr.Markdown("# 🎵 DiffRhythm Song Generation")
-            gr.Markdown("Generate full-length songs with lyrics and style prompts. Create high-quality stereo audio at 44.1kHz using the latent diffusion model.")
-            
+            gr.Markdown(
+                "Generate full-length songs with lyrics and style prompts. Create high-quality stereo audio at 44.1kHz using the latent diffusion model.")
+
             with gr.Row():
                 # Left Column - Settings
                 with gr.Column():
@@ -253,7 +255,7 @@ def render(arg_handler: ArgHandler):
                         elem_id="diffrythm_model",
                         elem_classes="hintitem"
                     )
-                    
+
                     model_info = gr.Markdown(
                         """
                         **Model Capabilities:**
@@ -261,14 +263,14 @@ def render(arg_handler: ArgHandler):
                         - DiffRhythm-full: 285s songs
                         """
                     )
-                    
+
                     chunked = gr.Checkbox(
                         label="Chunked Decoding (lower VRAM usage)",
                         value=True,
                         elem_classes="hintitem",
                         elem_id="diffrythm_chunked"
                     )
-                    
+
                     style_prompt = gr.Textbox(
                         label="Style Prompt",
                         placeholder="e.g., Pop Emotional Piano, Jazzy Nightclub Vibe, Indie folk ballad",
@@ -276,14 +278,14 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_style_prompt"
                     )
-                    
+
                     use_ref_audio = gr.Checkbox(
                         label="Use Reference Audio",
                         value=False,
                         elem_classes="hintitem",
                         elem_id="diffrythm_use_ref_audio"
                     )
-                    
+
                     ref_audio_path = gr.Audio(
                         label="Reference Audio",
                         type="filepath",
@@ -291,7 +293,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_ref_audio"
                     )
-                
+
                 # Middle Column - Lyrics
                 with gr.Column():
                     gr.Markdown("### 🎤 Lyrics Input")
@@ -302,7 +304,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_lyrics"
                     )
-                    
+
                     upload_lrc = gr.File(
                         label="Upload LRC File",
                         file_count="single",
@@ -310,13 +312,13 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_upload_lrc"
                     )
-                    
+
                     example_lrc = gr.Button(
                         "Load Example LRC",
                         elem_classes="hintitem",
                         elem_id="diffrythm_example_lrc"
                     )
-                    
+
                     gr.Markdown(
                         """
                         **Note:**
@@ -325,7 +327,7 @@ def render(arg_handler: ArgHandler):
                         - For instrumental music, leave lyrics empty
                         """
                     )
-                
+
                 # Right Column - Actions & Output
                 with gr.Column():
                     gr.Markdown("### 🎮 Actions")
@@ -336,19 +338,19 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_generate_btn"
                         )
-                        
+
                         SEND_TO_PROCESS_BUTTON = gr.Button(
                             "Send to Process",
                             elem_classes="hintitem",
                             elem_id="diffrythm_send_to_process"
                         )
-                        
+
                         download_btn = gr.Button(
                             "Download",
                             elem_classes="hintitem",
                             elem_id="diffrythm_download"
                         )
-                    
+
                     gr.Markdown("### 🎶 Output")
                     OUTPUT_AUDIO = gr.Audio(
                         label="Generated Song",
@@ -356,20 +358,20 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_output_audio"
                     )
-                    
+
                     output_message = gr.Textbox(
                         label="Output Message",
                         elem_classes="hintitem",
                         elem_id="diffrythm_output_message"
                     )
-            
+
             # Set up the event listeners
             def load_lrc_from_file(file):
                 if not file:
                     return ""
                 with open(file.name, "r", encoding="utf-8") as f:
                     return f.read()
-            
+
             def load_example_lrc():
                 example = """[00:00.00]This is an example LRC file
 [00:05.00]Each line has a timestamp in brackets
@@ -380,64 +382,65 @@ def render(arg_handler: ArgHandler):
 [00:30.00]This helps create properly timed songs with lyrics
 """
                 return example
-            
+
             def toggle_ref_audio(use_ref):
                 return gr.update(visible=use_ref)
-            
+
             # Connect UI elements
             upload_lrc.change(load_lrc_from_file, inputs=[upload_lrc], outputs=[lyrics_input])
             example_lrc.click(load_example_lrc, inputs=[], outputs=[lyrics_input])
             use_ref_audio.change(toggle_ref_audio, inputs=[use_ref_audio], outputs=[ref_audio_path])
-            
+
             # Handle temporary LRC file creation
             def save_lrc_to_temp(lyrics_text):
                 if not lyrics_text or lyrics_text.strip() == "":
                     return None
-                
+
                 temp_dir = os.path.join(output_path, "diffrythm", "temp")
                 os.makedirs(temp_dir, exist_ok=True)
-                
+
                 lrc_path = os.path.join(temp_dir, f"lyrics_{int(time.time())}.lrc")
                 with open(lrc_path, "w", encoding="utf-8") as f:
                     f.write(lyrics_text)
-                
+
                 return lrc_path
-            
+
             # Generation function that handles LRC creation
             def generate_with_lyrics(lyrics_text, style_prompt, ref_audio_path, model_name, chunked):
                 # Save lyrics to a temporary file if provided
                 lrc_path = save_lrc_to_temp(lyrics_text) if lyrics_text else None
-                
+
                 # Skip ref_audio if use_ref_audio is False
                 actual_ref_path = ref_audio_path if use_ref_audio.value else None
-                
+
                 # Call the actual generation function
                 return generate_song(lrc_path, style_prompt, actual_ref_path, model_name, chunked)
-            
+
             # Connect the generate button
             generate_btn.click(
                 fn=generate_with_lyrics,
                 inputs=[lyrics_input, style_prompt, ref_audio_path, model_dropdown, chunked],
                 outputs=[OUTPUT_AUDIO, output_message]
             )
-            
+
             # Download button
             def prepare_download(audio_path):
                 if not audio_path or not os.path.exists(audio_path):
                     return None
                 return audio_path
-            
+
             download_btn.click(
                 fn=prepare_download,
                 inputs=[OUTPUT_AUDIO],
                 outputs=[gr.File(label="Download Generated Song")]
             )
-        
+
         # Training Tab
         with gr.TabItem("Train", id="diffrythm_train"):
             gr.Markdown("# 🎵 DiffRhythm Model Training")
-            gr.Markdown("Train custom DiffRhythm models with your own audio data. Features automatic vocal separation, transcription, and style extraction.")
-            
+            gr.Markdown(
+                "Train custom DiffRhythm models with your own audio data. Features automatic vocal separation, transcription, and style extraction.")
+
             with gr.Row():
                 # Left Column - Settings
                 with gr.Column():
@@ -448,7 +451,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_project_name"
                     )
-                    
+
                     with gr.Row():
                         existing_project = gr.Dropdown(
                             label="Existing Project",
@@ -463,7 +466,7 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_refresh_button"
                         )
-                    
+
                     base_model = gr.Dropdown(
                         label="Base Model",
                         choices=["ASLP-lab/DiffRhythm-base", "ASLP-lab/DiffRhythm-full"],
@@ -471,7 +474,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_base_model"
                     )
-                    
+
                     with gr.Accordion("Training Parameters", open=False):
                         batch_size = gr.Slider(
                             minimum=1,
@@ -482,7 +485,7 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_batch_size"
                         )
-                        
+
                         epochs = gr.Slider(
                             minimum=1,
                             maximum=500,
@@ -492,14 +495,14 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_epochs"
                         )
-                        
+
                         learning_rate = gr.Number(
                             label="Learning Rate",
                             value=7.5e-5,
                             elem_classes="hintitem",
                             elem_id="diffrythm_learning_rate"
                         )
-                        
+
                         num_workers = gr.Slider(
                             minimum=1,
                             maximum=16,
@@ -509,35 +512,35 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_num_workers"
                         )
-                        
+
                         save_steps = gr.Number(
                             label="Save Every N Steps",
                             value=5000,
                             elem_classes="hintitem",
                             elem_id="diffrythm_save_steps"
                         )
-                        
+
                         warmup_steps = gr.Number(
                             label="Warmup Steps",
                             value=20,
                             elem_classes="hintitem",
                             elem_id="diffrythm_warmup_steps"
                         )
-                        
+
                         max_grad_norm = gr.Number(
                             label="Max Gradient Norm",
                             value=1.0,
                             elem_classes="hintitem",
                             elem_id="diffrythm_max_grad_norm"
                         )
-                        
+
                         grad_accumulation = gr.Number(
                             label="Gradient Accumulation Steps",
                             value=1,
                             elem_classes="hintitem",
                             elem_id="diffrythm_grad_accum"
                         )
-                        
+
                         with gr.Row():
                             audio_drop_prob = gr.Slider(
                                 minimum=0.0,
@@ -548,7 +551,7 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem",
                                 elem_id="diffrythm_audio_drop"
                             )
-                            
+
                             style_drop_prob = gr.Slider(
                                 minimum=0.0,
                                 maximum=1.0,
@@ -558,7 +561,7 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem",
                                 elem_id="diffrythm_style_drop"
                             )
-                            
+
                             lrc_drop_prob = gr.Slider(
                                 minimum=0.0,
                                 maximum=1.0,
@@ -568,7 +571,7 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem",
                                 elem_id="diffrythm_lrc_drop"
                             )
-                
+
                 # Middle Column - Input
                 with gr.Column():
                     gr.Markdown("### 🎵 Input")
@@ -579,7 +582,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_input_files"
                     )
-                    
+
                     with gr.Row():
                         with gr.Column(scale=2):
                             input_url = gr.Textbox(
@@ -595,7 +598,7 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem",
                                 elem_id="diffrythm_input_url_button"
                             )
-                    
+
                     with gr.Row():
                         separate_vocals = gr.Checkbox(
                             label="Separate Vocals",
@@ -603,14 +606,14 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_separate_vocals"
                         )
-                        
+
                         transcribe_audio = gr.Checkbox(
                             label="Transcribe Audio",
                             value=True,
                             elem_classes="hintitem",
                             elem_id="diffrythm_transcribe_audio"
                         )
-                
+
                 # Right Column - Actions & Output
                 with gr.Column():
                     gr.Markdown("### 🎮 Actions")
@@ -618,17 +621,17 @@ def render(arg_handler: ArgHandler):
                         preprocess_btn = gr.Button(
                             "Preprocess Data",
                             variant="primary",
-                        elem_classes="hintitem",
+                            elem_classes="hintitem",
                             elem_id="diffrythm_preprocess"
                         )
-                        
+
                         train_btn = gr.Button(
                             "Start Training",
                             variant="primary",
-                        elem_classes="hintitem",
+                            elem_classes="hintitem",
                             elem_id="diffrythm_train_btn"
                         )
-                        
+
                         cancel_btn = gr.Button(
                             "Cancel",
                             variant="secondary",
@@ -636,7 +639,7 @@ def render(arg_handler: ArgHandler):
                             elem_classes="hintitem",
                             elem_id="diffrythm_cancel"
                         )
-                    
+
                     gr.Markdown("### 📊 Output")
                     info_box = gr.Textbox(
                         label="Status",
@@ -644,7 +647,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_status"
                     )
-                    
+
                     model_output = gr.File(
                         label="Trained Model",
                         file_count="single",
@@ -653,20 +656,20 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="diffrythm_model_output"
                     )
-            
+
             # Event handlers
             def list_projects():
                 projects_dir = os.path.join(output_path, "diffrythm_train")
                 if not os.path.exists(projects_dir):
                     return []
-                return [""] + [d for d in os.listdir(projects_dir) 
-                             if os.path.isdir(os.path.join(projects_dir, d))]
-            
+                return [""] + [d for d in os.listdir(projects_dir)
+                               if os.path.isdir(os.path.join(projects_dir, d))]
+
             refresh_button.click(
                 fn=list_projects,
                 outputs=[existing_project]
             )
-            
+
             def update_time_info(input_files):
                 if not input_files:
                     return gr.update(value="")
@@ -681,13 +684,13 @@ def render(arg_handler: ArgHandler):
                 return gr.update(
                     value=f"Total length of input files: {total_length:.2f} minutes.\nRecommended is 30-60 minutes."
                 )
-            
+
             input_files.change(
                 fn=update_time_info,
                 inputs=[input_files],
                 outputs=[info_box]
             )
-            
+
             def download_with_captions(url: str, output_dir: str) -> tuple[str, Optional[str]]:
                 """Download a video/audio file and its captions if available
                 
@@ -700,7 +703,7 @@ def render(arg_handler: ArgHandler):
                 """
                 try:
                     import yt_dlp
-                    
+
                     # Configure yt-dlp options
                     ydl_opts = {
                         'format': 'bestaudio/best',
@@ -709,42 +712,42 @@ def render(arg_handler: ArgHandler):
                             'preferredcodec': 'wav',
                         }],
                         'writeautomaticsub': True,  # Auto-generated subs if available
-                        'writesubtitles': True,     # Uploaded subs if available
-                        'subtitlesformat': 'vtt',   # VTT format includes timing info
+                        'writesubtitles': True,  # Uploaded subs if available
+                        'subtitlesformat': 'vtt',  # VTT format includes timing info
                         'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
                         'quiet': True,
                         'no_warnings': True
                     }
-                    
+
                     # Download video and subs
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                         audio_path = os.path.join(output_dir, f"{info['title']}.wav")
-                        
+
                         # Check for downloaded subtitles
                         base_path = os.path.join(output_dir, info['title'])
                         sub_path = None
-                        
+
                         # Check for manual subs first, then auto subs
                         sub_files = [
                             f"{base_path}.{info['language']}.vtt",  # Manual subs
                             f"{base_path}.{info['language']}-orig.vtt",  # Manual subs (alternate)
                             f"{base_path}.{info['language']}.automated.vtt",  # Auto subs
                         ]
-                        
+
                         for sf in sub_files:
                             if os.path.exists(sf):
                                 sub_path = sf
                                 break
-                        
+
                         # Convert VTT to LRC if we have subs
                         if sub_path:
                             lrc_path = os.path.join(output_dir, f"{info['title']}.lrc")
                             convert_vtt_to_lrc(sub_path, lrc_path)
                             return audio_path, lrc_path
-                            
+
                         return audio_path, None
-                        
+
                 except Exception as e:
                     logger.error(f"Error downloading {url}: {e}")
                     return None, None
@@ -758,7 +761,7 @@ def render(arg_handler: ArgHandler):
                 """
                 try:
                     import webvtt
-                    
+
                     with open(lrc_path, 'w', encoding='utf-8') as f:
                         for caption in webvtt.read(vtt_path):
                             # Convert timestamp to LRC format
@@ -769,15 +772,15 @@ def render(arg_handler: ArgHandler):
                             else:  # MM:SS.mmm
                                 mins = int(start_parts[0])
                                 secs = float(start_parts[1])
-                            
+
                             # Format as [MM:SS.xx]
                             timestamp = f"[{mins:02d}:{secs:05.2f}]"
-                            
+
                             # Write each line
                             for line in caption.text.strip().split('\n'):
                                 if line.strip():
                                     f.write(f"{timestamp}{line.strip()}\n")
-                
+
                 except Exception as e:
                     logger.error(f"Error converting subtitles: {e}")
 
@@ -794,11 +797,11 @@ def render(arg_handler: ArgHandler):
                 """
                 if not urls or urls.strip() == "":
                     return existing_files if existing_files else []
-                
+
                 # Create temp directory for downloads
                 temp_dir = os.path.join(output_path, "diffrythm", "downloads")
                 os.makedirs(temp_dir, exist_ok=True)
-                
+
                 # Process each URL
                 new_files = []
                 for url in urls.strip().split('\n'):
@@ -808,11 +811,11 @@ def render(arg_handler: ArgHandler):
                             new_files.append(audio_path)
                         if caption_path and include_captions:
                             new_files.append(caption_path)
-                
+
                 # Combine with existing files
                 if existing_files:
                     new_files.extend(existing_files)
-                
+
                 return new_files
 
             # Update the input_url_button click handler
@@ -821,88 +824,89 @@ def render(arg_handler: ArgHandler):
                 inputs=[input_url, input_files],
                 outputs=[input_files]
             )
-            
+
             def preprocess_data(
-                project_name,
-                existing_project,
-                input_files,
-                separate_vocals,
-                transcribe_audio,
-                progress=gr.Progress()
+                    project_name,
+                    existing_project,
+                    input_files,
+                    separate_vocals,
+                    transcribe_audio,
+                    progress=gr.Progress()
             ):
                 try:
                     if not project_name and not existing_project:
                         return "Please provide a project name"
-                    
+
                     if project_name and existing_project:
                         return "Please provide only one project name"
-                    
+
                     if not input_files:
                         return "Please provide input files"
-                    
+
                     # Use existing project name if provided
                     if existing_project:
                         project_name = existing_project
-                    
+
                     # Create project directory
                     project_dir = os.path.join(output_path, "diffrythm_train", project_name)
                     os.makedirs(project_dir, exist_ok=True)
-                    
+
                     # Create dataset directories
                     latent_dir = os.path.join(project_dir, "latent")
                     style_dir = os.path.join(project_dir, "style")
                     lrc_dir = os.path.join(project_dir, "lrc")
                     raw_dir = os.path.join(project_dir, "raw")
-                    
+
                     for d in [latent_dir, style_dir, lrc_dir, raw_dir]:
                         os.makedirs(d, exist_ok=True)
-                    
+
                     progress(0.1, "Processing input files...")
-                    
+
                     # Load models for latent conversion
                     progress(0.15, "Loading models...")
                     vae_ckpt_path = check_download_model(repo_id="ASLP-lab/DiffRhythm-vae")
                     vae = torch.jit.load(vae_ckpt_path)
-                    
+
                     muq_model_dir = os.path.join(model_path, "diffrythm", "muq")
                     os.makedirs(muq_model_dir, exist_ok=True)
                     muq = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large", cache_dir=muq_model_dir)
-                    
+
                     # Process each input file
                     processed_files = []
                     for idx, f in enumerate(input_files):
                         try:
-                            progress((idx + 1) / len(input_files), 
-                                   f"Processing file {idx + 1}/{len(input_files)}")
-                            
+                            progress((idx + 1) / len(input_files),
+                                     f"Processing file {idx + 1}/{len(input_files)}")
+
                             # Get base name without extension
                             base_name = os.path.splitext(os.path.basename(f))[0]
-                            
+
                             # Copy original file to raw directory
                             raw_path = os.path.join(raw_dir, f"{base_name}.wav")
                             if not os.path.exists(raw_path):
                                 shutil.copy2(f, raw_path)
-                            
+
                             # Separate vocals if requested
                             if separate_vocals:
-                                progress((idx + 1) / len(input_files), 
-                                       f"Separating vocals for {base_name}")
+                                progress((idx + 1) / len(input_files),
+                                         f"Separating vocals for {base_name}")
                                 vocal_outputs, _ = separate_vocal([raw_path])
                                 if vocal_outputs:
                                     raw_path = vocal_outputs[0]
-                            
+
                             # Transcribe if requested and no matching lyrics file
+                            matching_lyrics = None
+
                             if transcribe_audio:
-                                matching_lyrics = None
                                 if input_files:
                                     for lf in input_files:
                                         if os.path.splitext(os.path.basename(lf))[0] == base_name:
                                             matching_lyrics = lf
                                             break
-                                
+
                                 if not matching_lyrics:
-                                    progress((idx + 1) / len(input_files), 
-                                           f"Transcribing {base_name}")
+                                    progress((idx + 1) / len(input_files),
+                                             f"Transcribing {base_name}")
                                     transcription = process_transcription(
                                         [raw_path],
                                         language="auto",
@@ -911,47 +915,47 @@ def render(arg_handler: ArgHandler):
                                     )
                                     if transcription[1]:  # If transcription files were created
                                         # Find the .txt file
-                                        txt_file = [f for f in transcription[1] 
-                                                  if f.endswith('.txt')][0]
+                                        txt_file = [f for f in transcription[1]
+                                                    if f.endswith('.txt')][0]
                                         matching_lyrics = txt_file
-                            
+
                             # Convert audio to latents and style embeddings
-                            progress((idx + 1) / len(input_files), 
-                                   f"Converting {base_name} to latents")
-                            
+                            progress((idx + 1) / len(input_files),
+                                     f"Converting {base_name} to latents")
+
                             latents, style_emb = convert_to_latents(raw_path, vae, muq)
                             if latents is not None and style_emb is not None:
                                 # Save latents and style embeddings
                                 latent_path = os.path.join(latent_dir, f"{base_name}.npy")
                                 style_path = os.path.join(style_dir, f"{base_name}.npy")
                                 lrc_path = os.path.join(lrc_dir, f"{base_name}.lrc")
-                                
+
                                 np.save(latent_path, latents)
                                 np.save(style_path, style_emb)
-                                
+
                                 # Copy or create LRC file
                                 if matching_lyrics:
                                     shutil.copy2(matching_lyrics, lrc_path)
-                                
+
                                 processed_files.append(
                                     f"{raw_path}|{lrc_path}|{latent_path}|{style_path}"
                                 )
-                            
+
                         except Exception as e:
                             logger.error(f"Error processing file {f}: {e}")
                             continue
-                    
+
                     # Create train.scp file
                     scp_path = os.path.join(project_dir, "train.scp")
                     with open(scp_path, "w") as f:
                         f.write("\n".join(processed_files))
-                    
+
                     return "Preprocessing complete! Ready to start training."
-                    
+
                 except Exception as e:
                     logger.error(f"Error during preprocessing: {e}")
                     return f"Error during preprocessing: {str(e)}"
-            
+
             preprocess_btn.click(
                 fn=preprocess_data,
                 inputs=[
@@ -963,45 +967,45 @@ def render(arg_handler: ArgHandler):
                 ],
                 outputs=[info_box]
             )
-            
+
             def start_training(
-                project_name,
-                existing_project,
-                base_model,
-                batch_size,
-                epochs,
-                learning_rate,
-                num_workers,
-                save_steps,
-                warmup_steps,
-                max_grad_norm,
-                grad_accumulation,
-                audio_drop_prob,
-                style_drop_prob,
-                lrc_drop_prob,
-                progress=gr.Progress()
+                    project_name,
+                    existing_project,
+                    base_model,
+                    batch_size,
+                    epochs,
+                    learning_rate,
+                    num_workers,
+                    save_steps,
+                    warmup_steps,
+                    max_grad_norm,
+                    grad_accumulation,
+                    audio_drop_prob,
+                    style_drop_prob,
+                    lrc_drop_prob,
+                    progress=gr.Progress()
             ):
                 try:
                     if not project_name and not existing_project:
                         return "Please provide a project name"
-                    
+
                     if project_name and existing_project:
                         return "Please provide only one project name"
-                    
+
                     # Use existing project name if provided
                     if existing_project:
                         project_name = existing_project
-                    
+
                     # Check if project exists and has been preprocessed
                     project_dir = os.path.join(output_path, "diffrythm_train", project_name)
                     train_scp = os.path.join(project_dir, "train.scp")
-                    
+
                     if not os.path.exists(project_dir) or not os.path.exists(train_scp):
                         return "Project not found or data not preprocessed. Please preprocess data first."
-                    
+
                     # Import training function
                     from modules.diffrythm.train.train import TrainingArgs, train
-                    
+
                     # Create training arguments
                     args = TrainingArgs(
                         project_dir=project_dir,
@@ -1018,25 +1022,25 @@ def render(arg_handler: ArgHandler):
                         style_drop_prob=style_drop_prob,
                         lrc_drop_prob=lrc_drop_prob,
                         max_frames=2048,  # Fixed for now, could be made configurable
-                        grad_ckpt=True,   # Enable gradient checkpointing by default
-                        reset_lr=False,   # Don't reset learning rate by default
+                        grad_ckpt=True,  # Enable gradient checkpointing by default
+                        reset_lr=False,  # Don't reset learning rate by default
                         resumable_with_seed=42  # Fixed seed for reproducibility
                     )
-                    
+
                     # Start training with progress updates
-                    final_model_path = train(args, progress=progress)
-                    
+                    final_model_path = train_diffrythm(args, progress=progress)
+
                     if final_model_path and os.path.exists(final_model_path):
                         return f"Training complete! Model saved to {final_model_path}"
                     else:
                         return "Training completed but model save failed."
-                    
+
                 except Exception as e:
                     logger.error(f"Error during training: {e}")
                     import traceback
                     traceback.print_exc()
                     return f"Error during training: {str(e)}"
-            
+
             train_btn.click(
                 fn=start_training,
                 inputs=[
@@ -1058,19 +1062,21 @@ def render(arg_handler: ArgHandler):
                 outputs=[info_box]
             )
 
+
 def listen():
     """Set up event listeners for inter-tab communication."""
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
-    
+
     arg_handler = ArgHandler()
     process_inputs = arg_handler.get_element("main", "process_inputs")
-    
-    if process_inputs and SEND_TO_PROCESS_BUTTON:
+
+    if process_inputs and isinstance(SEND_TO_PROCESS_BUTTON, gr.Button):
         SEND_TO_PROCESS_BUTTON.click(
             fn=send_to_process,
             inputs=[OUTPUT_AUDIO, process_inputs],
             outputs=[process_inputs]
         )
+
 
 def register_descriptions(arg_handler: ArgHandler):
     """Register descriptions for UI elements"""
@@ -1105,7 +1111,7 @@ Tips:
         "diffrythm_download": "Download the generated song as a WAV file.",
         "diffrythm_output_audio": "Preview the generated song. Click to play/pause.",
         "diffrythm_output_message": "Status messages and error reports from the generation process.",
-        
+
         # Train tab
         "diffrythm_project_name": "Enter a unique name for your custom DiffRhythm model project. This will be used to identify your model and its training data.",
         "diffrythm_existing_project": "Select an existing project to continue training or view results.",
@@ -1147,438 +1153,227 @@ File Naming:
         "diffrythm_status": "Current status of preprocessing/training and any error messages.",
         "diffrythm_model_output": "Download your trained model for use in generation."
     }
-    
+
     # Register all descriptions
     for elem_id, description in descriptions.items():
         arg_handler.register_description("diffrythm", elem_id, description)
 
+
 def register_api_endpoints(api):
     """
-    Register API endpoints for DiffRhythm functionality
-        
+    Register API endpoints for DiffRhythm.
+    
     Args:
         api: FastAPI application instance
     """
-    from fastapi import UploadFile, File, Form, HTTPException, BackgroundTasks, Body
-    from fastapi.responses import FileResponse, JSONResponse
-    from typing import Optional, List
-    
-    # Define Pydantic models for JSON requests
-    class FileData(BaseModel):
-        filename: str
-        content: str  # base64 encoded content
-    
-    class CreateProjectRequest(BaseModel):
-        project_name: str
-        audio_file: FileData
-        lyrics_file: Optional[FileData] = None
-        lyrics_text: Optional[str] = None
-        lyrics_format: str = "lrc"
-        bpm: Optional[float] = None
-        key: Optional[str] = None
-        time_signature: Optional[str] = None
-    
-    class TrainRequest(BaseModel):
-        project_name: str
-        batch_size: int = 16
-        num_epochs: int = 100
-        learning_rate: float = 1e-4
-        save_interval: int = 10
-    
-    class GenerateRequest(BaseModel):
-        project_name: str
-        lyrics_file: Optional[FileData] = None
-        lyrics_text: Optional[str] = None
-        lyrics_format: str = "lrc"
-        bpm: Optional[float] = None
-        key: Optional[str] = None
-        time_signature: Optional[str] = None
-        num_samples: int = 1
-        guidance_scale: float = 3.0
-        temperature: float = 1.0
-    
-    # Maintain backward compatibility with form/multipart
-    @api.post("/api/v1/diffrythm/create_project", tags=["DiffRhythm"])
-    async def api_create_project(
-        project_name: str = Form(...),
-        audio_file: UploadFile = File(...),
-        lyrics_file: Optional[UploadFile] = File(None),
-        lyrics_text: Optional[str] = Form(None),
-        lyrics_format: str = Form("lrc"),
-        bpm: Optional[float] = Form(None),
-        key: Optional[str] = Form(None),
-        time_signature: Optional[str] = Form(None)
+
+    # Define models for JSON API
+    class StyleSettings(BaseModel):
+        genre: str = Field(..., description="Music genre for the drum pattern")
+        feel: str = Field(..., description="Rhythmic feel (e.g., straight, swing)")
+        complexity: str = Field(..., description="Pattern complexity level")
+        density: str = Field(..., description="Pattern density level")
+        intensity: str = Field(..., description="Pattern intensity level")
+
+    class PatternSettings(BaseModel):
+        num_bars: int = Field(4, description="Number of bars to generate")
+        tempo: int = Field(120, description="Tempo in BPM")
+        time_signature: str = Field("4/4", description="Time signature (e.g., 4/4, 3/4)")
+        multiple_patterns: bool = Field(False, description="Generate multiple patterns")
+        num_patterns: int = Field(1, description="Number of patterns to generate if multiple_patterns is true")
+
+    class SoundSettings(BaseModel):
+        kit_type: str = Field("acoustic", description="Type of drum kit to use")
+        processing: str = Field("dry", description="Audio processing type")
+        velocity: int = Field(100, description="MIDI velocity (1-127)")
+        humanize: int = Field(20, description="Humanization amount (0-100)")
+
+    class ExportSettings(BaseModel):
+        export_format: str = Field("audio", description="Export format (audio, midi, or both)")
+
+    class CreateDrumPatternRequest(BaseModel):
+        style: StyleSettings = Field(..., description="Style settings for drum pattern generation")
+        pattern: PatternSettings = Field(..., description="Pattern settings for drum generation")
+        sound: SoundSettings = Field(..., description="Sound settings for drum generation")
+        export: ExportSettings = Field(..., description="Export settings")
+
+    # Models for training pipeline
+    class PreprocessRequest(BaseModel):
+        project_name: str = Field(..., description="Name of the project to create")
+        separate_vocals: bool = Field(True, description="Whether to separate vocals from instrumental tracks")
+        transcribe_audio: bool = Field(True,
+                                       description="Whether to auto-transcribe lyrics when no lyric file is available")
+
+    class TrainingRequest(BaseModel):
+        project_name: str = Field(..., description="Name of the project to train")
+        base_model: str = Field("ASLP-lab/DiffRhythm-base", description="Base model to use for training")
+        batch_size: int = Field(8, description="Batch size for training")
+        epochs: int = Field(110, description="Number of training epochs")
+        learning_rate: float = Field(7.5e-5, description="Learning rate for training")
+        num_workers: int = Field(4, description="Number of workers for data loading")
+        save_steps: int = Field(5000, description="Save checkpoint every N steps")
+        warmup_steps: int = Field(20, description="Number of warmup steps")
+        max_grad_norm: float = Field(1.0, description="Maximum gradient norm")
+        grad_accumulation: int = Field(1, description="Gradient accumulation steps")
+        audio_drop_prob: float = Field(0.3, description="Probability of dropping audio conditioning")
+        style_drop_prob: float = Field(0.1, description="Probability of dropping style conditioning")
+        lrc_drop_prob: float = Field(0.1, description="Probability of dropping lyrics")
+
+    @api.post("/api/v1/diffrythm/preprocess", tags=["Audio Generation"])
+    async def preprocess_data_endpoint(
+            request: PreprocessRequest = Body(...),
+            files: list = Body(None)
     ):
-        """Create a new DiffRhythm project with audio and lyrics"""
-        return await _create_project_impl(
-            project_name=project_name,
-            audio_file=audio_file,
-            lyrics_file=lyrics_file,
-            lyrics_text=lyrics_text,
-            lyrics_format=lyrics_format,
-            bpm=bpm,
-            key=key,
-            time_signature=time_signature
-        )
-    
-    # New JSON endpoint
-    @api.post("/api/v1/diffrythm/create_project_json", tags=["DiffRhythm"])
-    async def api_create_project_json(request: CreateProjectRequest = Body(...)):
-        """Create a new DiffRhythm project with audio and lyrics (JSON)"""
+        """
+        Preprocess audio files for DiffRhythm training.
+        
+        This endpoint:
+        1. Creates a project directory
+        2. Processes audio files (separates vocals if requested)
+        3. Transcribes audio if requested and no lyrics are provided
+        4. Converts audio to latents and style embeddings
+        5. Prepares the dataset structure for training
+        
+        Returns:
+            JSON response with project information and status
+        """
         try:
-            # Create temporary directory for processing
-            temp_dir = tempfile.mkdtemp(prefix="diffrythm_project_")
-            
-            # Save audio file from base64
-            audio_path = os.path.join(temp_dir, request.audio_file.filename)
-            with open(audio_path, "wb") as f:
-                content = base64.b64decode(request.audio_file.content)
-                f.write(content)
-                
-            # Save lyrics file if provided
-            lyrics_path = None
-            if request.lyrics_file:
-                lyrics_path = os.path.join(temp_dir, request.lyrics_file.filename)
-                with open(lyrics_path, "wb") as f:
-                    content = base64.b64decode(request.lyrics_file.content)
-                    f.write(content)
-            elif request.lyrics_text:
-                lyrics_path = os.path.join(temp_dir, f"{request.project_name}.{request.lyrics_format}")
-                with open(lyrics_path, "w", encoding="utf-8") as f:
-                    f.write(request.lyrics_text)
-            
-            # Create project directory
+            # Validate project name
+            if not request.project_name:
+                raise HTTPException(status_code=400, detail="Project name is required")
+
+            # Process uploaded files 
+            if not files or len(files) == 0:
+                raise HTTPException(status_code=400, detail="No files provided")
+
+            # Save uploaded files to temporary location
+            temp_dir = os.path.join(output_path, "diffrythm", "temp", request.project_name)
+            os.makedirs(temp_dir, exist_ok=True)
+
+            file_paths = []
+            for file in files:
+                file_path = os.path.join(temp_dir, file.filename)
+                with open(file_path, "wb") as f:
+                    f.write(file.file.read())
+                file_paths.append(file_path)
+
+            # Call preprocess function
+            result = preprocess_data_global(
+                project_name=request.project_name,
+                existing_project="",  # Always create new project in API
+                input_files=file_paths,
+                separate_vocals=request.separate_vocals,
+                transcribe_audio=request.transcribe_audio
+            )
+
+            # Prepare response
             project_dir = os.path.join(output_path, "diffrythm_train", request.project_name)
-            os.makedirs(project_dir, exist_ok=True)
-            
-            # Process the audio and lyrics
-            input_files = [audio_path]
-            if lyrics_path:
-                input_files.append(lyrics_path)
-                
-            result = preprocess_data_global(
-                project_name=request.project_name,
-                existing_project="",  # No existing project
-                input_files=input_files,
-                separate_vocals=True,
-                transcribe_audio=True
-            )
-            
-            # Cleanup temp directory in the background
-            BackgroundTasks().add_task(cleanup_temp_files, temp_dir)
-            
-            return {"status": "success", "message": result}
-            
-        except Exception as e:
-            logger.exception("Error creating DiffRhythm project:")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    async def _create_project_impl(
-        project_name: str,
-        audio_file,  # Either UploadFile or bytes
-        lyrics_file=None,
-        lyrics_text=None,
-        lyrics_format="lrc",
-        bpm=None,
-        key=None,
-        time_signature=None
-    ):
-        """Implementation of create project logic that can be used by both APIs"""
-        try:
-            # Create temporary directory for processing
-            temp_dir = tempfile.mkdtemp(prefix="diffrythm_project_")
-            
-            # Save audio file
-            if hasattr(audio_file, 'filename'):  # UploadFile
-                audio_path = os.path.join(temp_dir, audio_file.filename)
-                with open(audio_path, "wb") as f:
-                    content = await audio_file.read()
-                    f.write(content)
-            else:  # Bytes from base64
-                audio_path = os.path.join(temp_dir, "audio.wav")
-                with open(audio_path, "wb") as f:
-                    f.write(audio_file)
-                
-            # Save lyrics if provided
-            lyrics_path = None
-            if lyrics_file:
-                if hasattr(lyrics_file, 'filename'):  # UploadFile
-                    lyrics_path = os.path.join(temp_dir, lyrics_file.filename)
-                    with open(lyrics_path, "wb") as f:
-                        content = await lyrics_file.read()
-                        f.write(content)
-                else:  # Bytes from base64
-                    lyrics_path = os.path.join(temp_dir, "lyrics.lrc")
-                    with open(lyrics_path, "wb") as f:
-                        f.write(lyrics_file)
-            elif lyrics_text:
-                lyrics_path = os.path.join(temp_dir, f"{project_name}.{lyrics_format}")
-                with open(lyrics_path, "w", encoding="utf-8") as f:
-                    f.write(lyrics_text)
-            
-            # Create project directory
-            project_dir = os.path.join(output_path, "diffrythm_train", project_name)
-            os.makedirs(project_dir, exist_ok=True)
-            
-            # Process the audio and lyrics
-            input_files = [audio_path]
-            if lyrics_path:
-                input_files.append(lyrics_path)
-                
-            result = preprocess_data_global(
-                project_name=project_name,
-                existing_project="",  # No existing project
-                input_files=input_files,
-                separate_vocals=True,
-                transcribe_audio=True
-            )
-            
-            # Cleanup temp directory in the background
-            BackgroundTasks().add_task(cleanup_temp_files, temp_dir)
-            
-            return {"status": "success", "message": result}
-            
-        except Exception as e:
-            logger.exception("Error creating DiffRhythm project:")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    # Add JSON endpoints for the other functions
-    @api.post("/api/v1/diffrythm/train_json", tags=["DiffRhythm"])
-    async def api_train_json(request: TrainRequest = Body(...)):
-        """Train a DiffRhythm model on a prepared project (JSON)"""
-        try:
-            # Start training with parameters from request
-            result = start_training_global(
-                project_name=request.project_name,
-                existing_project="",  # No existing project, use project_name
-                base_model="ASLP-lab/DiffRhythm-base",
-                batch_size=request.batch_size,
-                epochs=request.num_epochs,
-                learning_rate=request.learning_rate,
-                num_workers=4,  # Default value
-                save_steps=request.save_interval * 1000,
-                warmup_steps=20,  # Default value
-                max_grad_norm=1.0,  # Default value
-                grad_accumulation=1,  # Default value
-                audio_drop_prob=0.3,  # Default value 
-                style_drop_prob=0.1,  # Default value
-                lrc_drop_prob=0.1    # Default value
-            )
-            
-            return {"status": "success", "message": result}
-            
-        except Exception as e:
-            logger.exception("Error training DiffRhythm model:")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @api.post("/api/v1/diffrythm/generate_json", tags=["DiffRhythm"])
-    async def api_generate_json(request: GenerateRequest = Body(...)):
-        """Generate audio with a trained DiffRhythm model (JSON)"""
-        try:
-            # Create temporary directory for processing
-            temp_dir = tempfile.mkdtemp(prefix="diffrythm_generate_")
-            
-            # Save lyrics if provided
-            lrc_path = None
-            if request.lyrics_file:
-                lrc_path = os.path.join(temp_dir, request.lyrics_file.filename)
-                with open(lrc_path, "wb") as f:
-                    content = base64.b64decode(request.lyrics_file.content)
-                    f.write(content)
-            elif request.lyrics_text:
-                lrc_path = os.path.join(temp_dir, f"lyrics.{request.lyrics_format}")
-                with open(lrc_path, "w", encoding="utf-8") as f:
-                    f.write(request.lyrics_text)
-            
-            # Find the trained model path
-            model_path = os.path.join(output_path, "diffrythm_train", request.project_name, "model.pt")
-            if not os.path.exists(model_path):
-                model_path = "ASLP-lab/DiffRhythm-base"  # Fall back to base model
-                
-            # Generate the audio
-            output_path_file, message = generate_song(
-                lrc_path=lrc_path,
-                style_prompt=f"BPM {request.bpm}, Key {request.key}, {request.time_signature}" if request.bpm and request.key and request.time_signature else "",
-                ref_audio_path=None,
-                model_name=model_path,
-                chunked=True
-            )
-            
-            if not output_path_file or not os.path.exists(output_path_file):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to generate audio: {message}"
-                )
-            
-            # Return the generated audio file as base64
-            with open(output_path_file, "rb") as f:
-                file_content = base64.b64encode(f.read()).decode("utf-8")
-                
+
             return {
                 "status": "success",
-                "filename": os.path.basename(output_path_file),
-                "content": file_content
+                "message": result,
+                "project": {
+                    "name": request.project_name,
+                    "path": project_dir,
+                    "files_processed": len(file_paths),
+                    "ready_for_training": True if "complete" in result.lower() else False
+                }
             }
-            
+
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception("Error generating audio with DiffRhythm:")
+            logger.error(f"Error in preprocess endpoint: {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
-    
-    # Keep the existing form/multipart endpoints for backward compatibility
-    @api.post("/api/v1/diffrythm/train", tags=["DiffRhythm"])
-    async def api_train(
-        project_name: str = Form(...),
-        batch_size: int = Form(16),
-        num_epochs: int = Form(100),
-        learning_rate: float = Form(1e-4),
-        save_interval: int = Form(10)
+
+    @api.post("/api/v1/diffrythm/train", tags=["Audio Generation"])
+    async def train_model_endpoint(
+            request: TrainingRequest = Body(...)
     ):
-        """Train a DiffRhythm model on a prepared project"""
+        """
+        Train a DiffRhythm model.
+        
+        This endpoint starts the training process for a model using previously preprocessed data.
+        
+        Returns:
+            JSON response with training status and model information
+        """
         try:
-            # Start training with default parameters
-            result = start_training_global(
-                project_name=project_name,
-                existing_project="",  # No existing project, use project_name
-                base_model="ASLP-lab/DiffRhythm-base",
-                batch_size=batch_size,
-                epochs=num_epochs,
-                learning_rate=learning_rate,
-                num_workers=4,  # Default value
-                save_steps=save_interval * 1000,
-                warmup_steps=20,  # Default value
-                max_grad_norm=1.0,  # Default value
-                grad_accumulation=1,  # Default value
-                audio_drop_prob=0.3,  # Default value 
-                style_drop_prob=0.1,  # Default value
-                lrc_drop_prob=0.1    # Default value
-            )
-            
-            return {"status": "success", "message": result}
-            
-        except Exception as e:
-            logger.exception("Error training DiffRhythm model:")
-            raise HTTPException(status_code=500, detail=str(e))
+            # Validate project name and check if it exists
+            if not request.project_name:
+                raise HTTPException(status_code=400, detail="Project name is required")
 
-    @api.post("/api/v1/diffrythm/generate", tags=["DiffRhythm"])
-    async def api_generate(
-        project_name: str = Form(...),
-        lyrics_file: Optional[UploadFile] = File(None),
-        lyrics_text: Optional[str] = Form(None),
-        lyrics_format: str = Form("lrc"),
-        bpm: Optional[float] = Form(None),
-        key: Optional[str] = Form(None),
-        time_signature: Optional[str] = Form(None),
-        num_samples: int = Form(1),
-        guidance_scale: float = Form(3.0),
-        temperature: float = Form(1.0)
-    ):
-        """Generate audio with a trained DiffRhythm model"""
-        try:
-            # Create temporary directory for processing
-            temp_dir = tempfile.mkdtemp(prefix="diffrythm_generate_")
-            
-            # Save lyrics if provided
-            lrc_path = None
-            if lyrics_file:
-                lrc_path = os.path.join(temp_dir, lyrics_file.filename)
-                with open(lrc_path, "wb") as f:
-                    content = await lyrics_file.read()
-                    f.write(content)
-            elif lyrics_text:
-                lrc_path = os.path.join(temp_dir, f"lyrics.{lyrics_format}")
-                with open(lrc_path, "w", encoding="utf-8") as f:
-                    f.write(lyrics_text)
-            
-            # Find the trained model path
-            model_path = os.path.join(output_path, "diffrythm_train", project_name, "model.pt")
-            if not os.path.exists(model_path):
-                model_path = "ASLP-lab/DiffRhythm-base"  # Fall back to base model
-                
-            # Generate the audio
-            output_path_file, message = generate_song(
-                lrc_path=lrc_path,
-                style_prompt=f"BPM {bpm}, Key {key}, {time_signature}" if bpm and key and time_signature else "",
-                ref_audio_path=None,
-                model_name=model_path,
-                chunked=True
-            )
-            
-            if not output_path_file or not os.path.exists(output_path_file):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to generate audio: {message}"
-                )
-            
-            # Return the generated audio file
-            return FileResponse(
-                output_path_file,
-                media_type="audio/wav",
-                filename=os.path.basename(output_path_file)
-            )
-            
-        except Exception as e:
-            logger.exception("Error generating audio with DiffRhythm:")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @api.get("/api/v1/diffrythm/projects", tags=["DiffRhythm"])
-    async def api_list_projects():
-        """List all available DiffRhythm projects"""
-        try:
-            projects = list_diffrythm_projects()
-            return {"projects": projects}
-        except Exception as e:
-            logger.exception("Error listing DiffRhythm projects:")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @api.get("/api/v1/diffrythm/project/{project_name}", tags=["DiffRhythm"])
-    async def api_get_project(project_name: str):
-        """Get details of a specific DiffRhythm project"""
-        try:
-            project_dir = os.path.join(output_path, "diffrythm_train", project_name)
-            if not os.path.exists(project_dir):
-                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
-                
-            # Get training info
+            project_dir = os.path.join(output_path, "diffrythm_train", request.project_name)
             train_scp = os.path.join(project_dir, "train.scp")
-            dataset_size = 0
-            if os.path.exists(train_scp):
-                with open(train_scp, "r") as f:
-                    dataset_size = len(f.readlines())
-                    
-            # Get model info
-            model_path = os.path.join(project_dir, "model.pt")
-            model_exists = os.path.exists(model_path)
-            model_size = 0
-            if model_exists:
-                model_size = os.path.getsize(model_path) / (1024 * 1024)  # Size in MB
-                
+
+            if not os.path.exists(project_dir) or not os.path.exists(train_scp):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Project not found or data not preprocessed. Please preprocess data first."
+                )
+
+            # Validate model selection
+            if request.base_model not in AVAILABLE_MODELS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid base model. Must be one of: {', '.join(AVAILABLE_MODELS)}"
+                )
+
+            # Start training process (this will be async in practice)
+            result = start_training_global(
+                project_name=request.project_name,
+                existing_project="",  # Always use project_name in API
+                base_model=request.base_model,
+                batch_size=request.batch_size,
+                epochs=request.epochs,
+                learning_rate=request.learning_rate,
+                num_workers=request.num_workers,
+                save_steps=request.save_steps,
+                warmup_steps=request.warmup_steps,
+                max_grad_norm=request.max_grad_norm,
+                grad_accumulation=request.grad_accumulation,
+                audio_drop_prob=request.audio_drop_prob,
+                style_drop_prob=request.style_drop_prob,
+                lrc_drop_prob=request.lrc_drop_prob
+            )
+
+            # Check for success message and extract model path
+            model_path = None
+            training_success = False
+
+            if "Training complete" in result and "Model saved to" in result:
+                training_success = True
+                # Extract model path from result message
+                model_path = result.split("Model saved to ")[1].strip()
+
             return {
-                "project_name": project_name,
-                "dataset_size": dataset_size,
-                "model_exists": model_exists,
-                "model_size_mb": model_size
+                "status": "success" if training_success else "error",
+                "message": result,
+                "model": {
+                    "project_name": request.project_name,
+                    "base_model": request.base_model,
+                    "path": model_path,
+                    "epochs_trained": request.epochs,
+                    "parameters": {
+                        "batch_size": request.batch_size,
+                        "learning_rate": request.learning_rate,
+                        "num_workers": request.num_workers,
+                        "save_steps": request.save_steps,
+                        "warmup_steps": request.warmup_steps
+                    }
+                } if training_success else None
             }
-            
+
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception("Error getting DiffRhythm project details:")
+            logger.error(f"Error in train endpoint: {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    @api.delete("/api/v1/diffrythm/project/{project_name}", tags=["DiffRhythm"])
-    async def api_delete_project(project_name: str):
-        """Delete a DiffRhythm project"""
-        try:
-            project_dir = os.path.join(output_path, "diffrythm_train", project_name)
-            if not os.path.exists(project_dir):
-                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
-                
-            # Delete the project directory
-            shutil.rmtree(project_dir)
-            
-            return {"status": "success", "message": f"Project {project_name} deleted"}
-            
-        except Exception as e:
-            logger.exception("Error deleting DiffRhythm project:")
-            raise HTTPException(status_code=500, detail=str(e))
 
 def cleanup_temp_files(temp_dir):
     """Clean up temporary files after a delay."""
@@ -1589,15 +1384,16 @@ def cleanup_temp_files(temp_dir):
     except Exception as e:
         logger.error(f"Error cleaning up temporary files: {e}")
 
+
 # Add global versions of functions for API access
 
 def preprocess_data_global(
-    project_name,
-    existing_project,
-    input_files,
-    separate_vocals,
-    transcribe_audio,
-    progress=None
+        project_name,
+        existing_project,
+        input_files,
+        separate_vocals,
+        transcribe_audio,
+        progress=None
 ):
     """
     Global version of preprocess_data that can be called from API endpoints
@@ -1605,77 +1401,78 @@ def preprocess_data_global(
     try:
         if not project_name and not existing_project:
             return "Please provide a project name"
-        
+
         if project_name and existing_project:
             return "Please provide only one project name"
-        
+
         if not input_files:
             return "Please provide input files"
-        
+
         # Use existing project name if provided
         if existing_project:
             project_name = existing_project
-        
+
         # Create project directory
         project_dir = os.path.join(output_path, "diffrythm_train", project_name)
         os.makedirs(project_dir, exist_ok=True)
-        
+
         # Create dataset directories
         latent_dir = os.path.join(project_dir, "latent")
         style_dir = os.path.join(project_dir, "style")
         lrc_dir = os.path.join(project_dir, "lrc")
         raw_dir = os.path.join(project_dir, "raw")
-        
+
         for d in [latent_dir, style_dir, lrc_dir, raw_dir]:
             os.makedirs(d, exist_ok=True)
-        
+
         if progress:
             progress(0.1, "Processing input files...")
-        
+
         # Load models for latent conversion
         progress(0.15, "Loading models...")
         vae_ckpt_path = check_download_model(repo_id="ASLP-lab/DiffRhythm-vae")
         vae = torch.jit.load(vae_ckpt_path)
-        
+
         muq_model_dir = os.path.join(model_path, "diffrythm", "muq")
         os.makedirs(muq_model_dir, exist_ok=True)
         muq = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large", cache_dir=muq_model_dir)
-        
+
         # Process each input file
         processed_files = []
         for idx, f in enumerate(input_files):
             try:
-                progress((idx + 1) / len(input_files), 
-                       f"Processing file {idx + 1}/{len(input_files)}")
-                
+                progress((idx + 1) / len(input_files),
+                         f"Processing file {idx + 1}/{len(input_files)}")
+
                 # Get base name without extension
                 base_name = os.path.splitext(os.path.basename(f))[0]
-                
+
                 # Copy original file to raw directory
                 raw_path = os.path.join(raw_dir, f"{base_name}.wav")
                 if not os.path.exists(raw_path):
                     shutil.copy2(f, raw_path)
-                
+
                 # Separate vocals if requested
                 if separate_vocals:
-                    progress((idx + 1) / len(input_files), 
-                           f"Separating vocals for {base_name}")
+                    progress((idx + 1) / len(input_files),
+                             f"Separating vocals for {base_name}")
                     vocal_outputs, _ = separate_vocal([raw_path])
                     if vocal_outputs:
                         raw_path = vocal_outputs[0]
-                
+
                 # Transcribe if requested and no matching lyrics file
+                matching_lyrics = None
+
                 if transcribe_audio:
-                    matching_lyrics = None
                     if input_files:
                         for lf in input_files:
                             if os.path.splitext(os.path.basename(lf))[0] == base_name:
                                 matching_lyrics = lf
                                 break
-                    
+
                     if not matching_lyrics:
-                        progress((idx + 1) / len(input_files), 
-                               f"Transcribing {base_name}")
+                        progress((idx + 1) / len(input_files),
+                                 f"Transcribing {base_name}")
                         transcription = process_transcription(
                             [raw_path],
                             language="auto",
@@ -1684,63 +1481,64 @@ def preprocess_data_global(
                         )
                         if transcription[1]:  # If transcription files were created
                             # Find the .txt file
-                            txt_file = [f for f in transcription[1] 
-                                      if f.endswith('.txt')][0]
+                            txt_file = [f for f in transcription[1]
+                                        if f.endswith('.txt')][0]
                             matching_lyrics = txt_file
-                
+
                 # Convert audio to latents and style embeddings
-                progress((idx + 1) / len(input_files), 
-                       f"Converting {base_name} to latents")
-                
+                progress((idx + 1) / len(input_files),
+                         f"Converting {base_name} to latents")
+
                 latents, style_emb = convert_to_latents(raw_path, vae, muq)
                 if latents is not None and style_emb is not None:
                     # Save latents and style embeddings
                     latent_path = os.path.join(latent_dir, f"{base_name}.npy")
                     style_path = os.path.join(style_dir, f"{base_name}.npy")
                     lrc_path = os.path.join(lrc_dir, f"{base_name}.lrc")
-                    
+
                     np.save(latent_path, latents)
                     np.save(style_path, style_emb)
-                    
+
                     # Copy or create LRC file
                     if matching_lyrics:
                         shutil.copy2(matching_lyrics, lrc_path)
-                    
+
                     processed_files.append(
                         f"{raw_path}|{lrc_path}|{latent_path}|{style_path}"
                     )
-                
+
             except Exception as e:
                 logger.error(f"Error processing file {f}: {e}")
                 continue
-        
+
         # Create train.scp file
         scp_path = os.path.join(project_dir, "train.scp")
         with open(scp_path, "w") as f:
             f.write("\n".join(processed_files))
-        
+
         return "Preprocessing complete! Ready to start training."
-        
+
     except Exception as e:
         logger.error(f"Error during preprocessing: {e}")
         return f"Error during preprocessing: {str(e)}"
 
+
 def start_training_global(
-    project_name,
-    existing_project,
-    base_model,
-    batch_size,
-    epochs,
-    learning_rate,
-    num_workers,
-    save_steps,
-    warmup_steps,
-    max_grad_norm,
-    grad_accumulation,
-    audio_drop_prob,
-    style_drop_prob,
-    lrc_drop_prob,
-    progress=None
+        project_name,
+        existing_project,
+        base_model,
+        batch_size,
+        epochs,
+        learning_rate,
+        num_workers,
+        save_steps,
+        warmup_steps,
+        max_grad_norm,
+        grad_accumulation,
+        audio_drop_prob,
+        style_drop_prob,
+        lrc_drop_prob,
+        progress=None
 ):
     """
     Global version of start_training that can be called from API endpoints
@@ -1748,24 +1546,21 @@ def start_training_global(
     try:
         if not project_name and not existing_project:
             return "Please provide a project name"
-        
+
         if project_name and existing_project:
             return "Please provide only one project name"
-        
+
         # Use existing project name if provided
         if existing_project:
             project_name = existing_project
-        
+
         # Check if project exists and has been preprocessed
         project_dir = os.path.join(output_path, "diffrythm_train", project_name)
         train_scp = os.path.join(project_dir, "train.scp")
-        
+
         if not os.path.exists(project_dir) or not os.path.exists(train_scp):
             return "Project not found or data not preprocessed. Please preprocess data first."
-        
-        # Import training function
-        from modules.diffrythm.train.train import TrainingArgs, train
-        
+
         # Create training arguments
         args = TrainingArgs(
             project_dir=project_dir,
@@ -1782,21 +1577,21 @@ def start_training_global(
             style_drop_prob=style_drop_prob,
             lrc_drop_prob=lrc_drop_prob,
             max_frames=2048,  # Fixed for now, could be made configurable
-            grad_ckpt=True,   # Enable gradient checkpointing by default
-            reset_lr=False,   # Don't reset learning rate by default
+            grad_ckpt=True,  # Enable gradient checkpointing by default
+            reset_lr=False,  # Don't reset learning rate by default
             resumable_with_seed=42  # Fixed seed for reproducibility
         )
-        
+
         # Start training with progress updates
-        final_model_path = train(args, progress=progress)
-        
+        final_model_path = train_diffrythm(args, progress=progress)
+
         if final_model_path and os.path.exists(final_model_path):
             return f"Training complete! Model saved to {final_model_path}"
         else:
             return "Training completed but model save failed."
-        
+
     except Exception as e:
         logger.error(f"Error during training: {e}")
         import traceback
         traceback.print_exc()
-        return f"Error during training: {str(e)}" 
+        return f"Error during training: {str(e)}"

@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import signal
 from pathlib import Path
 
 # Configure logging and fix formatting so time, name, level, are each in []
@@ -87,6 +88,17 @@ if __name__ == '__main__':
     server_name = "0.0.0.0" if args.listen else "127.0.0.1"
     server_port = args.port
 
+    # Define signal handler for graceful shutdown
+    def signal_handler(sig, frame):
+        logger.info("SIGINT or SIGTERM received, shutting down gracefully...")
+        # Clean up any resources if needed
+        sys.exit(0)
+
+    # Register the signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+
     if args.api_only:
         # Run only the FastAPI server
         uvicorn.run(app, host=server_name, port=server_port)
@@ -161,14 +173,7 @@ if __name__ == '__main__':
         logger.info(f"Server running on http://{server_name}:{server_port}")
         logger.info(f"API documentation available at http://{server_name}:{server_port}/docs")
         
-        # Run the FastAPI server
-        uvicorn.run(app, host=server_name, port=server_port)
-        
-        # Keep the server running
-        import time
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Keyboard interrupt received, shutting down...")
-            sys.exit(0)
+        # Run the FastAPI server with specific config for clean shutdowns
+        config = uvicorn.Config(app=app, host=server_name, port=server_port)
+        server = uvicorn.Server(config)
+        server.run()

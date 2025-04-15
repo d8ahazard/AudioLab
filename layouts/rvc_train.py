@@ -4,9 +4,10 @@ import os
 import pathlib
 import shutil
 import sys
+import tempfile
 import traceback
 from random import shuffle
-from time import sleep
+from time import sleep, time
 from typing import List
 
 import faiss
@@ -234,30 +235,30 @@ def analyze_pitch_range(audio_files, progress=gr.Progress()):
     min_pitch = float('inf')
     max_pitch = float('-inf')
     avg_pitches = []
-    
+
     for idx, file in enumerate(audio_files):
         progress((idx + 1) / len(audio_files), f"Analyzing pitch for file {idx + 1}/{len(audio_files)}")
         try:
             y, sr = librosa.load(file)
             pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-            
+
             # Filter out pitches with low magnitude
             pitches_filtered = pitches[magnitudes > np.median(magnitudes)]
             if len(pitches_filtered) > 0:
                 file_min = np.min(pitches_filtered)
                 file_max = np.max(pitches_filtered)
                 file_avg = np.mean(pitches_filtered)
-                
+
                 min_pitch = min(min_pitch, file_min)
                 max_pitch = max(max_pitch, file_max)
                 avg_pitches.append(file_avg)
         except Exception as e:
             logger.error(f"Error analyzing pitch for {file}: {e}")
             continue
-    
+
     if min_pitch == float('inf') or max_pitch == float('-inf'):
         return None
-        
+
     avg_pitch = np.mean(avg_pitches) if avg_pitches else 0
     return {
         'min_pitch': min_pitch,
@@ -514,21 +515,21 @@ def train1key(
     infos = []
     resuming_training = False
     if (not project_name or project_name == "") and (not existing_project_name or existing_project_name == ""):
-        return ("Please provide a project name.", gr.update(visible=False))
+        return "Please provide a project name.", gr.update(visible=False)
     if project_name and existing_project_name:
-        return ("Please provide only one project name.", gr.update(visible=False))
+        return "Please provide only one project name.", gr.update(visible=False)
     if (not project_name or project_name == "") and existing_project_name:
         logger.info("Using existing project name")
         project_name = existing_project_name
         resuming_training = True
         input_dir = os.path.join(output_path, "voices", project_name, "raw")
         if not os.path.exists(input_dir):
-            return (f"Project {project_name} does not exist. Please provide a valid project name.", 
-                   gr.update(visible=False))
+            return (f"Project {project_name} does not exist. Please provide a valid project name.",
+                    gr.update(visible=False))
         input_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir)]
         inputs = input_files
     if not inputs:
-        return ("Please provide input files.", gr.update(visible=False))
+        return "Please provide input files.", gr.update(visible=False)
 
     def get_info_str(strr):
         infos.append(strr)
@@ -542,14 +543,14 @@ def train1key(
         num_cpus = 1
 
     # Analyze pitch range before processing
-    yield (get_info_str("Step 1: Analyzing pitch range of input files..."), gr.update(visible=False))
+    yield get_info_str("Step 1: Analyzing pitch range of input files..."), gr.update(visible=False)
     pitch_info = analyze_pitch_range(inputs, progress)
     if pitch_info:
-        yield (get_info_str(f"Pitch Analysis Results:"), gr.update(visible=False))
-        yield (get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz"), gr.update(visible=False))
-        yield (get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz"), gr.update(visible=False))
-        yield (get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz"), gr.update(visible=False))
-        yield (get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz"), gr.update(visible=False))
+        yield get_info_str(f"Pitch Analysis Results:"), gr.update(visible=False)
+        yield get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz"), gr.update(visible=False)
+        yield get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz"), gr.update(visible=False)
+        yield get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz"), gr.update(visible=False)
+        yield get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz"), gr.update(visible=False)
 
     # Continue with preprocessing and training
     gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
@@ -564,12 +565,12 @@ def train1key(
     # Preprocess
     try:
         if not resuming_training or len(missing_dirs) > 0:
-            yield (get_info_str("Step1: Preprocessing data."), gr.update(visible=False))
+            yield get_info_str("Step1: Preprocessing data."), gr.update(visible=False)
             vocal_files = inputs
             if separate_vocals:
                 vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
-                yield (get_info_str(f"Separated vocals from {len(vocal_files)} files."), gr.update(visible=False))
-            
+                yield get_info_str(f"Separated vocals from {len(vocal_files)} files."), gr.update(visible=False)
+
             # Process each file
             for index, f in enumerate(vocal_files):
                 progress(index / len(vocal_files), f"Processing {f} ({index + 1}/{len(vocal_files)})")
@@ -577,12 +578,12 @@ def train1key(
                     current_dir = os.path.dirname(f)
                     base_name, ext = os.path.splitext(os.path.basename(f))
                     output_file = os.path.join(data_dir, f"{base_name}.wav")
-                    
+
                     # Skip if file already exists in raw folder and we're not in a fresh project
                     if os.path.exists(output_file) and not (not resuming_training and len(missing_dirs) > 0):
                         logger.info(f"Skipping existing file: {output_file}")
                         continue
-                        
+
                     if os.path.exists(output_file):
                         f = output_file
                     audio, samplerate = torchaudio.load(f)
@@ -596,44 +597,44 @@ def train1key(
                 except Exception as e:
                     traceback.print_exc()
                     logger.error(f"Error processing file {f}: {e}")
-            
+
             if pause_after_separation:
-                yield (get_info_str("Vocal separation complete. Click Resume to continue processing."), 
+                yield (get_info_str("Vocal separation complete. Click Resume to continue processing."),
                        gr.update(visible=True))
-                return (get_info_str("Vocal separation complete. Click Resume to continue processing."), 
-                       gr.update(visible=True))
-                
+                return (get_info_str("Vocal separation complete. Click Resume to continue processing."),
+                        gr.update(visible=True))
+
             preprocess_dataset(data_dir, exp_dir, tgt_sample_rate, num_cpus, progress)
         else:
             progress(0.25, "Skipping pitch feature extraction.")
-            yield (get_info_str("Step1: Data already preprocessed."), gr.update(visible=False))
-            yield (get_info_str("Step2: Pitch features already extracted."), gr.update(visible=False))
+            yield get_info_str("Step1: Data already preprocessed."), gr.update(visible=False)
+            yield get_info_str("Step2: Pitch features already extracted."), gr.update(visible=False)
 
     except Exception as e:
         error_msg = f"Error during preprocessing: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield (get_info_str(error_msg), gr.update(visible=False))
-        return (get_info_str(error_msg), gr.update(visible=False))
+        yield get_info_str(error_msg), gr.update(visible=False)
+        return get_info_str(error_msg), gr.update(visible=False)
 
     # Extract pitch features
     try:
-        yield (get_info_str("Step2: Extracting pitch features."), gr.update(visible=False))
+        yield get_info_str("Step2: Extracting pitch features."), gr.update(visible=False)
         progress(0.25, "Extracting pitch features.")
         extract_f0_feature(num_cpus, extraction_method, use_pitch_guidance, exp_dir, project_version, gpus_rmvpe)
     except Exception as e:
         error_msg = f"Error during pitch feature extraction: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield (get_info_str(error_msg), gr.update(visible=False))
-        return (get_info_str(error_msg), gr.update(visible=False))
+        yield get_info_str(error_msg), gr.update(visible=False)
+        return get_info_str(error_msg), gr.update(visible=False)
 
     # First build the index
-    yield (get_info_str("Step 2: Building initial index..."), gr.update(visible=False))
+    yield get_info_str("Step 2: Building initial index..."), gr.update(visible=False)
     [get_info_str(_) for _ in train_index(project_name, project_version)]
 
     # Training model
     try:
         progress(0.5, "Training model.")
-        yield (get_info_str("Step3: Training model."), gr.update(visible=False))
+        yield get_info_str("Step3: Training model."), gr.update(visible=False)
         click_train(
             project_name,
             resuming_training,
@@ -655,26 +656,26 @@ def train1key(
     except Exception as e:
         error_msg = f"Error during model training: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield (get_info_str(error_msg), gr.update(visible=False))
-        return (get_info_str(error_msg), gr.update(visible=False))
+        yield get_info_str(error_msg), gr.update(visible=False)
+        return get_info_str(error_msg), gr.update(visible=False)
 
     # Index building
     try:
         index_file = os.path.join(index_root, f"{os.path.basename(exp_dir)}.index")
         if not os.path.exists(index_file):
             progress(0.75, "Building index")
-            yield (get_info_str("Step4: Training complete, now building index."), gr.update(visible=False))
+            yield get_info_str("Step4: Training complete, now building index."), gr.update(visible=False)
             [get_info_str(_) for _ in train_index(project_name, project_version)]
         else:
-            yield (get_info_str("Step4: Index already exists."), gr.update(visible=False))
+            yield get_info_str("Step4: Index already exists."), gr.update(visible=False)
     except Exception as e:
         error_msg = f"Error during index building: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        yield (get_info_str(error_msg), gr.update(visible=False))
-        return (get_info_str(error_msg), gr.update(visible=False))
+        yield get_info_str(error_msg), gr.update(visible=False)
+        return get_info_str(error_msg), gr.update(visible=False)
 
-    yield (get_info_str("Processing complete!"), gr.update(visible=False))
-    return (get_info_str("Processing complete!"), gr.update(visible=False))
+    yield get_info_str("Processing complete!"), gr.update(visible=False)
+    return get_info_str("Processing complete!"), gr.update(visible=False)
 
 
 def resume_training(
@@ -699,39 +700,39 @@ def resume_training(
         progress=gr.Progress()
 ):
     if (not project_name or project_name == "") and (not existing_project_name or existing_project_name == ""):
-        return ("Please provide a project name.", gr.update(visible=False))
+        return "Please provide a project name.", gr.update(visible=False)
     if project_name and existing_project_name:
         project_name = existing_project_name
-    
+
     exp_dir = os.path.join(output_path, "voices", project_name)
     data_dir = os.path.join(output_path, "voices", project_name, "raw")
-    
+
     if not os.path.exists(data_dir):
-        return ("Project data directory not found. Please start training from the beginning.", gr.update(visible=False))
-        
+        return "Project data directory not found. Please start training from the beginning.", gr.update(visible=False)
+
     for output in train1key(
-        project_name,
-        existing_project_name,
-        False,  # separate_vocals
-        tgt_sample_rate,
-        use_pitch_guidance,
-        None,  # inputs
-        spk_id,
-        num_cpus,
-        extraction_method,
-        epoch_save_freq,
-        train_epochs,
-        batch_size,
-        save_latest,
-        generator,
-        discriminator,
-        tgt_gpus,
-        cache_to_gpu,
-        save_weights_every,
-        project_version,
-        gpus_rmvpe,
-        False,  # pause_after_separation
-        progress
+            project_name,
+            existing_project_name,
+            False,  # separate_vocals
+            tgt_sample_rate,
+            use_pitch_guidance,
+            None,  # inputs
+            spk_id,
+            num_cpus,
+            extraction_method,
+            epoch_save_freq,
+            train_epochs,
+            batch_size,
+            save_latest,
+            generator,
+            discriminator,
+            tgt_gpus,
+            cache_to_gpu,
+            save_weights_every,
+            project_version,
+            gpus_rmvpe,
+            False,  # pause_after_separation
+            progress
     ):
         yield output
 
@@ -799,7 +800,8 @@ def list_project_weights(project_dir):
 def render():
     with gr.Blocks() as rvc_train:
         gr.Markdown("# 🎤 Voice Model Training")
-        gr.Markdown("Train voice conversion models with 30-60 minutes of audio. Features automatic vocal separation, feature extraction, and customizable training parameters for creating personalized voice models.")
+        gr.Markdown(
+            "Train voice conversion models with 30-60 minutes of audio. Features automatic vocal separation, feature extraction, and customizable training parameters for creating personalized voice models.")
         with gr.Row():
             with gr.Column():
                 gr.Markdown("### 🔧 Settings")
@@ -998,7 +1000,7 @@ def render():
                             variant='secondary',
                             elem_classes="hintitem", elem_id="rvc_input_url_button"
                         )
-            
+
             with gr.Column():
                 gr.Markdown("### 🎮 Actions")
                 with gr.Row():
@@ -1021,7 +1023,7 @@ def render():
                         visible=False,
                         elem_classes="hintitem", elem_id="rvc_cancel_train"
                     )
-                
+
                 gr.Markdown("### 🎶 Outputs")
                 info3 = gr.Textbox(
                     label="Output Info",
@@ -1160,23 +1162,25 @@ def register_api_endpoints(api):
     from fastapi import UploadFile, File, Form, BackgroundTasks, HTTPException
     from fastapi.responses import FileResponse, JSONResponse
     from typing import Optional, List
-    
+
     @api.post("/api/v1/rvc/train", tags=["RVC"])
     async def api_train_rvc_model(
-        background_tasks: BackgroundTasks,
-        project_name: str = Form(...),
-        sample_rate: int = Form(48000),
-        use_pitch_guidance: bool = Form(True),
-        speaker_id: int = Form(0),
-        extraction_method: str = Form("rmvpe+"),
-        epoch_save_freq: int = Form(10),
-        train_epochs: int = Form(200),
-        batch_size: int = Form(16),
-        save_latest_only: bool = Form(False),
-        save_weights_every: bool = Form(True),
-        project_version: str = Form("v2"),
-        gpus_rmvpe: str = Form("0"),
-        audio_files: List[UploadFile] = File(...)
+            background_tasks: BackgroundTasks,
+            project_name: str = Form(...),
+            sample_rate: str = Form("48k"),
+            use_pitch_guidance: bool = Form(True),
+            speaker_id: int = Form(0),
+            extraction_method: str = Form("rmvpe+"),
+            epoch_save_freq: int = Form(10),
+            train_epochs: int = Form(200),
+            batch_size: int = Form(16),
+            save_latest_only: str = Form("Yes"),
+            save_weights_every: str = Form("Yes"),
+            project_version: str = Form("v2"),
+            gpus_rmvpe: str = Form("0"),
+            separate_vocals: bool = Form(True),
+            cache_to_gpu: str = Form("Yes"),
+            audio_files: List[UploadFile] = File(...)
     ):
         """
         Train a new RVC voice model
@@ -1184,17 +1188,19 @@ def register_api_endpoints(api):
         Args:
             background_tasks: FastAPI background tasks
             project_name: Name for the voice project
-            sample_rate: Target sample rate for the model
+            sample_rate: Target sample rate for the model (40k or 48k)
             use_pitch_guidance: Whether to use pitch guidance
             speaker_id: Speaker ID for the model
             extraction_method: Method for extracting features
             epoch_save_freq: How often to save checkpoints
             train_epochs: Total number of training epochs
             batch_size: Training batch size
-            save_latest_only: Whether to save only the latest checkpoint
-            save_weights_every: Whether to save weights with each checkpoint
-            project_version: RVC model version
+            save_latest_only: Whether to save only the latest checkpoint ("Yes" or "No")
+            save_weights_every: Whether to save weights with each checkpoint ("Yes" or "No")
+            project_version: RVC model version (v1 or v2)
             gpus_rmvpe: GPU indices for RMVPE
+            separate_vocals: Whether to separate vocals from input
+            cache_to_gpu: Whether to cache dataset to GPU
             audio_files: Audio files for training
             
         Returns:
@@ -1204,13 +1210,27 @@ def register_api_endpoints(api):
             # Validate inputs
             if not project_name or project_name.strip() == "":
                 raise HTTPException(status_code=400, detail="Project name cannot be empty")
-                
+
             if not audio_files or len(audio_files) == 0:
                 raise HTTPException(status_code=400, detail="No audio files provided")
                 
+            # Validate sample rate
+            if sample_rate not in ["40k", "48k", "32k"]:
+                raise HTTPException(status_code=400, detail="Sample rate must be 32k, 40k, or 48k")
+                
+            # Validate extraction method
+            valid_extraction_methods = ["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", 
+                                       "rmvpe+", "crepe", "crepe-tiny", "mangio-crepe", "mangio-crepe-tiny"]
+            if extraction_method not in valid_extraction_methods:
+                raise HTTPException(status_code=400, detail=f"Invalid extraction method. Must be one of: {', '.join(valid_extraction_methods)}")
+                
+            # Validate project version
+            if project_version not in ["v1", "v2"]:
+                raise HTTPException(status_code=400, detail="Project version must be v1 or v2")
+
             # Create temporary directory for processing
             temp_dir = tempfile.mkdtemp(prefix="rvc_train_")
-            
+
             # Save uploaded audio files
             audio_paths = []
             for audio_file in audio_files:
@@ -1219,7 +1239,7 @@ def register_api_endpoints(api):
                     content = await audio_file.read()
                     f.write(content)
                 audio_paths.append(file_path)
-            
+
             # Start training in the background
             job_id = f"train_{int(time.time())}"
             background_tasks.add_task(
@@ -1238,62 +1258,102 @@ def register_api_endpoints(api):
                 save_weights_every=save_weights_every,
                 project_version=project_version,
                 gpus_rmvpe=gpus_rmvpe,
+                separate_vocals=separate_vocals,
+                cache_to_gpu=cache_to_gpu,
                 temp_dir=temp_dir
             )
-            
+
             return {
                 "status": "started",
                 "job_id": job_id,
                 "message": f"Training job started for project '{project_name}' with {len(audio_files)} audio files",
                 "estimated_time": f"Estimated time: {len(audio_files) * 2 + train_epochs * 0.5:.1f} minutes"
             }
-            
+
         except HTTPException:
             # Re-raise HTTP exceptions
             raise
         except Exception as e:
             logger.exception("Error starting RVC training:")
             raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
-            
+
     @api.get("/api/v1/rvc/models", tags=["RVC"])
     async def api_list_rvc_models():
         """
         List available RVC voice models
         
         Returns:
-            List of available voice models
+            List of available voice models with their details
         """
         try:
             voice_projects = list_voice_projects()
-            
+            voice_projects = [p for p in voice_projects if p]  # Filter out empty strings
+
             result = {
                 "models": []
             }
-            
+
             for project in voice_projects:
+                if not project:
+                    continue
+                    
                 # Get the weights for this project
                 project_dir = os.path.join(output_path, "voices", project)
+                if not os.path.exists(project_dir):
+                    continue
+                    
                 weights = list_project_weights(project_dir)
-                
+
                 # Get project version (v1 or v2)
                 version_file = os.path.join(project_dir, "version.txt")
                 version = "v2"  # Default
-                if os.path.exists(version_file):
-                    with open(version_file, "r") as f:
-                        version = f.read().strip()
+                try:
+                    if os.path.exists(version_file):
+                        with open(version_file, "r") as f:
+                            version = f.read().strip()
+                    else:
+                        # Try to infer from feature directory
+                        if os.path.exists(os.path.join(project_dir, "3_feature256")):
+                            version = "v1"
+                        elif os.path.exists(os.path.join(project_dir, "3_feature768")):
+                            version = "v2"
+                except Exception as e:
+                    logger.error(f"Error determining version for {project}: {e}")
                 
+                # Check if model has index
+                index_file = os.path.join(index_root, f"{project}.index")
+                has_index = os.path.exists(index_file)
+                
+                # Check if model has audio samples
+                samples_dir = os.path.join(project_dir, "samples")
+                has_samples = os.path.exists(samples_dir)
+                
+                # Try to find the pitch range if available
+                pitch_info = None
+                pitch_file = os.path.join(project_dir, "pitch_info.json")
+                if os.path.exists(pitch_file):
+                    try:
+                        with open(pitch_file, "r") as f:
+                            pitch_info = json.load(f)
+                    except Exception as e:
+                        logger.error(f"Error reading pitch info for {project}: {e}")
+
                 result["models"].append({
                     "name": project,
                     "version": version,
-                    "weights": weights
+                    "weights": weights,
+                    "has_index": has_index,
+                    "has_samples": has_samples,
+                    "pitch_info": pitch_info,
+                    "path": project_dir
                 })
-                
+
             return result
-            
+
         except Exception as e:
             logger.exception("Error listing RVC models:")
             raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
-            
+
     @api.get("/api/v1/rvc/job/{job_id}", tags=["RVC"])
     async def api_get_job_status(job_id: str):
         """
@@ -1307,22 +1367,25 @@ def register_api_endpoints(api):
         """
         try:
             status_dir = os.path.join(output_path, "voices", "jobs")
+            if not os.path.exists(status_dir):
+                os.makedirs(status_dir, exist_ok=True)
+                
             status_file = os.path.join(status_dir, f"{job_id}.json")
-            
+
             if not os.path.exists(status_file):
                 raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-                
+
             with open(status_file, "r") as f:
                 status = json.load(f)
-                
+
             return status
-            
+
         except HTTPException:
             raise
         except Exception as e:
             logger.exception(f"Error getting job status for {job_id}:")
             raise HTTPException(status_code=500, detail=f"Error getting job status: {str(e)}")
-            
+
     @api.get("/api/v1/rvc/download/{project_name}/{weight_file}", tags=["RVC"])
     async def api_download_model(project_name: str, weight_file: str):
         """
@@ -1339,17 +1402,27 @@ def register_api_endpoints(api):
             project_dir = os.path.join(output_path, "voices", project_name)
             if not os.path.exists(project_dir):
                 raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
-                
-            weight_path = os.path.join(project_dir, weight_file)
-            if not os.path.exists(weight_path):
-                raise HTTPException(status_code=404, detail=f"Weight file {weight_file} not found")
-                
+
+            # Check if the weight file is in the checkpoints directory
+            checkpoints_dir = os.path.join(project_dir, "checkpoints")
+            if os.path.exists(os.path.join(checkpoints_dir, weight_file)):
+                weight_path = os.path.join(checkpoints_dir, weight_file)
+            elif os.path.exists(os.path.join(project_dir, weight_file)):
+                weight_path = os.path.join(project_dir, weight_file)
+            else:
+                # Check if it's an index file
+                index_path = os.path.join(index_root, f"{project_name}.index")
+                if weight_file.endswith(".index") and os.path.exists(index_path):
+                    weight_path = index_path
+                else:
+                    raise HTTPException(status_code=404, detail=f"Weight file {weight_file} not found")
+
             return FileResponse(
                 weight_path,
                 media_type="application/octet-stream",
-                filename=weight_file
+                filename=os.path.basename(weight_path)
             )
-            
+
         except HTTPException:
             raise
         except Exception as e:
@@ -1358,24 +1431,265 @@ def register_api_endpoints(api):
 
     @api.post("/api/v1/rvc/upload", tags=["RVC"])
     async def api_upload_datasets(
-        project_name: str = Form(...),
-        dataset_files: List[UploadFile] = File(...)
+            project_name: str = Form(...),
+            separate_vocals: bool = Form(True),
+            dataset_files: List[UploadFile] = File(...)
     ):
-        # Implementation of the new API endpoint
-        pass
+        """
+        Upload dataset files to an existing or new project
+        
+        Args:
+            project_name: Name of the voice project
+            separate_vocals: Whether to separate vocals from instrumental
+            dataset_files: Audio files to upload
+            
+        Returns:
+            Status information about the upload
+        """
+        try:
+            # Validate project name
+            if not project_name or project_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Project name cannot be empty")
+                
+            # Validate files
+            if not dataset_files or len(dataset_files) == 0:
+                raise HTTPException(status_code=400, detail="No dataset files provided")
+            
+            # Create project directory structure
+            project_dir = os.path.join(output_path, "voices", project_name)
+            os.makedirs(project_dir, exist_ok=True)
+            
+            raw_dir = os.path.join(project_dir, "raw")
+            os.makedirs(raw_dir, exist_ok=True)
+            
+            # Save uploaded audio files
+            file_paths = []
+            for audio_file in dataset_files:
+                file_path = os.path.join(raw_dir, audio_file.filename)
+                with open(file_path, "wb") as f:
+                    content = await audio_file.read()
+                    f.write(content)
+                file_paths.append(file_path)
+            
+            # Separate vocals if requested
+            if separate_vocals and file_paths:
+                vocal_files, bg_vocal_files = separate_vocal(file_paths)
+                
+                # Move the separated files to the raw directory
+                for vocal_file in vocal_files:
+                    basename = os.path.basename(vocal_file)
+                    if "(Vocals)" in basename:
+                        # Rename to remove the (Vocals) suffix
+                        new_basename = basename.replace("(Vocals)", "").strip()
+                        new_path = os.path.join(raw_dir, new_basename)
+                        shutil.copy2(vocal_file, new_path)
+                
+                separated_count = len(vocal_files)
+            else:
+                separated_count = 0
+            
+            return {
+                "status": "success",
+                "message": f"Successfully uploaded {len(file_paths)} files to project '{project_name}'",
+                "project_name": project_name,
+                "file_count": len(file_paths),
+                "separated_count": separated_count,
+                "project_dir": project_dir
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error uploading dataset files:")
+            raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
+    
+    @api.post("/api/v1/rvc/build_index", tags=["RVC"])
+    async def api_build_index(
+            project_name: str = Form(...),
+            project_version: str = Form("v2"),
+            background_tasks: BackgroundTasks = None
+    ):
+        """
+        Build an index for an existing trained model
+        
+        Args:
+            project_name: Name of the voice project
+            project_version: RVC model version (v1 or v2)
+            background_tasks: FastAPI background tasks
+            
+        Returns:
+            Status information about the index building process
+        """
+        try:
+            # Validate project name
+            if not project_name or project_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Project name cannot be empty")
+                
+            # Validate project version
+            if project_version not in ["v1", "v2"]:
+                raise HTTPException(status_code=400, detail="Project version must be v1 or v2")
+                
+            # Check if project exists
+            project_dir = os.path.join(output_path, "voices", project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
+                
+            # Check if features directory exists
+            feature_dir = os.path.join(project_dir, "3_feature256") if project_version == "v1" else os.path.join(project_dir, "3_feature768")
+            if not os.path.exists(feature_dir):
+                raise HTTPException(status_code=400, detail="Features not extracted. Please complete training first.")
+                
+            # Create job ID for tracking
+            job_id = f"index_{int(time.time())}"
+            
+            # Start index building in background
+            if background_tasks:
+                background_tasks.add_task(
+                    run_index_job,
+                    job_id=job_id,
+                    project_name=project_name,
+                    project_version=project_version
+                )
+                
+                return {
+                    "status": "started",
+                    "job_id": job_id,
+                    "message": f"Index building started for project '{project_name}'",
+                    "estimated_time": "This may take a few minutes"
+                }
+            else:
+                # Run synchronously
+                results = []
+                for result in train_index(project_name, project_version):
+                    results.append(result)
+                    
+                return {
+                    "status": "success",
+                    "message": "Index built successfully",
+                    "details": results
+                }
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error building index:")
+            raise HTTPException(status_code=500, detail=f"Index building error: {str(e)}")
+    
+    @api.get("/api/v1/rvc/analyze/{project_name}", tags=["RVC"])
+    async def api_analyze_project(project_name: str):
+        """
+        Analyze an existing project to get information about it
+        
+        Args:
+            project_name: Name of the voice project
+            
+        Returns:
+            Detailed information about the project
+        """
+        try:
+            # Validate project name
+            if not project_name or project_name.strip() == "":
+                raise HTTPException(status_code=400, detail="Project name cannot be empty")
+                
+            # Check if project exists
+            project_dir = os.path.join(output_path, "voices", project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
+                
+            # Get raw audio files
+            raw_dir = os.path.join(project_dir, "raw")
+            raw_files = []
+            if os.path.exists(raw_dir):
+                raw_files = [os.path.join(raw_dir, f) for f in os.listdir(raw_dir) 
+                             if os.path.isfile(os.path.join(raw_dir, f)) and f.endswith(('.wav', '.mp3', '.flac'))]
+                
+            # Get total audio duration
+            total_duration = 0
+            for file in raw_files:
+                try:
+                    audio = AudioSegment.from_file(file)
+                    total_duration += len(audio) / 1000  # Convert to seconds
+                except Exception as e:
+                    logger.error(f"Error measuring duration of {file}: {e}")
+                    
+            # Get model version
+            version = "unknown"
+            if os.path.exists(os.path.join(project_dir, "3_feature256")):
+                version = "v1"
+            elif os.path.exists(os.path.join(project_dir, "3_feature768")):
+                version = "v2"
+                
+            # Get checkpoints
+            checkpoints = []
+            checkpoints_dir = os.path.join(project_dir, "checkpoints")
+            if os.path.exists(checkpoints_dir):
+                checkpoints = list_project_weights(project_dir)
+                
+            # Check for index
+            index_file = os.path.join(index_root, f"{project_name}.index")
+            has_index = os.path.exists(index_file)
+            
+            # Get pitch information if available
+            pitch_info = None
+            pitch_file = os.path.join(project_dir, "pitch_info.json")
+            if os.path.exists(pitch_file):
+                try:
+                    with open(pitch_file, "r") as f:
+                        pitch_info = json.load(f)
+                except Exception as e:
+                    logger.error(f"Error reading pitch info: {e}")
+            
+            # If pitch info doesn't exist but we have raw files, analyze them
+            if not pitch_info and raw_files:
+                pitch_info = analyze_pitch_range(raw_files)
+                
+                # Save the pitch info for future use
+                if pitch_info:
+                    try:
+                        with open(pitch_file, "w") as f:
+                            json.dump(pitch_info, f, indent=2)
+                    except Exception as e:
+                        logger.error(f"Error saving pitch info: {e}")
+            
+            # Get dataset size if index exists
+            dataset_size = 0
+            if has_index:
+                try:
+                    dataset_size = get_dataset_length(index_file)
+                except Exception as e:
+                    logger.error(f"Error getting dataset size: {e}")
+                
+            return {
+                "name": project_name,
+                "version": version,
+                "path": project_dir,
+                "raw_file_count": len(raw_files),
+                "total_duration_seconds": total_duration,
+                "total_duration_minutes": total_duration / 60,
+                "checkpoints": checkpoints,
+                "has_index": has_index,
+                "dataset_size": dataset_size,
+                "pitch_info": pitch_info
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Error analyzing project:")
+            raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
 
 def run_train_job(
-    job_id, project_name, audio_files, sample_rate, use_pitch_guidance, 
-    speaker_id, extraction_method, epoch_save_freq, train_epochs,
-    batch_size, save_latest_only, save_weights_every, project_version, 
-    gpus_rmvpe, temp_dir
+        job_id, project_name, audio_files, sample_rate, use_pitch_guidance,
+        speaker_id, extraction_method, epoch_save_freq, train_epochs,
+        batch_size, save_latest_only, save_weights_every, project_version,
+        gpus_rmvpe, separate_vocals, cache_to_gpu, temp_dir
 ):
     """Run a training job in the background"""
     try:
         # Create status directory
         status_dir = os.path.join(output_path, "voices", "jobs")
         os.makedirs(status_dir, exist_ok=True)
-        
+
         # Initialize status
         status = {
             "job_id": job_id,
@@ -1388,7 +1702,7 @@ def run_train_job(
             "total_epochs": train_epochs,
             "log": []
         }
-        
+
         # Function to update and save status
         def update_status(new_status, progress=None, message=None):
             nonlocal status
@@ -1403,18 +1717,18 @@ def run_train_job(
             # Save to file
             with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
                 json.dump(status, f, indent=2)
-        
+
         # Start training
         update_status("preprocessing", 0, "Starting preprocessing")
-        
+
         # Get number of CPUs
         num_cpus = os.cpu_count() or 4
-        
+
         # Run the actual training process
         train1key(
             project_name=project_name,
             existing_project_name=None,
-            separate_vocals=True,
+            separate_vocals=separate_vocals,
             tgt_sample_rate=sample_rate,
             use_pitch_guidance=use_pitch_guidance,
             inputs=audio_files,
@@ -1428,23 +1742,23 @@ def run_train_job(
             generator="",
             discriminator="",
             tgt_gpus="0",
-            cache_to_gpu=False,
+            cache_to_gpu=cache_to_gpu == "Yes",
             save_weights_every=save_weights_every,
             project_version=project_version,
             gpus_rmvpe=gpus_rmvpe,
             pause_after_separation=False,
             progress=StatusUpdater(update_status)
         )
-        
+
         # Update final status
         update_status("completed", 100, "Training completed successfully")
         status["completion_time"] = time.time()
         with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
             json.dump(status, f, indent=2)
-            
+
     except Exception as e:
         logger.error(f"Error in training job {job_id}: {e}")
-        
+
         # Update failed status
         try:
             status["status"] = "failed"
@@ -1457,7 +1771,7 @@ def run_train_job(
                 json.dump(status, f, indent=2)
         except Exception as status_e:
             logger.error(f"Error updating job status: {status_e}")
-            
+
     finally:
         # Clean up temporary directory
         try:
@@ -1466,41 +1780,84 @@ def run_train_job(
         except Exception as e:
             logger.error(f"Error cleaning up temporary directory: {e}")
 
-class StatusUpdater:
-    """
-    Helper class to update job status from progress callback
-    """
-    def __init__(self, update_func):
-        self.update_func = update_func
-        self.last_update = 0
+
+def run_index_job(job_id, project_name, project_version):
+    """Run an index building job in the background"""
+    try:
+        # Create status directory
+        status_dir = os.path.join(output_path, "voices", "jobs")
+        os.makedirs(status_dir, exist_ok=True)
+
+        # Initialize status
+        status = {
+            "job_id": job_id,
+            "project_name": project_name,
+            "status": "building_index",
+            "progress": 0,
+            "start_time": time.time(),
+            "completion_time": None,
+            "log": []
+        }
+
+        # Function to update and save status
+        def update_status(message, progress=None):
+            nonlocal status
+            if progress is not None:
+                status["progress"] = progress
+            status["log"].append({
+                "time": time.time(),
+                "message": message
+            })
+            # Save to file
+            with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+                json.dump(status, f, indent=2)
+
+        # Start index building
+        update_status("Starting index building", 0)
         
-    def __call__(self, value, desc="", total=100):
-        # Calculate percentage and only update status occasionally to avoid too many files writes
-        percentage = int((value / total) * 100) if total > 0 else 0
-        
-        # Update if significant change (more than 5%) or if it's at the beginning or end
-        if (percentage - self.last_update >= 5) or percentage == 0 or percentage == 100:
-            self.last_update = percentage
-            
-            # Determine status based on description
-            if "preprocess" in desc.lower():
-                status = "preprocessing"
-            elif "extract" in desc.lower():
-                status = "feature_extraction"
-            elif "train" in desc.lower():
-                status = "training"
-                # Extract current epoch if available
-                if "epoch" in desc.lower():
-                    try:
-                        epoch_parts = desc.split("epoch")
-                        if len(epoch_parts) > 1:
-                            epoch_part = epoch_parts[1].strip()
-                            current_epoch = int(epoch_part.split("/")[0])
-                            self.update_func(status, percentage, desc)
-                            return
-                    except Exception:
-                        pass
-            else:
-                status = "processing"
+        class IndexProgressUpdater:
+            def __call__(self, message):
+                progress = 0
+                if "Shape:" in message:
+                    progress = 30
+                elif "Training the index" in message:
+                    progress = 50
+                elif "Adding data" in message:
+                    progress = 70
+                elif "Successfully built" in message:
+                    progress = 90
+                elif "Dataset contains" in message:
+                    progress = 100
+                update_status(message, progress)
                 
-            self.update_func(status, percentage, desc)
+        progress_updater = IndexProgressUpdater()
+        
+        # Run the actual index building process
+        results = []
+        for result in train_index(project_name, project_version):
+            results.append(result)
+            progress_updater(result)
+
+        # Update final status
+        update_status("Index building completed successfully", 100)
+        status["status"] = "completed"
+        status["completion_time"] = time.time()
+        status["results"] = results
+        with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+            json.dump(status, f, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in index job {job_id}: {e}")
+
+        # Update failed status
+        try:
+            status["status"] = "failed"
+            status["completion_time"] = time.time()
+            status["log"].append({
+                "time": time.time(),
+                "message": f"Error: {str(e)}"
+            })
+            with open(os.path.join(status_dir, f"{job_id}.json"), "w") as f:
+                json.dump(status, f, indent=2)
+        except Exception as status_e:
+            logger.error(f"Error updating job status: {status_e}")
