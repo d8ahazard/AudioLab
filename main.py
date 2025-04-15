@@ -4,6 +4,7 @@ import os
 import sys
 import signal
 from pathlib import Path
+from fastapi.responses import RedirectResponse
 
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s',level=logging.DEBUG)
@@ -68,6 +69,19 @@ if str(project_root) not in sys.path:
 
 def setup_middleware(app):
     """Set up the FastAPI middleware for CORS and other functionality."""
+    from starlette.middleware.base import BaseHTTPMiddleware
+    
+    # Add custom middleware to prevent the redirect from / to //
+    class NoRedirectMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            # If it's a redirect to // (which causes the HTTPS mixed content issue)
+            if response.status_code == 307 and response.headers.get('location') == '//':
+                # Return a 200 response to the original / path instead of redirecting
+                return RedirectResponse(url='/', status_code=200)
+            return response
+    
+    # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -75,6 +89,9 @@ def setup_middleware(app):
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    
+    # Add our custom middleware to prevent the problematic redirect
+    app.add_middleware(NoRedirectMiddleware)
 
 if __name__ == '__main__':
     # Parse command-line arguments
@@ -165,9 +182,14 @@ if __name__ == '__main__':
         app = gr.mount_gradio_app(
             app, 
             demo,
-            path="/",  # Mount at root path
+            path="/frontend",  # Mount at /frontend to avoid conflict with root path
             favicon_path=os.path.join(project_root, 'res', 'favicon.ico')
         )
+        
+        # Add a redirect from root to frontend
+        @app.get("/")
+        async def root():
+            return RedirectResponse(url='/frontend')
         
         # Print startup information
         logger.info(f"Server running on http://{server_name}:{server_port}")
