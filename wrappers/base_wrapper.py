@@ -230,20 +230,32 @@ class BaseWrapper:
             Tuple containing (FileData, JsonRequest) models
         """
         from pydantic import BaseModel, Field
-        from typing import List, Optional, Dict, Any
+        from typing import List, Optional, Dict, Any, Annotated
         
         class FileData(BaseModel):
-            filename: str
-            content: str  # Base64 encoded file content
+            filename: str = pydantic.Field(..., description="Name of the file with extension")
+            content: str = pydantic.Field(..., description="Base64 encoded file content")
             
         # Create settings model from allowed_kwargs
-        SettingsModel = self.create_settings_model()
+        settings_model = self.create_settings_model()
         
-        class JsonRequest(BaseModel):
-            files: List[FileData]
-            settings: Optional[SettingsModel] = None
-            
-        return FileData, JsonRequest
+        # Create a specific request model for this wrapper
+        wrapper_name = self.__class__.__name__
+        request_model_name = f"{wrapper_name}Request"
+        
+        # Create proper type annotations
+        files_type = Annotated[List[FileData], pydantic.Field(description="Array of files to process")]
+        settings_type = Annotated[Optional[settings_model], pydantic.Field(default=None, description=f"Settings for {self.title} processing")]
+        
+        request_model = type(request_model_name, (BaseModel,), {
+            "__doc__": f"Request model for {self.title} processing",
+            "__annotations__": {
+                "files": files_type,
+                "settings": settings_type
+            }
+        })
+        
+        return FileData, request_model
         
     def create_settings_model(self):
         """
@@ -253,19 +265,48 @@ class BaseWrapper:
             A Pydantic model class with fields based on allowed_kwargs
         """
         from pydantic import BaseModel, create_model
-        from typing import Optional, Dict, Any
+        from typing import Optional
         
         # Create fields dictionary
         fields = {}
         for key, value in self.allowed_kwargs.items():
             field_type = value.type
-            if value.field.default == ...:
+            field_kwargs = {
+                "description": value.description
+            }
+            
+            # Add validation parameters from the TypedInput field
+            if value.field.default != ...:
+                field_kwargs["default"] = value.field.default
+            if hasattr(value.field, "ge"):
+                field_kwargs["ge"] = value.field.ge
+            if hasattr(value.field, "le"):
+                field_kwargs["le"] = value.field.le
+            if hasattr(value.field, "min_length"):
+                field_kwargs["min_length"] = value.field.min_length
+            if hasattr(value.field, "max_length"):
+                field_kwargs["max_length"] = value.field.max_length
+            
+            # Handle choices/enum if present
+            if hasattr(value, "choices") and value.choices:
+                if PYDANTIC_V2:
+                    field_kwargs["json_schema_extra"] = {"enum": value.choices}
+                else:
+                    field_kwargs["enum"] = value.choices
+            
+            # Make field optional if it has a default value
+            if value.field.default != ...:
                 field_type = Optional[field_type]
-            fields[key] = (field_type, value.field)
+            
+            fields[key] = (field_type, pydantic.Field(**field_kwargs))
         
         # Create model with dynamic name
         model_name = f"{self.__class__.__name__}Settings"
-        return create_model(model_name, **fields)
+        return create_model(
+            model_name,
+            __doc__=f"Settings model for {self.title} processing",
+            **fields
+        )
         
     def handle_json_request(self, request_data, processor_func):
         """
