@@ -7,14 +7,15 @@ from typing import List, Dict, Any, Union, Tuple, Callable
 import pydantic
 import gradio as gr
 from annotated_types import Ge, Le
-from fastapi import Body, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import HTTPException
 from pathlib import Path
 import tempfile
 
 from handlers.args import ArgHandler
 from util.data_classes import ProjectFiles
+import logging
 
+logger = logging.getLogger(__name__)
 if pydantic.__version__.startswith("1."):
     PYDANTIC_V2 = False
 else:
@@ -35,11 +36,8 @@ class TypedInput:
                  gradio_type: str = None,
                  render: bool = True,
                  required: bool = False,
-                 on_click: Callable = None,
-                 on_input: Callable = None,
-                 on_change: Callable = None,
-                 on_clear: Callable = None,
                  refresh: Callable = None,
+                 group_name: str = None,
                  ):
         field_kwargs = {
             "default": default,
@@ -64,13 +62,11 @@ class TypedInput:
         self.field = field
         self.render = render
         self.required = required
-        self.on_click = on_click
-        self.on_input = on_input
-        self.on_change = on_change
-        self.on_clear = on_clear
         self.refresh = refresh
         self.description = description
+        self.choices = choices
         self.gradio_type = gradio_type if gradio_type else self.pick_gradio_type()
+        self.group_name = group_name  # New parameter for accordion grouping
 
     def pick_gradio_type(self):
         if self.type == bool:
@@ -87,6 +83,9 @@ class TypedInput:
             return "Number"
         if self.type == list:
             return "Textfield"
+        # If we have choices, return a dropdown
+        if self.choices:
+            return "Dropdown"
         return "Text"
 
 
@@ -470,13 +469,50 @@ class BaseWrapper:
     def render_options(self, container: gr.Column):
         """
         Render the options for this wrapper into the provided container.
+        Groups elements into accordions if group_name is specified.
         """
         if not len(self.allowed_kwargs):
             return
+            
+        # First, organize elements by group
+        groups = {}
+        ungrouped = []
+        
         for key, value in self.allowed_kwargs.items():
-            if value.render:
-                with container:
-                    self.create_gradio_element(self.__class__.__name__, key, value)
+            if not value.render:
+                continue
+                
+            if value.group_name:
+                if value.group_name not in groups:
+                    groups[value.group_name] = []
+                groups[value.group_name].append((key, value))
+            else:
+                ungrouped.append((key, value))
+        
+        elements = {}
+        
+        with container:
+            # First render ungrouped elements
+            for key, value in ungrouped:
+                elem = self.create_gradio_element(self.__class__.__name__, key, value)
+                # If create_gradio_element returns a tuple (elem, refresh_button), handle it
+                if isinstance(elem, tuple):
+                    elements[key] = elem[0]
+                    # The refresh button is already connected to the element
+                else:
+                    elements[key] = elem
+            
+            # Then render grouped elements in accordions
+            for group_name, group_items in groups.items():
+                with gr.Accordion(label=group_name, open=False):
+                    for key, value in group_items:
+                        elem = self.create_gradio_element(self.__class__.__name__, key, value)
+                        # If create_gradio_element returns a tuple (elem, refresh_button), handle it
+                        if isinstance(elem, tuple):
+                            elements[key] = elem[0]
+                            # The refresh button is already connected to the element
+                        else:
+                            elements[key] = elem
 
     def register_descriptions(self, arg_handler: ArgHandler):
         """
@@ -540,14 +576,7 @@ class BaseWrapper:
         elem.__setattr__("key", f"{class_name}_{arg_key}")
 
         self.arg_handler.register_element(class_name, arg_key, elem, value.description)
-        if isinstance(value.on_click, Callable):
-            getattr(elem, "click")(value.on_click)
-        if isinstance(value.on_input, Callable):
-            getattr(elem, "input")(value.on_input)
-        if isinstance(value.on_change, Callable):
-            getattr(elem, "change")(value.on_change)
-        if isinstance(value.on_clear, Callable):
-            getattr(elem, "clear")(value.on_clear)
+        setattr(elem, "visible", value.render)
         if isinstance(value.refresh, Callable):
             # Create a gradio button as well, to trigger the refresh
             refresh_button = gr.Button(value=f"Refresh {key}")

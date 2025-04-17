@@ -4,24 +4,35 @@ import os
 import sys
 import signal
 from pathlib import Path
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from starlette.middleware.base import BaseHTTPMiddleware  # Import BaseHTTPMiddleware for custom middleware handling
 
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s', level=logging.DEBUG)
 
-# Silence other loggers except our app logger
+keys_to_silence = [
+    "httpx",
+    "urllib3",
+    "httpcore",
+    "asyncio",
+    "faiss",
+    "fsspec",
+    "onnx2torch",
+    "tensorflow",
+    "matplotlib",
+    "PIL",
+    "torio",
+    "h5py",
+    "python_multipart",
+    "wandb",
+    "sentry_sdk",
+    "git",
+    "speechbrain",
+    "xformers"
+]
+
+for key in keys_to_silence:
+    logging.getLogger(key).setLevel(logging.INFO)
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("asyncio").setLevel(logging.WARNING)
-logging.getLogger("fsspec").setLevel(logging.WARNING)
-logging.getLogger("onnx2torch").setLevel(logging.WARNING)
-logging.getLogger("tensorflow").setLevel(logging.WARNING)
-logging.getLogger("matplotlib").setLevel(logging.WARNING)
-logging.getLogger("root").setLevel(logging.WARNING)
-logging.getLogger("python_multipart").setLevel(logging.WARNING)
 
 # Keep our app logger at DEBUG level
 logger = logging.getLogger("ADLB")
@@ -31,7 +42,6 @@ import gradio as gr
 import uvicorn
 from torchaudio._extension import _init_dll_path
 
-import handlers.processing  # noqa (Keep this here, and first, as it is required for multiprocessing to work)
 from api import app as api_router
 from handlers.args import ArgHandler
 from handlers.config import model_path
