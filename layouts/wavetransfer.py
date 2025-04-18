@@ -1,0 +1,802 @@
+"""
+WaveTransfer UI Layout for AudioLab.
+A flexible end-to-end multi-instrument timbre transfer with diffusion.
+"""
+
+import logging
+import os
+import shutil
+import time
+import tempfile
+import yaml
+from typing import Optional, List
+
+import gradio as gr
+import torch
+from fastapi import Body, HTTPException, UploadFile, File
+from pydantic import BaseModel, Field
+
+from handlers.args import ArgHandler
+from handlers.config import output_path, model_path
+from modules.wavetransfer.main import train_model
+from modules.wavetransfer.main_schedule_network import train_schedule_network, schedule_noise, infer_schedule_network
+
+# Global variables for inter-tab communication
+SEND_TO_PROCESS_BUTTON = None
+OUTPUT_AUDIO = None
+logger = logging.getLogger("ADLB.WaveTransfer")
+
+# Available base models or configurations
+DEFAULT_CONF_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "modules", "wavetransfer", "bddm", "conf.yml")
+
+
+def list_wavetransfer_projects():
+    """List all available WaveTransfer projects in the output directory."""
+    projects = []
+    output_dir = os.path.join(output_path, "wavetransfer")
+    if os.path.exists(output_dir):
+        projects = [d for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
+    return projects
+
+
+def send_to_process(file_to_send, existing_inputs):
+    """Send generated audio to process tab."""
+    if not file_to_send:
+        return existing_inputs
+    
+    # Handle case where inputs is a list
+    if isinstance(existing_inputs, list):
+        updated_inputs = existing_inputs.copy()
+        if file_to_send not in updated_inputs:
+            updated_inputs.append(file_to_send)
+    else:
+        # Handle case where inputs is a FileList
+        updated_inputs = [file_to_send]
+    
+    return updated_inputs
+
+
+def create_project_config(project_dir, config_template=DEFAULT_CONF_PATH, **kwargs):
+    """Create a configuration file for a project based on template."""
+    if not os.path.exists(config_template):
+        raise FileNotFoundError(f"Config template not found: {config_template}")
+    
+    # Load template configuration
+    with open(config_template, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Update configuration with provided parameters
+    for key, value in kwargs.items():
+        if key in config:
+            config[key] = value
+    
+    # Create project directory
+    os.makedirs(project_dir, exist_ok=True)
+    
+    # Write updated configuration
+    config_path = os.path.join(project_dir, 'conf.yml')
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f)
+    
+    return config_path
+
+
+def render(arg_handler: ArgHandler):
+    global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
+    
+    with gr.Blocks() as app:
+        gr.Markdown("# 🎵 WaveTransfer - Timbre Transfer with Diffusion")
+        gr.Markdown(
+            "WaveTransfer enables flexible end-to-end multi-instrument timbre transfer using diffusion models. "
+            "You can train models that learn to transfer the timbre characteristics of one instrument to another."
+        )
+        
+        # Create tabs for inference and training
+        with gr.Tabs():
+            # Inference Tab
+            with gr.TabItem("Inference", id="wavetransfer_inference"):
+                gr.Markdown("## 🎹 Instrument Timbre Transfer")
+                gr.Markdown(
+                    "Transfer the timbre of one instrument to another using trained diffusion models. "
+                    "This lets you transform sounds while preserving the original musical content."
+                )
+                
+                with gr.Row():
+                    with gr.Column():
+                        # Left column - Input files and options
+                        gr.Markdown("### 📥 Input")
+                        
+                        project_selector = gr.Dropdown(
+                            label="Project",
+                            choices=list_wavetransfer_projects(),
+                            interactive=True,
+                            elem_id="wavetransfer_project_selector",
+                            elem_classes="hintitem"
+                        )
+                        refresh_projects_btn = gr.Button("🔄 Refresh Projects")
+                        
+                        source_audio = gr.Audio(
+                            label="Source Audio",
+                            type="filepath",
+                            elem_id="wavetransfer_source_audio",
+                            elem_classes="hintitem"
+                        )
+                        
+                    with gr.Column():
+                        # Middle column - Processing options
+                        gr.Markdown("### ⚙️ Options")
+                        
+                        chunked = gr.Checkbox(
+                            label="Use Chunked Decoding",
+                            value=True,
+                            elem_id="wavetransfer_chunked",
+                            elem_classes="hintitem"
+                        )
+                        
+                        noise_schedule = gr.Radio(
+                            label="Noise Schedule",
+                            choices=["linear", "cosine"],
+                            value="cosine",
+                            elem_id="wavetransfer_noise_schedule",
+                            elem_classes="hintitem"
+                        )
+                        
+                        noise_steps = gr.Slider(
+                            minimum=10,
+                            maximum=1000,
+                            step=10,
+                            value=50,
+                            label="Number of Noise Steps",
+                            elem_id="wavetransfer_noise_steps",
+                            elem_classes="hintitem"
+                        )
+                        
+                    with gr.Column():
+                        # Right column - Actions and output
+                        gr.Markdown("### 🎨 Generate")
+                        
+                        with gr.Group():
+                            with gr.Row():
+                                generate_btn = gr.Button("🔄 Generate", variant="primary")
+                                SEND_TO_PROCESS_BUTTON = gr.Button("📤 Send to Process")
+                        
+                        processing_status = gr.Markdown(visible=False)
+                        
+                        OUTPUT_AUDIO = gr.Audio(
+                            label="Generated Audio",
+                            elem_id="wavetransfer_output_audio",
+                            elem_classes="hintitem"
+                        )
+
+                # Define inference functions
+                def refresh_projects():
+                    return gr.Dropdown.update(choices=list_wavetransfer_projects())
+                
+                def generate_audio(project, source_audio_path, chunked, noise_schedule, noise_steps, progress=gr.Progress()):
+                    """Generate audio by inferring with the selected model"""
+                    progress(0.1, "Starting generation process...")
+                    
+                    if not project:
+                        return None, "⚠️ Please select a project first"
+                    
+                    if not source_audio_path or not os.path.exists(source_audio_path):
+                        return None, "⚠️ Please provide a valid source audio file"
+                    
+                    # Create project directory path
+                    project_dir = os.path.join(output_path, "wavetransfer", project)
+                    if not os.path.exists(project_dir):
+                        return None, f"⚠️ Project directory not found: {project_dir}"
+                    
+                    # Find config file
+                    config_path = os.path.join(project_dir, "conf.yml")
+                    if not os.path.exists(config_path):
+                        return None, f"⚠️ Configuration file not found in project: {config_path}"
+                    
+                    # Update config with source audio path
+                    with open(config_path, 'r') as f:
+                        config = yaml.safe_load(f)
+                    
+                    # Update config parameters
+                    config['inference_wav'] = source_audio_path
+                    config['chunked'] = chunked
+                    config['noise_schedule'] = noise_schedule
+                    config['N'] = noise_steps
+                    
+                    # Write updated config
+                    temp_config = os.path.join(tempfile.gettempdir(), f"wavetransfer_infer_{int(time.time())}.yml")
+                    with open(temp_config, 'w') as f:
+                        yaml.dump(config, f)
+                    
+                    progress(0.3, "Running inference with WaveTransfer model...")
+                    
+                    # Run inference
+                    success, result = infer_schedule_network(temp_config, project_dir)
+                    
+                    # Clean up
+                    if os.path.exists(temp_config):
+                        os.remove(temp_config)
+                    
+                    if not success:
+                        return None, f"⚠️ Generation failed: {result}"
+                    
+                    progress(0.9, "Generation complete!")
+                    
+                    # Find the first output file (should be a wav file)
+                    if isinstance(result, list) and len(result) > 0:
+                        return result[0], "✅ Generation complete! You can now play the audio or send it to processing."
+                    else:
+                        return None, "⚠️ No output files were generated"
+                
+                # Connect inference functions
+                refresh_projects_btn.click(
+                    fn=refresh_projects,
+                    outputs=[project_selector]
+                )
+                
+                generate_btn.click(
+                    fn=generate_audio,
+                    inputs=[
+                        project_selector,
+                        source_audio,
+                        chunked,
+                        noise_schedule,
+                        noise_steps
+                    ],
+                    outputs=[
+                        OUTPUT_AUDIO,
+                        processing_status
+                    ]
+                )
+            
+            # Training Tab
+            with gr.TabItem("Train", id="wavetransfer_train"):
+                gr.Markdown("## 🔄 Train Timbre Transfer Model")
+                gr.Markdown(
+                    "Train a new WaveTransfer model to learn the timbre characteristics of your target instrument. "
+                    "This involves two steps: (1) Training the main model and (2) Training the schedule network."
+                )
+                
+                with gr.Row():
+                    with gr.Column():
+                        # Left column - Project settings
+                        gr.Markdown("### 📂 Project")
+                        
+                        project_name = gr.Textbox(
+                            label="Project Name",
+                            placeholder="Enter a name for your project",
+                            elem_id="wavetransfer_project_name",
+                            elem_classes="hintitem"
+                        )
+                        
+                        project_list = gr.Dropdown(
+                            label="Existing Projects",
+                            choices=list_wavetransfer_projects(),
+                            interactive=True,
+                            elem_id="wavetransfer_project_list",
+                            elem_classes="hintitem"
+                        )
+                        refresh_train_projects_btn = gr.Button("🔄 Refresh Projects")
+                        
+                        training_mode = gr.Radio(
+                            label="Training Mode",
+                            choices=["New Project", "Continue Training", "Schedule Network"],
+                            value="New Project",
+                            elem_id="wavetransfer_training_mode",
+                            elem_classes="hintitem"
+                        )
+                        
+                    with gr.Column():
+                        # Middle column - Training data and parameters
+                        gr.Markdown("### 🎧 Training Data")
+                        
+                        with gr.Group(visible=True) as new_project_group:
+                            data_dirs = gr.File(
+                                label="Training Audio Files/Directory",
+                                file_count="multiple",
+                                elem_id="wavetransfer_data_dirs",
+                                elem_classes="hintitem"
+                            )
+                            
+                            max_steps = gr.Number(
+                                label="Maximum Training Steps",
+                                value=10000,
+                                elem_id="wavetransfer_max_steps",
+                                elem_classes="hintitem"
+                            )
+                            
+                            checkpoint_interval = gr.Number(
+                                label="Checkpoint Interval",
+                                value=5000,
+                                elem_id="wavetransfer_checkpoint_interval",
+                                elem_classes="hintitem"
+                            )
+                            
+                            fp16 = gr.Checkbox(
+                                label="Use FP16 (Half Precision)",
+                                value=True,
+                                elem_id="wavetransfer_fp16",
+                                elem_classes="hintitem"
+                            )
+                        
+                        with gr.Group(visible=False) as schedule_group:
+                            noise_sched_steps = gr.Slider(
+                                minimum=10,
+                                maximum=1000,
+                                step=10,
+                                value=50,
+                                label="Noise Schedule Steps",
+                                elem_id="wavetransfer_noise_sched_steps",
+                                elem_classes="hintitem"
+                            )
+                            
+                            noise_sched_type = gr.Radio(
+                                label="Noise Schedule Type",
+                                choices=["linear", "cosine"],
+                                value="cosine",
+                                elem_id="wavetransfer_noise_sched_type",
+                                elem_classes="hintitem"
+                            )
+                    
+                    with gr.Column():
+                        # Right column - Actions and logs
+                        gr.Markdown("### 🚀 Training")
+                        
+                        train_btn = gr.Button("🚀 Start Training", variant="primary")
+                        
+                        training_status = gr.Markdown(
+                            value="Ready to train. Set up your project and click 'Start Training'.",
+                            elem_id="wavetransfer_training_status",
+                            elem_classes="hintitem"
+                        )
+                        
+                        training_log = gr.Textbox(
+                            label="Training Log",
+                            interactive=False,
+                            lines=10,
+                            elem_id="wavetransfer_training_log",
+                            elem_classes="hintitem"
+                        )
+                
+                # Define training functions
+                def refresh_train_projects():
+                    return gr.Dropdown.update(choices=list_wavetransfer_projects())
+                
+                def toggle_training_mode(mode):
+                    """Show/hide appropriate UI elements based on training mode"""
+                    if mode == "New Project" or mode == "Continue Training":
+                        return gr.Group.update(visible=True), gr.Group.update(visible=False)
+                    else:  # Schedule Network
+                        return gr.Group.update(visible=False), gr.Group.update(visible=True)
+                
+                def update_project_name(selected_project):
+                    """Update project name when an existing project is selected"""
+                    if selected_project:
+                        return selected_project
+                    return ""
+                
+                def start_training(
+                    project_name,
+                    existing_project,
+                    training_mode,
+                    uploaded_files,
+                    max_steps,
+                    checkpoint_interval,
+                    fp16,
+                    noise_sched_steps,
+                    noise_sched_type,
+                    progress=gr.Progress()
+                ):
+                    """Start training based on selected mode"""
+                    # Use existing project if in continue mode, otherwise create new
+                    if training_mode in ["Continue Training", "Schedule Network"]:
+                        if not existing_project:
+                            return "⚠️ Please select an existing project for continuing training.", ""
+                        project = existing_project
+                    else:  # New Project
+                        if not project_name or project_name.strip() == "":
+                            return "⚠️ Please provide a project name.", ""
+                        project = project_name.strip()
+                    
+                    # Create project directory
+                    project_dir = os.path.join(output_path, "wavetransfer", project)
+                    os.makedirs(project_dir, exist_ok=True)
+                    
+                    log_content = f"Starting project: {project}\n"
+                    log_content += f"Training mode: {training_mode}\n"
+                    
+                    # Handle different training modes
+                    if training_mode == "Schedule Network":
+                        progress(0.1, "Preparing to train schedule network...")
+                        log_content += f"Noise schedule steps: {noise_sched_steps}\n"
+                        log_content += f"Noise schedule type: {noise_sched_type}\n"
+                        
+                        # Create/update config
+                        config_path = create_project_config(
+                            project_dir,
+                            N=int(noise_sched_steps),
+                            noise_schedule=noise_sched_type
+                        )
+                        
+                        progress(0.2, "Training schedule network...")
+                        log_content += f"Using config: {config_path}\n"
+                        
+                        # Train schedule network
+                        success, result = train_schedule_network(config_path, project_dir)
+                        
+                        if success:
+                            log_content += f"✅ Schedule network training completed.\n"
+                            log_content += f"Results saved to: {result}\n"
+                            return "✅ Schedule network training completed successfully!", log_content
+                        else:
+                            log_content += f"❌ Schedule network training failed: {result}\n"
+                            return f"❌ Schedule network training failed: {result}", log_content
+                    
+                    else:  # Main model training (new or continue)
+                        # Validate files for new project
+                        if training_mode == "New Project" and (not uploaded_files or len(uploaded_files) == 0):
+                            return "⚠️ Please upload training audio files.", ""
+                        
+                        # Process uploaded files
+                        if training_mode == "New Project":
+                            progress(0.1, "Processing uploaded files...")
+                            data_directory = os.path.join(project_dir, "data")
+                            os.makedirs(data_directory, exist_ok=True)
+                            
+                            # Copy uploaded files to data directory
+                            for file_path in uploaded_files:
+                                if os.path.isfile(file_path):
+                                    shutil.copy(file_path, os.path.join(data_directory, os.path.basename(file_path)))
+                                    log_content += f"Added training file: {os.path.basename(file_path)}\n"
+                            
+                            # Use data directory as source
+                            data_dirs_list = [data_directory]
+                        else:
+                            # For continue training, use existing data directory
+                            data_directory = os.path.join(project_dir, "data")
+                            if os.path.exists(data_directory):
+                                data_dirs_list = [data_directory]
+                                log_content += f"Using existing data directory: {data_directory}\n"
+                            else:
+                                return "⚠️ No data directory found for existing project.", ""
+                        
+                        # Set up model directory
+                        model_directory = os.path.join(project_dir, "model")
+                        os.makedirs(model_directory, exist_ok=True)
+                        
+                        progress(0.2, "Starting model training...")
+                        log_content += f"Model directory: {model_directory}\n"
+                        log_content += f"Max steps: {max_steps}\n"
+                        log_content += f"Checkpoint interval: {checkpoint_interval}\n"
+                        log_content += f"Using FP16: {fp16}\n"
+                        
+                        # Train the model
+                        success, result = train_model(
+                            model_dir=model_directory,
+                            data_dirs=data_dirs_list,
+                            max_steps=int(max_steps) if max_steps is not None else None,
+                            checkpoint_interval=int(checkpoint_interval) if checkpoint_interval is not None else None,
+                            fp16=fp16
+                        )
+                        
+                        if success:
+                            log_content += f"✅ Model training completed.\n"
+                            log_content += f"Results saved to: {result}\n"
+                            
+                            # Create default config for later use
+                            config_path = create_project_config(
+                                project_dir,
+                                load=os.path.join(model_directory, "checkpoint"),
+                                N=50,
+                                noise_schedule="cosine"
+                            )
+                            log_content += f"Created default config: {config_path}\n"
+                            
+                            return "✅ Model training completed successfully! You may now train the schedule network.", log_content
+                        else:
+                            log_content += f"❌ Model training failed: {result}\n"
+                            return f"❌ Model training failed: {result}", log_content
+                
+                # Connect training functions
+                refresh_train_projects_btn.click(
+                    fn=refresh_train_projects,
+                    outputs=[project_list]
+                )
+                
+                training_mode.change(
+                    fn=toggle_training_mode,
+                    inputs=[training_mode],
+                    outputs=[new_project_group, schedule_group]
+                )
+                
+                project_list.change(
+                    fn=update_project_name,
+                    inputs=[project_list],
+                    outputs=[project_name]
+                )
+                
+                train_btn.click(
+                    fn=start_training,
+                    inputs=[
+                        project_name,
+                        project_list,
+                        training_mode,
+                        data_dirs,
+                        max_steps,
+                        checkpoint_interval,
+                        fp16,
+                        noise_sched_steps,
+                        noise_sched_type
+                    ],
+                    outputs=[
+                        training_status,
+                        training_log
+                    ]
+                )
+                
+                # Add a third tab for information
+                with gr.TabItem("Info", id="wavetransfer_info"):
+                    gr.Markdown("## 📚 About WaveTransfer")
+                    gr.Markdown(
+                        """
+                        # WaveTransfer: A Flexible End-to-end Multi-instrument Timbre Transfer with Diffusion
+                        
+                        WaveTransfer is a tool for transferring the timbre (sound characteristics) of one instrument to another
+                        using diffusion models. It enables high-quality audio transformation while preserving the musical content.
+                        
+                        ## How It Works
+                        
+                        1. **Training the Main Model**: The first step is to train a diffusion model on your target instrument audio.
+                           This model learns to generate audio with the specific timbre characteristics of your target instrument.
+                           
+                        2. **Training the Schedule Network**: After the main model is trained, you need to train a schedule network
+                           which helps optimize the noise scheduling for the diffusion process.
+                           
+                        3. **Inference**: Finally, you can use the trained model to transform your source audio by applying the 
+                           learned timbre characteristics while preserving the original musical content.
+                        
+                        ## Tips for Best Results
+                        
+                        - Use high-quality audio recordings of your target instrument for training
+                        - Provide a diverse set of audio samples covering the full range of the instrument
+                        - For best results, train with at least 30 minutes of audio data
+                        - Use chunked decoding for faster generation with minimal quality loss
+                        - Experiment with different noise schedules (linear vs. cosine) for different results
+                        
+                        ## Training Steps
+                        
+                        1. Create a new project and upload your training audio files
+                        2. Train the main model (this may take several hours depending on your GPU)
+                        3. Train the schedule network using the trained model
+                        4. Generate new audio using your trained model with a source audio file
+                        
+                        ## Citation
+                        
+                        ```
+                        @inproceedings{baoueb2024wavetransfer,
+                          title={WaveTransfer: A Flexible End-to-end Multi-instrument Timbre Transfer with Diffusion},
+                          author={Baoueb, Teysir and Bie, Xiaoyu and Janati, Hicham and Richard, Gaël},
+                          booktitle={34th {IEEE} International Workshop on Machine Learning for Signal Processing, {MLSP} 2024, London, United Kingdom, September 22-25, 2024},
+                          year={2024}
+                        }
+                        ```
+                        """
+                    )
+    
+    return app
+
+
+def listen():
+    """Set up event listeners for inter-tab communication."""
+    # This function is called after all tabs are rendered
+    if SEND_TO_PROCESS_BUTTON and OUTPUT_AUDIO:
+        process_inputs = arg_handler.get_element("main", "process_inputs")
+        if process_inputs:
+            SEND_TO_PROCESS_BUTTON.click(
+                fn=send_to_process,
+                inputs=[OUTPUT_AUDIO, process_inputs],
+                outputs=[process_inputs]
+            )
+
+
+def register_descriptions(arg_handler: ArgHandler):
+    """Register tooltips and descriptions for UI elements."""
+    descriptions = {
+        # Inference tab
+        "wavetransfer_project_selector": "Select a trained WaveTransfer project to use for generation.",
+        "wavetransfer_source_audio": "Upload the source audio you want to transform with the selected model.",
+        "wavetransfer_chunked": "Process audio in chunks to reduce memory usage (recommended for longer files).",
+        "wavetransfer_noise_schedule": "The noise schedule to use for generation (cosine usually gives better results).",
+        "wavetransfer_noise_steps": "Number of noise steps for generation. More steps = higher quality but slower.",
+        "wavetransfer_output_audio": "The generated audio with transformed timbre characteristics.",
+        
+        # Training tab
+        "wavetransfer_project_name": "Name for your WaveTransfer project. This will create a folder in the outputs directory.",
+        "wavetransfer_project_list": "Select an existing project to continue training or to train the schedule network.",
+        "wavetransfer_training_mode": "Choose whether to create a new project, continue training an existing model, or train the schedule network.",
+        "wavetransfer_data_dirs": "Upload audio files of your target instrument. These will be used to train the model.",
+        "wavetransfer_max_steps": "Maximum number of training steps. More steps = better quality but longer training time.",
+        "wavetransfer_checkpoint_interval": "How often to save model checkpoints during training.",
+        "wavetransfer_fp16": "Use half-precision (16-bit) floating point for training. Speeds up training with minimal quality loss.",
+        "wavetransfer_noise_sched_steps": "Number of noise steps for the schedule network. This affects generation quality and speed.",
+        "wavetransfer_noise_sched_type": "Type of noise schedule to train. Cosine usually gives better results than linear.",
+        "wavetransfer_training_status": "Current status of the training process.",
+        "wavetransfer_training_log": "Detailed log information about the training process."
+    }
+    
+    for elem_id, description in descriptions.items():
+        arg_handler.register_description("wavetransfer", elem_id, description)
+
+
+def register_api_endpoints(api):
+    """Register API endpoints for the WaveTransfer layout."""
+    
+    # Define request/response models for the API
+    class TrainWaveTransferRequest(BaseModel):
+        project_name: str = Field(..., description="Name of the project to create or continue")
+        continue_training: bool = Field(False, description="Whether to continue training an existing project")
+        max_steps: Optional[int] = Field(10000, description="Maximum number of training steps")
+        checkpoint_interval: Optional[int] = Field(5000, description="Interval between model checkpoints")
+        fp16: bool = Field(True, description="Whether to use 16-bit floating point operations for training")
+    
+    class ScheduleNetworkRequest(BaseModel):
+        project_name: str = Field(..., description="Name of the existing project")
+        noise_steps: int = Field(50, description="Number of noise steps for the schedule")
+        noise_schedule_type: str = Field("cosine", description="Type of noise schedule (linear or cosine)")
+    
+    class InferenceRequest(BaseModel):
+        project_name: str = Field(..., description="Name of the trained project to use")
+        chunked: bool = Field(True, description="Whether to use chunked decoding")
+        noise_steps: int = Field(50, description="Number of noise steps for generation")
+        noise_schedule_type: str = Field("cosine", description="Type of noise schedule (linear or cosine)")
+    
+    # API endpoints
+    @api.post("/api/v1/wavetransfer/train", tags=["Audio Generation"])
+    async def train_wavetransfer_model(
+        request: TrainWaveTransferRequest = Body(...),
+        files: List[UploadFile] = File(None)
+    ):
+        """Train a WaveTransfer model for instrument timbre transfer."""
+        try:
+            # Create project directory
+            project_dir = os.path.join(output_path, "wavetransfer", request.project_name)
+            os.makedirs(project_dir, exist_ok=True)
+            
+            # Process uploaded files
+            data_dir = os.path.join(project_dir, "data")
+            os.makedirs(data_dir, exist_ok=True)
+            
+            if files and not request.continue_training:
+                for file in files:
+                    file_path = os.path.join(data_dir, file.filename)
+                    with open(file_path, "wb") as f:
+                        f.write(await file.read())
+            
+            # Set up model directory
+            model_dir = os.path.join(project_dir, "model")
+            os.makedirs(model_dir, exist_ok=True)
+            
+            # Train model
+            success, result = train_model(
+                model_dir=model_dir,
+                data_dirs=[data_dir],
+                max_steps=request.max_steps,
+                checkpoint_interval=request.checkpoint_interval,
+                fp16=request.fp16
+            )
+            
+            if not success:
+                raise HTTPException(status_code=500, detail=f"Training failed: {result}")
+            
+            # Create default config
+            config_path = create_project_config(
+                project_dir,
+                load=os.path.join(model_dir, "checkpoint"),
+                N=50,
+                noise_schedule="cosine"
+            )
+            
+            return {
+                "success": True, 
+                "message": "Model training completed successfully",
+                "project_dir": project_dir,
+                "config_path": config_path
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in train_wavetransfer_model: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.post("/api/v1/wavetransfer/schedule", tags=["Audio Generation"])
+    async def train_schedule_network(request: ScheduleNetworkRequest = Body(...)):
+        """Train the schedule network for a trained WaveTransfer model."""
+        try:
+            # Check if project exists
+            project_dir = os.path.join(output_path, "wavetransfer", request.project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project not found: {request.project_name}")
+            
+            # Create/update config
+            config_path = create_project_config(
+                project_dir,
+                N=request.noise_steps,
+                noise_schedule=request.noise_schedule_type
+            )
+            
+            # Train schedule network
+            success, result = schedule_noise(config_path, project_dir)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail=f"Schedule network training failed: {result}")
+            
+            return {
+                "success": True, 
+                "message": "Schedule network training completed successfully",
+                "project_dir": project_dir
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in train_schedule_network: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.post("/api/v1/wavetransfer/generate", tags=["Audio Generation"])
+    async def generate_audio(
+        request: InferenceRequest = Body(...),
+        source_audio: UploadFile = File(...)
+    ):
+        """Generate audio using a trained WaveTransfer model."""
+        try:
+            # Check if project exists
+            project_dir = os.path.join(output_path, "wavetransfer", request.project_name)
+            if not os.path.exists(project_dir):
+                raise HTTPException(status_code=404, detail=f"Project not found: {request.project_name}")
+            
+            # Save uploaded source audio
+            temp_dir = tempfile.mkdtemp()
+            source_path = os.path.join(temp_dir, source_audio.filename)
+            with open(source_path, "wb") as f:
+                f.write(await source_audio.read())
+            
+            # Create/update config
+            config_path = create_project_config(
+                project_dir,
+                inference_wav=source_path,
+                N=request.noise_steps,
+                noise_schedule=request.noise_schedule_type,
+                chunked=request.chunked
+            )
+            
+            # Run inference
+            success, result = infer_schedule_network(config_path, project_dir)
+            
+            # Clean up
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail=f"Generation failed: {result}")
+            
+            # Return the first output file
+            if isinstance(result, list) and len(result) > 0:
+                output_file = result[0]
+                
+                # Return file path for now (in a real API, would return file content)
+                return {
+                    "success": True,
+                    "message": "Generation completed successfully",
+                    "output_file": output_file
+                }
+            else:
+                raise HTTPException(status_code=500, detail="No output files were generated")
+            
+        except Exception as e:
+            logger.error(f"Error in generate_audio: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @api.get("/api/v1/wavetransfer/projects", tags=["Audio Generation"])
+    async def list_projects():
+        """List all available WaveTransfer projects."""
+        try:
+            projects = list_wavetransfer_projects()
+            return {"projects": projects}
+        except Exception as e:
+            logger.error(f"Error in list_projects: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e)) 

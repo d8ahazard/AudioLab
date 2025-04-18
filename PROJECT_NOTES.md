@@ -59,6 +59,7 @@ Contains the core functional modules of the application:
 - **stable_audio/**: Text-to-audio generation using StabilityAI's Stable Audio model.
 - **diffrythm/**: End-to-end full-length song generation using DiffRhythm.
 - **orpheus/**: Real-time high-quality TTS system powered by large language models.
+- **wavetransfer/**: Flexible multi-instrument timbre transfer using diffusion models.
 
 #### `/layouts`
 
@@ -72,6 +73,7 @@ Defines the Gradio UI layouts for different sections of the application:
 - **stable_audio.py**: UI for text-to-audio generation with StabilityAI's Stable Audio.
 - **orpheus.py**: UI for Orpheus TTS functionality.
 - **diffrythm.py**: UI for DiffRhythm song generation.
+- **wavetransfer.py**: UI for WaveTransfer timbre transfer.
 - **transcribe.py**: UI for audio transcription with speaker diarization.
 
 #### `/util`
@@ -460,6 +462,47 @@ The DiffRhythm module provides a dedicated UI interface with the following featu
   - Memory optimization options
 
 The module seamlessly integrates with the rest of the AudioLab ecosystem, allowing generated songs to be further processed with other tools like audio separation, voice cloning, and remastering.
+
+### WaveTransfer
+
+The WaveTransfer module provides flexible multi-instrument timbre transfer capabilities using diffusion models:
+
+- **🎵 Instrument Timbre Transfer:** Transform the sound characteristics (timbre) of one instrument to another while preserving musical content.
+- **🔄 Two-Step Training Process:** Train the main model followed by a schedule network for optimal results.
+- **⚙️ Customizable Noise Scheduling:** Experiment with different noise schedules and steps for various transformations.
+- **🔬 Project-Based Workflow:** Organize your models and experiments in separate projects for easy management.
+- **🚀 Chunked Decoding:** Process audio in chunks to reduce memory usage for longer files.
+- **🔧 FP16 Support:** Use half-precision training for faster model creation.
+
+The WaveTransfer module provides a dedicated UI interface with the following features:
+
+- **Inference Interface**: A user-friendly interface for timbre transfer with:
+  - Project selection for managing different instrument models
+  - Source audio upload for transformation
+  - Customizable generation parameters (chunked decoding, noise schedule, steps)
+  - Audio preview and processing capabilities
+  - Send to Process tab for further audio manipulation
+
+- **Training Interface**: Comprehensive tools for creating timbre transfer models:
+  - New project creation and existing project management
+  - Multiple training modes (new project, continue training, schedule network)
+  - Audio file upload for model training
+  - Training parameter customization (steps, checkpoints, precision)
+  - Real-time training status and logs
+
+- **Information Tab**: Detailed documentation about:
+  - How the timbre transfer process works
+  - Best practices for training and inference
+  - Tips for achieving optimal results
+  - Academic citation information
+
+- **API Integration**: Complete REST API with endpoints supporting:
+  - Model training with customizable parameters
+  - Schedule network training for optimizing noise schedules
+  - Audio generation with trained models
+  - Project management operations
+
+The module is fully integrated with the AudioLab ecosystem, allowing transformed audio to be further processed with other tools like audio separation, voice cloning, and remastering.
 
 ### Orpheus TTS
 

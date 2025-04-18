@@ -28,6 +28,7 @@ AudioLab is an open-source powerhouse for voice-cloning and audio separation, bu
 - **🧬 Voice Cloning:** Train high-quality voice models with just 30-60 minutes of data.
 - **🚀 Audio Super Resolution:** Enhance and clean up audio.
 - **🎚️ Remastering:** Apply spectral characteristics from a reference track.
+- **🎵 Timbre Transfer:** Transform instrument sounds while preserving musical content using WaveTransfer.
 - **🔄 Audio Conversion:** Convert between popular formats effortlessly.
 - **📜 Export to DAW:** Easily create Ableton Live and Reaper projects from separated stems.
 
@@ -164,6 +165,22 @@ Example use cases:
 - Generate background music for videos with specific moods
 - Experiment with unique musical styles and vocal characteristics
 
+### WaveTransfer: Instrument Timbre Transfer
+
+Transform the sound characteristics of one instrument to another using diffusion models:
+
+- **🎵 Preserve Musical Content:** Transform timbre while keeping the original musical composition intact.
+- **🎸 Multi-instrument Support:** Transfer between any types of musical instruments.
+- **🔄 Two-Step Process:** Easy-to-follow train-then-generate workflow for custom instruments.
+- **⚙️ Flexible Configuration:** Adjust noise schedules and steps for different transfer qualities.
+- **💾 Memory Optimization:** Use chunked processing for longer audio files.
+
+Example applications:
+- Transform a piano recording to sound like a guitar
+- Create hybrid instruments with unique sound characteristics
+- Convert acoustic instrument recordings to electronic sounds
+- Experiment with novel timbres for music production
+
 ### Orpheus TTS: Real-time Speech Synthesis
 
 Generate natural-sounding speech with LLM-powered text-to-speech capabilities:
@@ -243,6 +260,7 @@ AudioLab is powered by some fantastic open-source projects:
 - 🔈 [Stable Audio](https://stability.ai/blog/stable-audio-open-1-0-free-text-to-audio-model) – Text-to-audio generation.
 - 🎵 [DiffRhythm](https://github.com/ASLP-lab/DiffRhythm) – Full-length song generation with latent diffusion.
 - 🗣️ [Orpheus-TTS](https://github.com/canopyai/Orpheus-TTS) – Real-time high-quality text-to-speech.
+- 🎵 [WaveTransfer](https://github.com/tencent-ailab/bddm) – Instrument timbre transfer with diffusion.
 
 ---
 

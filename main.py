@@ -28,6 +28,8 @@ from layouts.diffrythm import listen as diffrythm_listen, register_descriptions 
     render as render_diffrythm
 from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
     render as render_transcribe
+from layouts.wavetransfer import listen as wavetransfer_listen, register_descriptions as wavetransfer_register_descriptions, \
+    render as render_wavetransfer
 
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s', level=logging.DEBUG)
@@ -147,6 +149,8 @@ if __name__ == '__main__':
                     render_diffrythm(arg_handler)
                 with gr.Tab(label='Transcribe', id="transcribe"):
                     render_transcribe(arg_handler)
+                with gr.Tab(label='WaveTransfer', id="wavetransfer"):
+                    render_wavetransfer(arg_handler)
 
             tts_listen()
             music_listen()
@@ -155,7 +159,7 @@ if __name__ == '__main__':
             orpheus_listen()
             diffrythm_listen()
             transcribe_listen()
-
+            wavetransfer_listen()
             # demo.queue()
 
         # Create a unified FastAPI app that serves both the API and the Gradio UI
