@@ -4,6 +4,30 @@ import os
 import sys
 import signal
 from pathlib import Path
+import gradio as gr
+import uvicorn
+from torchaudio._extension import _init_dll_path
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from api import app as api_router
+from handlers.args import ArgHandler
+from handlers.config import model_path
+from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
+    listen as music_listen
+from layouts.process import render as render_process, register_descriptions as process_register_descriptions, \
+    listen as process_listen
+from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
+from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
+from layouts.stable_audio import render as render_stable_audio, \
+    register_descriptions as stable_audio_register_descriptions, \
+    listen as stable_audio_listen
+from layouts.orpheus import listen as orpheus_listen, render_orpheus, \
+    register_descriptions as orpheus_register_descriptions
+from layouts.diffrythm import listen as diffrythm_listen, register_descriptions as diffrythm_register_descriptions, \
+    render as render_diffrythm
+from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
+    render as render_transcribe
 
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s', level=logging.DEBUG)
@@ -38,26 +62,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("ADLB")
 logger.setLevel(logging.DEBUG)
 
-import gradio as gr
-import uvicorn
-from torchaudio._extension import _init_dll_path
-
-from api import app as api_router
-from handlers.args import ArgHandler
-from handlers.config import model_path
-from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
-    listen as music_listen
-from layouts.process import render as render_process, register_descriptions as process_register_descriptions, \
-    listen as process_listen
-from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
-from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
-from layouts.stable_audio import render as render_stable_audio, register_descriptions as stable_audio_register_descriptions, \
-    listen as stable_audio_listen
-from layouts.orpheus import listen as orpheus_listen, render_orpheus, register_descriptions as orpheus_register_descriptions
-from layouts.diffrythm import listen as diffrythm_listen, register_descriptions as diffrythm_register_descriptions, \
-    render as render_diffrythm
-from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
-    render as render_transcribe
+hf_dir = os.path.join(model_path, "hf")
+transformers_dir = os.path.join(model_path, "transformers")
+os.makedirs(hf_dir, exist_ok=True)
+os.makedirs(transformers_dir, exist_ok=True)
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -67,10 +75,6 @@ if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
 os.environ["COQUI_TOS_AGREED"] = "1"
 os.environ["TTS_HOME"] = model_path
 # Stop caching models in limbo!!
-hf_dir = os.path.join(model_path, "hf")
-transformers_dir = os.path.join(model_path, "transformers")
-os.makedirs(hf_dir, exist_ok=True)
-os.makedirs(transformers_dir, exist_ok=True)
 # Set HF_HUB_CACHE_DIR to the model_path
 os.environ["HF_HOME"] = hf_dir
 
@@ -90,10 +94,10 @@ if __name__ == '__main__':
     server_name = "0.0.0.0" if args.listen else "127.0.0.1"
     server_port = args.port
 
-    # Define signal handler for graceful shutdown
     def signal_handler(sig, frame):
         logger.info("SIGINT or SIGTERM received, shutting down gracefully...")
         sys.exit(0)
+
 
     # Register the signal handler
     signal.signal(signal.SIGINT, signal_handler)
@@ -152,18 +156,22 @@ if __name__ == '__main__':
             diffrythm_listen()
             transcribe_listen()
 
-            demo.queue()
-        
+            # demo.queue()
+
         # Create a unified FastAPI app that serves both the API and the Gradio UI
-        from fastapi import FastAPI
-        main_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)  # Disable /docs, /redoc, and /openapi.json at the root
+        favicon_path = os.path.join(project_root, "res", "favicon.ico")
+        main_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+        # Serve favicon by mounting static files
+        favicon_dir = os.path.dirname(favicon_path)
+        main_app.mount("/favicon.ico", StaticFiles(directory=favicon_dir, html=True), name="favicon")
         # Mount the API under /api so that endpoints are available at /api/v1/process/...
         main_app.mount("/api", api_router)
         # Mount the Gradio UI on the root path without including its routes in the schema
-        main_app.mount("/", demo.app, name="gradio")
+        # main_app.mount("/", demo.app, name="gradio")
+        main_app = gr.mount_gradio_app(main_app, demo, path="")
 
         logger.info(f"Server running on http://{server_name}:{server_port}")
         logger.info(f"API documentation available at http://{server_name}:{server_port}/api/docs")
-        
+
         # Run the unified server
         uvicorn.run(main_app, host=server_name, port=server_port)

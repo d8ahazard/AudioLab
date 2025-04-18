@@ -29,6 +29,7 @@ class ProjectFiles:
         self.file_hash = file_hash
         self.project_dir = project_dir
         self.last_outputs = []
+        self.video_sources = {}
 
         self.file_dict = {
             'source': [src_file]

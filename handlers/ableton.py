@@ -4,16 +4,30 @@ import shutil
 import wave
 import binascii
 import xml.etree.ElementTree as ET
-from typing import List
+from typing import List, Dict, Optional
 
 import librosa
 
 from handlers.config import output_path, app_path
 from util.audio_track import AudioTrack
+from util.video_track import VideoTrack
 from util.data_classes import ProjectFiles
 
 
-def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = None, pitch_shift: int = 0):
+def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = None, pitch_shift: int = 0, videos: Optional[List[str]] = None):
+    """
+    Create an Ableton Live project with audio stems and optional video files.
+    
+    Args:
+        project: ProjectFiles object
+        stems: List of audio stem file paths
+        bpm: Optional BPM to set for the project
+        pitch_shift: Pitch shift amount in semitones
+        videos: Optional list of video file paths to include in the project
+        
+    Returns:
+        Path to the created Ableton project directory
+    """
     project_name = os.path.basename(project.project_dir)
 
     # Prepare the Ableton project directory: /ableton/<project_name>/
@@ -23,7 +37,7 @@ def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = N
         shutil.rmtree(als_project_dir)
     os.makedirs(als_project_dir, exist_ok=True)
 
-    # Where we'll copy stems:
+    # Where we'll copy stems and videos:
     samples_path = os.path.join(als_project_dir, "Samples", "Imported")
     os.makedirs(samples_path, exist_ok=True)
 
@@ -149,13 +163,64 @@ def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = N
         # Update the global next pointee ID for subsequent tracks
         global_next_pointee_id = audio_track_obj.next_pointee_id
         tracks_elem.append(track_elem)
+    
+    # -------------------------------------------------------------------------
+    # 6) ADD VIDEO TRACKS IF PROVIDED
+    # -------------------------------------------------------------------------
+    if videos and len(videos) > 0:
+        for v_idx, video_path in enumerate(videos):
+            if not os.path.exists(video_path):
+                print(f"Video file not found: {video_path}")
+                continue
+                
+            video_basename = os.path.basename(video_path)
+            dest_video_path = os.path.join(samples_path, video_basename)
+            
+            # Copy video file to the project's Samples directory
+            if video_path != dest_video_path:
+                shutil.copy2(video_path, dest_video_path)
+            
+            original_file_size = os.path.getsize(dest_video_path)
+            with open(dest_video_path, 'rb') as f:
+                video_crc_val = binascii.crc32(f.read()) & 0xFFFFFFFF
+            
+            # Calculate appropriate video track ID
+            video_track_id = next_id
+            next_id += 1
+            
+            # Use a distinct color for video tracks
+            video_color_val = 16 + v_idx % 8  # Use colors from 16-23 for videos
+            video_basename_no_ext = os.path.splitext(video_basename)[0]
+            video_effective_name = f"Video {v_idx + 1}-{video_basename_no_ext}"
+            
+            # Create VideoTrack object for this video
+            video_track_obj = VideoTrack(
+                track_id=video_track_id,
+                next_pointee_id=global_next_pointee_id,
+                effective_name=video_effective_name,
+                clip_name=video_basename_no_ext,
+                color=video_color_val,
+                clip_start=clip_start,  # Align with audio clips
+                clip_end=clip_end,      # Same end point as audio
+                relative_path=f"Samples/Imported/{video_basename}",
+                absolute_path=dest_video_path,
+                original_file_size=original_file_size,
+                original_crc=video_crc_val
+            )
+            
+            # Convert to XML element and append to tracks
+            video_elem = video_track_obj.to_element()
+            global_next_pointee_id = video_track_obj.next_pointee_id
+            tracks_elem.append(video_elem)
+            
+            print(f"Added video track: {video_effective_name}")
 
     # Append the previously stored <ReturnTrack> elements at the end
     for rt in return_tracks:
         tracks_elem.append(rt)
 
     # -------------------------------------------------------------------------
-    # 6) UPDATE <NextPointeeId> TO AVOID “invalid pointee ID”
+    # 7) UPDATE <NextPointeeId> TO AVOID "invalid pointee ID"
     # -------------------------------------------------------------------------
     # Gather all numeric IDs in the entire <LiveSet>
     def gather_all_ids(elem, all_ids):
@@ -183,7 +248,7 @@ def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = N
         ET.SubElement(live_set_elem, "NextPointeeId", {"Value": str(new_next_pointee_val)})
 
     # -------------------------------------------------------------------------
-    # 7) PRETTY-PRINT & GZIP THE RESULTING XML AS .als
+    # 8) PRETTY-PRINT & GZIP THE RESULTING XML AS .als
     # -------------------------------------------------------------------------
     try:
         ET.indent(tree, space="  ")

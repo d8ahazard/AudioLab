@@ -126,6 +126,7 @@ class Export(BaseWrapper):
                 - Options: "Ableton", "Reaper"
               - **export_all_stems**: Include all available stems, not just processed ones (default: true)
               - **pitch_shift**: Apply pitch shift in semitones to non-cloned tracks (default: 0)
+              - **export_videos**: Reconstruct videos with processed audio (default: true)
             
             ## Response
             
@@ -164,11 +165,19 @@ class Export(BaseWrapper):
             type=bool,
             gradio_type="Checkbox",
         ),
+        "export_videos": TypedInput(
+            default=True,
+            description="Reconstruct videos with processed audio.",
+            type=bool,
+            gradio_type="Checkbox",
+        ),
         "pitch_shift": TypedInput(
             default=0,
             description="Pitch shift in semitones.",
             type=int,
             gradio_type="Slider",
+            ge=-12,
+            le=12,
             render=False
         ),
     }
@@ -184,22 +193,100 @@ class Export(BaseWrapper):
                 filtered_kwargs = {key: value for key, value in kwargs.items() if key in self.allowed_kwargs}
                 project_format = filtered_kwargs.get("project_format", "Ableton")
                 export_all_stems = filtered_kwargs.get("export_all_stems", True)
+                export_videos = filtered_kwargs.get("export_videos", True)
                 pitch_shift = filtered_kwargs.get("pitch_shift", 0)
+                original_videos = filtered_kwargs.get("original_videos", {})
+                
+                # Check if we have video sources associated with this project
+                video_sources = {}
+                if hasattr(project_file, "video_sources"):
+                    video_sources.update(project_file.video_sources)
+                if original_videos:
+                    for video_path in original_videos:
+                        if os.path.exists(video_path):
+                            video_sources[video_path] = video_path
+                
                 if export_all_stems:
                     stems = project_file.all_outputs()
                     stems_dir = os.path.join(project_file.project_dir, "stems")
-                    all_stem_files = [os.path.join(stems_dir, stem) for stem in os.listdir(stems_dir)]
-                    for stem in all_stem_files:
-                        if stem not in stems:
-                            stems.append(stem)
+                    if os.path.exists(stems_dir):
+                        all_stem_files = [os.path.join(stems_dir, stem) for stem in os.listdir(stems_dir)
+                                          if os.path.isfile(os.path.join(stems_dir, stem)) and not stem.endswith(".json")]
+                        for stem in all_stem_files:
+                            if stem not in stems:
+                                stems.append(stem)
+                    else:
+                        logger.warning(f"Stems directory not found: {stems_dir}")
 
-                existing_stems = [stem for stem in stems if os.path.exists(stem)]
-                # Remove non-wav files
-                existing_stems = [stem for stem in existing_stems if stem.endswith(".wav")]
+                # Filter existing stems
+                existing_stems = []
                 for stem in stems:
-                    if stem not in existing_stems:
-                        logger.error(f"Stem {stem} not found.")
+                    if os.path.exists(stem):
+                        if stem.endswith(".wav"):
+                            existing_stems.append(stem)
+                        else:
+                            logger.warning(f"Ignoring non-WAV file: {stem}")
+                    else:
+                        logger.error(f"Stem file not found: {stem}")
+
+                if not existing_stems:
+                    logger.warning("No valid audio stems found for export")
+                    if callback:
+                        callback(1.0, "No valid audio stems found for export")
+                    return inputs
+
                 stems = existing_stems
+
+                # Process video files if requested
+                video_outputs = []
+                if export_videos and video_sources:
+                    videos_dir = os.path.join(project_file.project_dir, "videos")
+                    os.makedirs(videos_dir, exist_ok=True)
+                    
+                    if callback:
+                        callback(0.6, "Processing video files...")
+                    
+                    # Find the main processed audio output
+                    main_audio = None
+                    for stem in stems:
+                        # Prefer vocal stems for cloned audio
+                        if "(Vocals)" in stem.lower() or "voice" in stem.lower():
+                            main_audio = stem
+                            break
+                    
+                    # If no specific vocal stem is found, use the first WAV
+                    if not main_audio and stems:
+                        main_audio = stems[0]
+                    
+                    if main_audio:
+                        # Process each video file
+                        for audio_key, video_path in video_sources.items():
+                            if os.path.exists(video_path):
+                                try:
+                                    if callback:
+                                        callback(0.7, f"Recombining audio with video: {os.path.basename(video_path)}")
+                                    
+                                    # Determine which audio to use (original processed audio or main output)
+                                    audio_for_video = None
+                                    if os.path.exists(audio_key) and audio_key in stems:
+                                        # Use the processed version of this specific extracted audio
+                                        audio_for_video = audio_key
+                                    else:
+                                        # Use the main processed audio
+                                        audio_for_video = main_audio
+                                    
+                                    # Create output video filename
+                                    video_name = os.path.splitext(os.path.basename(video_path))[0]
+                                    audio_name = os.path.splitext(os.path.basename(audio_for_video))[0]
+                                    output_video = os.path.join(videos_dir, f"{video_name}_with_{audio_name}.mp4")
+                                    
+                                    # Recombine video with audio
+                                    result_video = self.recombine_audio_with_video(video_path, audio_for_video, output_video)
+                                    if result_video:
+                                        video_outputs.append(result_video)
+                                        logger.info(f"Created video with processed audio: {result_video}")
+                                except Exception as e:
+                                    logger.error(f"Error processing video {video_path}: {e}")
 
                 # OPTIONAL: If we want to detect BPM from the "Instrumental" track
                 for stem in stems:
@@ -218,16 +305,43 @@ class Export(BaseWrapper):
                         break
                 out_zip = None
                 if project_format == "Ableton":
-                    als_path = create_ableton_project(project_file, stems, bpm, pitch_shift)
-                    out_zip = zip_folder(als_path)
-                    print(f"Saved Ableton project to: {als_path}")
+                    try:
+                        # Pass video files to the Ableton project creation if available
+                        if video_outputs and export_videos:
+                            logger.info(f"Including {len(video_outputs)} video files in Ableton project")
+                            als_path = create_ableton_project(project_file, stems, bpm, pitch_shift, videos=video_outputs)
+                        else:
+                            als_path = create_ableton_project(project_file, stems, bpm, pitch_shift)
+                        
+                        out_zip = zip_folder(als_path)
+                        logger.info(f"Saved Ableton project to: {als_path}")
+                    except Exception as e:
+                        logger.error(f"Error creating Ableton project: {e}")
+                        if callback:
+                            callback(0.9, f"Error creating Ableton project: {str(e)}")
+                        # Continue without breaking - still try to add outputs
                 elif project_format == "Reaper":
-                    reaper_path = create_reaper_project(project_file, stems, bpm)
-                    out_zip = zip_folder(reaper_path)
-                    print(f"Saved Reaper project to: {reaper_path}")
+                    try:
+                        reaper_path = create_reaper_project(project_file, stems, bpm)
+                        out_zip = zip_folder(reaper_path)
+                        logger.info(f"Saved Reaper project to: {reaper_path}")
+                    except Exception as e:
+                        logger.error(f"Error creating Reaper project: {e}")
+                        if callback:
+                            callback(0.9, f"Error creating Reaper project: {str(e)}")
+                
+                # Add outputs to the project
                 last_outputs = project_file.last_outputs
-                project_file.add_output("export", out_zip)
-                last_outputs.append(out_zip)
+                if out_zip:
+                    project_file.add_output("export", out_zip)
+                    last_outputs.append(out_zip)
+                
+                # Add any video outputs to the project's last_outputs
+                for video_output in video_outputs:
+                    if os.path.exists(video_output):
+                        project_file.add_output("video", video_output)
+                        last_outputs.append(video_output)
+                    
                 project_file.last_outputs = last_outputs
         except Exception as e:
             logger.error(f"Error exporting to project: {e}")

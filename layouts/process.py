@@ -100,7 +100,7 @@ def update_path_mappings(file_paths: List[str]):
 def get_audio_files(file_paths: List[str]) -> List[str]:
     audio_files = []
     for file_path in file_paths:
-        if Path(file_path).suffix in ['.wav', '.mp3', '.flac']:
+        if Path(file_path).suffix.lower() in ['.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus']:
             audio_files.append(file_path)
     return audio_files
 
@@ -108,50 +108,71 @@ def get_audio_files(file_paths: List[str]) -> List[str]:
 def get_image_files(file_paths: List[str]) -> List[str]:
     image_files = []
     for file_path in file_paths:
-        if Path(file_path).suffix in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
+        if Path(file_path).suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
             image_files.append(file_path)
     return image_files
 
 
+def get_video_files(file_paths: List[str]) -> List[str]:
+    video_files = []
+    for file_path in file_paths:
+        if Path(file_path).suffix.lower() in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']:
+            video_files.append(file_path)
+    return video_files
+
+
 def is_audio(file_path: str) -> bool:
-    return Path(file_path).suffix in ['.wav', '.mp3', '.flac']
+    return Path(file_path).suffix.lower() in ['.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus']
 
 
-def update_preview(output: str) -> Tuple[gr.update, gr.update]:
+def is_video(file_path: str) -> bool:
+    return Path(file_path).suffix.lower() in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']
+
+
+def update_preview(output: str) -> Tuple[gr.update, gr.update, gr.update]:
     if not output:
         show_audio = False
         show_image = False
+        show_video = False
     else:
         # Convert filename back to full path if needed
         full_path = filename_to_path.get(output, output)
         show_audio = is_audio(full_path)
-        show_image = not show_audio
+        show_video = is_video(full_path)
+        show_image = not show_audio and not show_video
     return (gr.update(visible=show_audio, value=full_path if show_audio else None),
-            gr.update(visible=show_image, value=full_path if show_image else None))
+            gr.update(visible=show_image, value=full_path if show_image else None),
+            gr.update(visible=show_video, value=full_path if show_video else None))
 
 
-def update_preview_select(input_files: List[str]) -> Tuple[gr.update, gr.update, gr.update]:
+def update_preview_select(input_files: List[str]) -> Tuple[gr.update, gr.update, gr.update, gr.update]:
     if not input_files:
-        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
     
     # Update path mappings
     update_path_mappings(input_files)
     
     audio_files = get_audio_files(input_files)
     image_files = get_image_files(input_files)
+    video_files = get_video_files(input_files)
+    
     first_audio = audio_files[0] if audio_files else None
     first_image = image_files[0] if image_files else None
+    first_video = video_files[0] if video_files else None
     
     # Convert paths to filenames for display
     display_choices = [path_to_filename[path] for path in input_files]
-    first_audio_name = path_to_filename.get(first_audio) if first_audio else None
+    first_preview_name = path_to_filename.get(first_audio or first_video or first_image) if (first_audio or first_video or first_image) else None
     
-    return (gr.update(choices=display_choices, value=first_audio_name, visible=bool(audio_files) or bool(image_files)),
-            gr.update(value=first_audio, visible=bool(audio_files)),
-            gr.update(value=first_image, visible=bool(image_files)))
+    return (gr.update(choices=display_choices, value=first_preview_name, visible=bool(audio_files or image_files or video_files)),
+            gr.update(value=first_audio, visible=bool(first_audio)),
+            gr.update(value=first_image, visible=bool(first_image)),
+            gr.update(value=first_video, visible=bool(video_files)))
 
 
 def toggle_visibility(processors: List[str], all_wrappers: List[str], all_accordions: List[gr.Accordion]):
+    logger.info(f"Processors: {processors}")
+    foo = processors
     return [
         gr.update(visible=(wrapper in processors and bool(get_processor(wrapper).allowed_kwargs)))
         for wrapper, acc in zip(all_wrappers, all_accordions)
@@ -200,6 +221,15 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     if (has_special_files or has_tts_files) and "Separate" in processors:
         logger.info("Special files detected that would typically skip separation - continuing with user-selected processors")
     
+    # Track original video files to reconstruct video outputs at the end
+    original_videos = {}
+    for input_file in inputs:
+        if is_video(input_file):
+            # Store the video path so we can reconstruct the video later
+            original_videos[input_file] = True
+            # For now, continue processing as normal with the video file
+            # The audio extraction will happen in the first processor that needs audio
+    
     inputs = [ProjectFiles(file_path) for file_path in inputs]
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
@@ -215,6 +245,10 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
             processor_settings['pitch_shift'] = clone_pitch_shift if pitch_shift_vocals_only else 0
             processor_settings['selected_voice'] = clone_voice
             processor_settings['pitch_extraction_method'] = f0_method
+            # If we have original videos, pass them to the Export processor
+            if original_videos and processor_title == "Export":
+                processor_settings['original_videos'] = original_videos
+        
         if len(processor_settings):
             logger.info(f"Processor settings for {processor_title}:")
             logger.info("---------------------------------------------------------------------")
@@ -223,14 +257,24 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
             logger.info("---------------------------------------------------------------------")
         else:
             logger.info(f"No settings found for {processor_title}.")
+        
         try:
-            outputs = tgt_processor.process_audio(inputs, progress, **processor_settings)
-            for output in outputs:
-                all_outputs.extend(output.last_outputs)
+            progress(0.1 + (0.8 * idx / len(processors)), f"Processing with {processor_title}...")
+            processor_outputs = tgt_processor.process_audio(inputs, progress, **processor_settings)
+            if processor_outputs:
+                outputs = processor_outputs
+                for output in outputs:
+                    if output.last_outputs:
+                        all_outputs.extend(output.last_outputs)
+            else:
+                logger.warning(f"No outputs from processor {processor_title}")
         except Exception as e:
             logger.error(f"Error processing with {processor_title}: {e}")
             traceback.print_exc()
+            # Don't break completely, return what we have so far
+            progress(1.0, f"Error in {processor_title}: {str(e)}")
             break
+            
         inputs = outputs
 
     # Last output should be first in the list
@@ -238,25 +282,29 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     outputs = all_outputs
     output_audio_files = get_audio_files(outputs)
     output_image_files = get_image_files(outputs)
-    output_images_and_audio = output_audio_files + output_image_files
+    output_video_files = get_video_files(outputs)
+    output_files_all = output_audio_files + output_image_files + output_video_files
     
     # Update path mappings for outputs
-    update_path_mappings(output_images_and_audio)
+    update_path_mappings(output_files_all)
     
     first_image = output_image_files[0] if output_image_files else None
     first_audio = output_audio_files[0] if output_audio_files else None
-    first_output_name = path_to_filename.get(output_images_and_audio[0]) if output_images_and_audio else None
+    first_video = output_video_files[0] if output_video_files else None
+    first_output = first_video or first_audio or first_image
+    first_output_name = path_to_filename.get(first_output) if first_output else None
     
     # Convert paths to filenames for display
-    display_choices = [path_to_filename[path] for path in output_images_and_audio]
+    display_choices = [path_to_filename[path] for path in output_files_all]
     
     end_time = datetime.now()
     total_time_in_seconds = (end_time - start_time).total_seconds()
     logger.info(f"Processing complete with {len(processors)} processors in {total_time_in_seconds:.2f} seconds")
     return (gr.update(value=outputs, visible=bool(outputs)),
-            gr.update(value=first_output_name, visible=bool(first_audio), choices=display_choices, interactive=True),
+            gr.update(value=first_output_name, visible=bool(first_output), choices=display_choices, interactive=True),
             gr.update(value=first_audio, visible=bool(first_audio)),
             gr.update(value=first_image, visible=bool(first_image)),
+            gr.update(value=first_video, visible=bool(first_video)),
             gr.update(
                 value=f"Processing complete with {len(processors)} processors in {total_time_in_seconds:.2f} seconds"))
 
@@ -340,6 +388,8 @@ def render(arg_handler: ArgHandler):
                                    key="process_input_audio")
             input_image = gr.Image(label='Input Image', value=None, visible=False,
                                    key="process_input_image")
+            input_video = gr.Video(label='Input Video', value=None, visible=False,
+                                  key="process_input_video")
             input_files = gr.File(label='Input Files', file_count='multiple', file_types=['audio', 'video'],
                                   key="process_inputs")
             arg_handler.register_element("main", "process_inputs", input_files)
@@ -370,6 +420,8 @@ def render(arg_handler: ArgHandler):
                                     key="process_output_audio")
             output_image = gr.Image(label='Output Image', value=None, visible=False,
                                     key="process_output_image")
+            output_video = gr.Video(label='Output Video', value=None, visible=False,
+                                   key="process_output_video")
             output_files = gr.File(label='Output Files', file_count='multiple',
                                    file_types=['audio', 'video'],
                                    interactive=False, key="process_output_files")
@@ -396,19 +448,19 @@ def render(arg_handler: ArgHandler):
     input_files.change(
         fn=update_preview_select,
         inputs=[input_files],
-        outputs=[input_select, input_audio, input_image]
+        outputs=[input_select, input_audio, input_image, input_video]
     )
 
     input_select.change(
         fn=update_preview,
         inputs=[input_select],
-        outputs=[input_audio, input_image]
+        outputs=[input_audio, input_image, input_video]
     )
 
     output_select.change(
         fn=update_preview,
         inputs=[output_select],
-        outputs=[output_audio, output_image]
+        outputs=[output_audio, output_image, output_video]
     )
 
     input_project_button.click(
@@ -431,7 +483,7 @@ def render(arg_handler: ArgHandler):
     start_processing.click(
         fn=process,
         inputs=[processor_list, input_files],
-        outputs=[output_files, output_select, output_audio, output_image, progress_display]
+        outputs=[output_files, output_select, output_audio, output_image, output_video, progress_display]
     )
 
 

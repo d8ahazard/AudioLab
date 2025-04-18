@@ -56,7 +56,9 @@ class Merge(BaseWrapper):
             default=0,
             description="Pitch shift in semitones (+12 for an octave up, -12 for an octave down).",
             type=int,
-            gradio_type="Number",
+            gradio_type="Slider",
+            ge=-24,
+            le=24,
             render=False
         ),
         "prevent_clipping": TypedInput(

@@ -1,19 +1,20 @@
+import base64
+import logging
 import os
 import re
-import base64
+import subprocess
+import tempfile
 from abc import abstractmethod
+from pathlib import Path
 from typing import List, Dict, Any, Union, Tuple, Callable
 
-import pydantic
 import gradio as gr
+import pydantic
 from annotated_types import Ge, Le
 from fastapi import HTTPException
-from pathlib import Path
-import tempfile
 
 from handlers.args import ArgHandler
 from util.data_classes import ProjectFiles
-import logging
 
 logger = logging.getLogger(__name__)
 if pydantic.__version__.startswith("1."):
@@ -37,6 +38,10 @@ class TypedInput:
                  render: bool = True,
                  required: bool = False,
                  refresh: Callable = None,
+                 on_change: Callable = None,
+                 on_click: Callable = None,
+                 on_select: Callable = None,
+                 controls: List[str] = None,
                  group_name: str = None,
                  ):
         field_kwargs = {
@@ -65,6 +70,10 @@ class TypedInput:
         self.refresh = refresh
         self.description = description
         self.choices = choices
+        self.on_change = on_change
+        self.on_click = on_click
+        self.on_select = on_select
+        self.controls = controls
         self.gradio_type = gradio_type if gradio_type else self.pick_gradio_type()
         self.group_name = group_name  # New parameter for accordion grouping
 
@@ -96,6 +105,7 @@ class BaseWrapper:
     description = "Base Wrapper"
     default = False
     required = False
+    hidden_groups = []
 
     def __new__(cls):
         if cls._instance is None:
@@ -124,6 +134,117 @@ class BaseWrapper:
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         pass
 
+    @staticmethod
+    def extract_audio_from_video(video_file: str) -> str:
+        """
+        Extract audio from a video file.
+        
+        Args:
+            video_file: Path to the video file
+            
+        Returns:
+            Path to the extracted audio file
+        """
+        # Get the directory and filename without extension
+        video_dir = os.path.dirname(video_file)
+        video_name = os.path.splitext(os.path.basename(video_file))[0]
+        
+        # Create audio output path
+        audio_file = os.path.join(video_dir, f"{video_name}_audio.wav")
+        
+        try:
+            # Use ffmpeg to extract audio
+            cmd = [
+                "ffmpeg", "-y", "-i", video_file, 
+                "-vn",  # No video
+                "-acodec", "pcm_s16le",  # PCM 16-bit
+                "-ar", "44100",  # 44.1kHz sample rate
+                "-ac", "2",  # Stereo
+                audio_file
+            ]
+            
+            result = subprocess.run(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to extract audio from video: {result.stderr}")
+                return None
+                
+            logger.info(f"Successfully extracted audio from video to {audio_file}")
+            return audio_file
+            
+        except Exception as e:
+            logger.error(f"Error extracting audio from video: {str(e)}")
+            return None
+            
+    @staticmethod
+    def recombine_audio_with_video(video_file: str, audio_file: str, output_file: str = None) -> str:
+        """
+        Recombine processed audio with the original video.
+        
+        Args:
+            video_file: Path to the original video file
+            audio_file: Path to the processed audio file
+            output_file: Path to save the output video (default: auto-generated)
+            
+        Returns:
+            Path to the output video file
+        """
+        # If output file is not specified, create one
+        if not output_file:
+            video_dir = os.path.dirname(video_file)
+            video_name = os.path.splitext(os.path.basename(video_file))[0]
+            audio_name = os.path.splitext(os.path.basename(audio_file))[0]
+            output_file = os.path.join(video_dir, f"{video_name}_with_{audio_name}.mp4")
+        
+        # Validate input files
+        if not os.path.exists(video_file):
+            logger.error(f"Video file not found: {video_file}")
+            return None
+            
+        if not os.path.exists(audio_file):
+            logger.error(f"Audio file not found: {audio_file}")
+            return None
+            
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(output_file)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        try:
+            # Use ffmpeg to combine video and audio
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_file,  # Video input
+                "-i", audio_file,  # Audio input
+                "-c:v", "copy",  # Copy video codec
+                "-map", "0:v:0",  # Map video from first input
+                "-map", "1:a:0",  # Map audio from second input
+                "-shortest",  # End when shortest input ends
+                output_file
+            ]
+            
+            result = subprocess.run(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to recombine audio with video: {result.stderr}")
+                return None
+                
+            logger.info(f"Successfully recombined audio with video to {output_file}")
+            return output_file
+            
+        except Exception as e:
+            logger.error(f"Error recombining audio with video: {str(e)}")
+            return None
+
     def register_api_endpoint(self, api) -> Any:
         """
         Register FastAPI endpoint for this wrapper.
@@ -138,12 +259,8 @@ class BaseWrapper:
         Returns:
             The registered endpoint route
         """
-        from fastapi import Body, HTTPException
-        from typing import Dict, Any, List
-        import tempfile
-        from pathlib import Path
-        import base64
-        
+        from fastapi import Body
+
         # Create Pydantic models for API documentation
         FileData, JsonRequest = self.create_json_models()
         
@@ -172,7 +289,7 @@ class BaseWrapper:
         # Add settings documentation from allowed_kwargs
         for key, value in self.allowed_kwargs.items():
             default_val = "null" if value.field.default is None else value.field.default
-            if value.field.default == ...:
+            if value.field.default is ...:
                 default_val = "required"
             
             # Format description based on field type
@@ -228,8 +345,8 @@ class BaseWrapper:
         Returns:
             Tuple containing (FileData, JsonRequest) models
         """
-        from pydantic import BaseModel, Field
-        from typing import List, Optional, Dict, Any, Annotated
+        from pydantic import BaseModel
+        from typing import List, Optional, Annotated
         
         class FileData(BaseModel):
             filename: str = pydantic.Field(..., description="Name of the file with extension")
@@ -263,7 +380,7 @@ class BaseWrapper:
         Returns:
             A Pydantic model class with fields based on allowed_kwargs
         """
-        from pydantic import BaseModel, create_model
+        from pydantic import create_model
         from typing import Optional
         
         # Create fields dictionary
@@ -275,7 +392,7 @@ class BaseWrapper:
             }
             
             # Add validation parameters from the TypedInput field
-            if value.field.default != ...:
+            if value.field.default is not ...:
                 field_kwargs["default"] = value.field.default
             if hasattr(value.field, "ge"):
                 field_kwargs["ge"] = value.field.ge
@@ -347,6 +464,17 @@ class BaseWrapper:
                     else:
                         settings_dict = request_data.settings
                 
+                # Track original video files for potential reconstruction
+                original_videos = {}
+                for project in input_files:
+                    if project.src_file.lower().endswith(('.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv')):
+                        original_videos[project.src_file] = True
+                
+                # Add original videos to settings if this is the Export processor
+                if self.__class__.__name__ == "Export" and original_videos:
+                    if "original_videos" not in settings_dict:
+                        settings_dict["original_videos"] = original_videos
+                
                 processed_files = processor_func(input_files, **settings_dict)
                 
                 # Return processed files as base64
@@ -359,9 +487,18 @@ class BaseWrapper:
                             with open(output_path, "rb") as f:
                                 file_content = base64.b64encode(f.read()).decode("utf-8")
                                 
+                            # Determine file type for better client-side handling
+                            file_ext = output_path.suffix.lower()
+                            file_type = "audio"
+                            if file_ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']:
+                                file_type = "video"
+                            elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
+                                file_type = "image"
+                                
                             response_files.append({
                                 "filename": output_path.name,
-                                "content": file_content
+                                "content": file_content,
+                                "type": file_type
                             })
                 
                 return {"files": response_files}
@@ -476,21 +613,22 @@ class BaseWrapper:
             
         # First, organize elements by group
         groups = {}
+        accordions = {}
         ungrouped = []
         
         for key, value in self.allowed_kwargs.items():
             if not value.render:
                 continue
-                
+
             if value.group_name:
                 if value.group_name not in groups:
                     groups[value.group_name] = []
                 groups[value.group_name].append((key, value))
             else:
                 ungrouped.append((key, value))
-        
+
         elements = {}
-        
+
         with container:
             # First render ungrouped elements
             for key, value in ungrouped:
@@ -501,11 +639,16 @@ class BaseWrapper:
                     # The refresh button is already connected to the element
                 else:
                     elements[key] = elem
-            
+
             # Then render grouped elements in accordions
             for group_name, group_items in groups.items():
-                with gr.Accordion(label=group_name, open=False):
+                visible = group_name not in self.hidden_groups
+                with gr.Accordion(label=group_name, open=False, visible=visible) as accordion:
+                    # Register the accordion element with a special ID for toggling
+                    accordions[group_name] = accordion
                     for key, value in group_items:
+                        if value.render:
+                            all_hidden = False
                         elem = self.create_gradio_element(self.__class__.__name__, key, value)
                         # If create_gradio_element returns a tuple (elem, refresh_button), handle it
                         if isinstance(elem, tuple):
@@ -513,6 +656,21 @@ class BaseWrapper:
                             # The refresh button is already connected to the element
                         else:
                             elements[key] = elem
+                    
+            handler_keys = ["on_change", "on_click", "on_select"]
+            for key, value in self.allowed_kwargs.items():
+                for handler_key in handler_keys:
+                    handler_func = handler_key.replace("on_", "")
+                    if hasattr(value, handler_key) and callable(getattr(value, handler_key)):
+                        logger.info(f"Setting up {handler_func} for {key}")
+                        controls = value.controls
+                        control_accordions = [accordions[control] for control in controls if control in accordions]
+                        target_element = elements[key]
+                        if hasattr(target_element, handler_func):
+                            logger.info(f"Setting up {handler_func} for {key} (Found element)")
+                            getattr(target_element, handler_func)(fn=getattr(value, handler_key), inputs=target_element, outputs=control_accordions)
+                        else:
+                            logger.info(f"Setting up {handler_func} for {key} (No element found)")
 
     def register_descriptions(self, arg_handler: ArgHandler):
         """
@@ -619,29 +777,45 @@ class BaseWrapper:
             case "audio":
                 extensions = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]
             case "image":
-                extensions = ["jpg", "jpeg", "png"]
+                extensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"]
             case "video":
-                extensions = ["mp4", "mov", "avi"]
+                extensions = ["mp4", "mov", "avi", "webm", "mkv", "flv"]
             case "text":
                 extensions = ["txt", "csv", "json"]
+            case "any":
+                # Accept any file type
+                extensions = []
             case _:
-                print(f"Unknown input type: {input_type}")
+                logger.warning(f"Unknown input type: {input_type}")
                 pass
+        
+        # Special handling for video files - extract audio if needed
         if input_type == "audio":
-            extensions = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]
-        if input_type == "image":
-            extensions = ["jpg", "jpeg", "png"]
-        if input_type == "video":
-            extensions = ["mp4", "mov", "avi"]
-        if input_type == "text":
-            extensions = ["txt", "csv", "json"]
-        if len(extensions) == 0:
-            return filtered_inputs, outputs
-
-        for input_file in inputs:
-            file, ext = os.path.splitext(input_file)
-            if ext[1:] in extensions:
-                filtered_inputs.append(input_file)
-            else:
-                outputs.append(input_file)
+            for input_file in inputs:
+                file, ext = os.path.splitext(input_file)
+                ext = ext[1:].lower()
+                if ext in extensions:
+                    filtered_inputs.append(input_file)
+                elif ext in ["mp4", "mov", "avi", "webm", "mkv", "flv"]:
+                    # This is a video file - extract the audio
+                    audio_file = BaseWrapper.extract_audio_from_video(input_file)
+                    if audio_file:
+                        filtered_inputs.append(audio_file)
+                        # Store the original video path in the project metadata
+                        if not hasattr(project, "video_sources"):
+                            project.video_sources = {}
+                        project.video_sources[audio_file] = input_file
+                    else:
+                        outputs.append(input_file)
+                else:
+                    outputs.append(input_file)
+        else:
+            # Standard handling for non-audio file types
+            for input_file in inputs:
+                file, ext = os.path.splitext(input_file)
+                if not extensions or ext[1:].lower() in extensions:
+                    filtered_inputs.append(input_file)
+                else:
+                    outputs.append(input_file)
+                
         return filtered_inputs, outputs

@@ -32,6 +32,20 @@ def list_speakers_ui():
     """
     return {"choices": list_speakers(), "__type__": "update"}
 
+def toggle_clone_elements(clone_method):
+    """
+    Toggle the visibility of the clone elements based on the clone method.
+    "RVC Controls", "Advanced RVC Options", "OpenVoice Controls", "Source Speaker"
+    """
+    logger.info(f"Toggling clone elements for {clone_method}")
+    show_src_speaker = clone_method == "OpenVoice" or clone_method == "TTS"
+    logger.info(f"Showing source speaker: {show_src_speaker}")
+    return [
+        gr.update(visible=clone_method == "RVC"),
+        gr.update(visible=clone_method == "RVC"),
+        gr.update(visible=clone_method == "OpenVoice"), 
+        gr.update(visible=show_src_speaker)
+    ]
 
 class Clone(BaseWrapper):
     """
@@ -45,7 +59,7 @@ class Clone(BaseWrapper):
     description = (
         "Clone vocals from one audio file to another using voice cloning models."
     )
-
+    hidden_groups = ["OpenVoice Controls", "TTS Controls", "Source Speaker"]
     # Detect all speaker .pth files
     all_speakers = []
     first_speaker = None
@@ -63,6 +77,8 @@ class Clone(BaseWrapper):
             choices=["RVC", "OpenVoice", "TTS"],
             type=str,
             gradio_type="Dropdown",
+            on_select=toggle_clone_elements,
+            controls=["RVC Controls", "Advanced RVC Options", "OpenVoice Controls", "Source Speaker"],
             required=True
         ),
         # RVC-specific controls group
@@ -123,7 +139,7 @@ class Clone(BaseWrapper):
             gradio_type="File",
             required=False,
             render=True,
-            group_name="OpenVoice/TTS Controls"
+            group_name="Source Speaker"
         ),
         
         # OpenVoice specific controls
