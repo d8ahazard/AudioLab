@@ -136,10 +136,6 @@ class NumpyDataset(torch.utils.data.Dataset):
         signal1, sr1 = torchaudio.load(instrument1_filename)
         signal2, sr2 = torchaudio.load(instrument2_filename)
         
-        # Only report audio lengths occasionally to reduce logging
-        if idx % 10 == 0:
-            print(f"  - Signal length: {signal1.shape[1]} samples, Sample rate: {sr1} Hz")
-
         # Resample if necessary
         if (self.params.sample_rate != sr1) or (self.params.sample_rate != sr2):
             if idx % 10 == 0:
@@ -180,12 +176,10 @@ class NumpyDataset(torch.utils.data.Dataset):
                 end = start + required_length
                 signal1 = signal1[start:end]
                 signal2 = signal2[start:end]
-                if idx % 10 == 0:
-                    print(f"  - Cropped audio from position {start} to {end}")
+                
             else:
                 # If short audio, pad with zeros (happens when crop_mel_frames is large)
-                if idx % 10 == 0:
-                    print(f"  - Audio too short ({signal1.shape[0]} samples), padding to {required_length}")
+                
                 pad_length = required_length - signal1.shape[0]
                 signal1 = torch.cat([signal1, torch.zeros(pad_length)])
                 signal2 = torch.cat([signal2, torch.zeros(pad_length)])
@@ -193,8 +187,7 @@ class NumpyDataset(torch.utils.data.Dataset):
         # Generate spectrogram
         try:
             spectrogram = get_spec(signal1, self.params)
-            if idx % 10 == 0:
-                print(f"  - Generated spectrogram with shape: {spectrogram.shape}")
+            
         except Exception as e:
             print(f"Error generating spectrogram: {str(e)}")
             spectrogram = None

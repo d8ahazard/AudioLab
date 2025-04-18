@@ -20,6 +20,7 @@ import os
 import torch
 import torchaudio
 import torch.nn as nn
+import json
 
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
@@ -105,21 +106,61 @@ class WaveGradLearner:
     try:
       checkpoint = torch.load(f'{self.model_dir}/{filename}.pt')
       self.load_state_dict(checkpoint)
+      print("Restored model from checkpoint: {}".format(f'{self.model_dir}/{filename}.pt'))
       return True
     except FileNotFoundError:
+      print("No checkpoint found. Starting training from scratch.")
       return False
 
-  def train(self, max_steps=None):
+  def train(self, max_steps=None, max_epochs=None, tqdm_handler=None, cancel_token=None):
     device = next(self.model.parameters()).device
     
     # Check if dataset is empty
     if len(self.dataset) == 0:
       raise ValueError("Dataset is empty. No valid audio files were found. Check your data directory and file formats.")
     
+    # Calculate current epoch
+    dataset_size = len(self.dataset)
+    current_epoch = self.step // dataset_size
+    
+    # Save current epoch to training state
+    self._save_training_state(current_epoch, max_epochs or (max_steps // dataset_size if max_steps else 10))
+    
+    # Main training loop
     while True:
-      for features in tqdm(self.dataset, desc=f'Epoch {self.step // len(self.dataset)}') if self.is_master else self.dataset:
-        if max_steps is not None and self.step >= max_steps:
+      # Check if we've reached max epochs
+      if max_epochs is not None and current_epoch >= max_epochs:
+        logger.info(f"Reached maximum epochs ({max_epochs}). Training complete.")
+        return
+        
+      # Create appropriate progress bar based on tqdm_handler or default tqdm
+      if tqdm_handler:
+        # Use the provided tqdm_handler to create a progress tracking object
+        progress_bar = tqdm_handler(len(self.dataset), f'Epoch {current_epoch}')
+        use_progress = True
+      else:
+        # Use standard tqdm only if this is the master process
+        if self.is_master:
+          progress_bar = tqdm(self.dataset, desc=f'Epoch {current_epoch}')
+          use_progress = True
+        else:
+          progress_bar = self.dataset
+          use_progress = False
+      
+      for features in progress_bar:
+        # Check for cancellation
+        if cancel_token and hasattr(cancel_token, 'cancelled') and cancel_token.cancelled:
+          logger.info("Training cancelled by user.")
+          if use_progress and hasattr(progress_bar, 'close'):
+            progress_bar.close()
           return
+          
+        # Check if we've reached max steps (legacy support)
+        if max_steps is not None and self.step >= max_steps:
+          if use_progress and hasattr(progress_bar, 'close'):
+            progress_bar.close()
+          return
+          
         features = _nested_map(features, lambda x: x.to(device) if isinstance(x, torch.Tensor) else x)
         loss = self.train_step(features)
         if torch.isnan(loss).any():
@@ -128,11 +169,42 @@ class WaveGradLearner:
           if self.step % self.summary_interval == 0:
             self._write_summary(self.step, features, loss)
           if self.step % self.validation_interval == 0 and self.step != 0:
-            self.run_valid_loop()
+            self.run_valid_loop(tqdm_handler=tqdm_handler)
           if self.step % self.checkpoint_interval == 0 and self.step != 0:
             print("INFO: saving checkpoint at step {}".format(self.step))
             self.save_to_checkpoint()
+        
+        # Update progress bar
+        if use_progress and hasattr(progress_bar, 'update'):
+          progress_bar.update(1)
+          
         self.step += 1
+      
+      # Close progress bar at the end of each epoch
+      if use_progress and hasattr(progress_bar, 'close'):
+        progress_bar.close()
+      
+      # Update and save current epoch
+      current_epoch += 1
+      self._save_training_state(current_epoch, max_epochs or (max_steps // dataset_size if max_steps else 10))
+  
+  def _save_training_state(self, current_epoch, total_epochs):
+    """Save training state to file for resuming training later."""
+    if not self.is_master:
+      return
+      
+    training_state = {
+      'current_epoch': current_epoch,
+      'total_epochs': total_epochs,
+      'step': self.step,
+      'dataset_size': len(self.dataset)
+    }
+    
+    try:
+      with open(os.path.join(self.model_dir, 'training_state.json'), 'w') as f:
+        json.dump(training_state, f, indent=2)
+    except Exception as e:
+      logger.warning(f"Failed to save training state: {str(e)}")
 
   def train_step(self, features):
     for param in self.model.parameters():
@@ -213,7 +285,7 @@ class WaveGradLearner:
         audio = torch.clamp(audio, -1.0, 1.0)
     return audio
 
-  def run_valid_loop(self):
+  def run_valid_loop(self, tqdm_handler=None):
     with torch.no_grad():
       device = next(self.model.parameters()).device
       losses = []
@@ -224,8 +296,22 @@ class WaveGradLearner:
       spec_gts = []
       audio_cond_inst_gt = []
       spec_cond_gt = []
-      for i, features in enumerate(tqdm(self.dataset_val,
-         desc=f'Valid {len(self.dataset_val)}') if self.is_master else self.dataset_val):
+      
+      # Create appropriate progress bar for validation
+      if tqdm_handler:
+        # Use the provided tqdm_handler to create a progress tracking object
+        progress_bar = tqdm_handler(len(self.dataset_val), f'Validation')
+        use_progress = True
+      else:
+        # Use standard tqdm only if this is the master process
+        if self.is_master:
+          progress_bar = tqdm(self.dataset_val, desc=f'Validation')
+          use_progress = True
+        else:
+          progress_bar = self.dataset_val
+          use_progress = False
+      
+      for i, features in enumerate(progress_bar):
         features = _nested_map(features, lambda x: x.to(device) if isinstance(x, torch.Tensor) else x)
 
         audio = features['audio']
@@ -265,6 +351,14 @@ class WaveGradLearner:
         # L1 Mel-Spectrogram Loss
         mel_spec_loss = torch.nn.L1Loss()(spec_pred.squeeze(0), spec_gt.squeeze(0)).item()
         mel_spec_losses.append(mel_spec_loss)
+        
+        # Update progress bar
+        if use_progress and hasattr(progress_bar, 'update'):
+          progress_bar.update(1)
+      
+      # Close progress bar
+      if use_progress and hasattr(progress_bar, 'close'):
+        progress_bar.close()
 
       loss_valid = np.mean(losses)
       mel_spec_losses_mean = np.mean(mel_spec_losses)
@@ -272,7 +366,7 @@ class WaveGradLearner:
                                 audio_preds, spec_preds, audio_gt, spec_gts, audio_cond_inst_gt, spec_cond_gt)
 
 
-def _train_impl(replica_id, model, dataset, dataset_val, args, params):
+def _train_impl(replica_id, model, dataset, dataset_val, args, params, tqdm_handler=None):
   torch.backends.cudnn.benchmark = True
   opt = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
 
@@ -280,15 +374,15 @@ def _train_impl(replica_id, model, dataset, dataset_val, args, params):
                             args.validation_interval, model, dataset, dataset_val, opt, params, fp16=args.fp16)
   learner.is_master = (replica_id == 0)
   learner.restore_from_checkpoint()
-  learner.train(max_steps=args.max_steps)
+  learner.train(max_steps=args.max_steps, tqdm_handler=tqdm_handler)
 
 
-def train(args, params):
+def train(args, params, tqdm_handler=None):
   dataset = dataset_from_path(args.data_dirs, args.training_files, params)
   dataset_val = dataset_from_path_valid(args.data_dirs, args.validation_files, params)
   model = WaveGrad(params).cuda()
   print("Model params: {}".format(sum(p.numel() for p in model.parameters())))
-  _train_impl(0, model, dataset, dataset_val, args, params)
+  _train_impl(0, model, dataset, dataset_val, args, params, tqdm_handler=tqdm_handler)
 
 
 def train_distributed(replica_id, replica_count, port, args, params):

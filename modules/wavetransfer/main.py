@@ -23,6 +23,7 @@ import traceback
 import logging
 import yaml
 import json
+from tqdm.auto import tqdm
 
 from modules.wavetransfer.learner import train, train_distributed
 from modules.wavetransfer.params import AttrDict, get_default_params
@@ -30,7 +31,7 @@ from modules.wavetransfer.params import AttrDict, get_default_params
 # Set up logger
 logger = logging.getLogger("ADLB.WaveTransfer.Training")
 
-# Try to set the multiprocessing start method to 'spawn'
+# Set the multiprocessing start method to 'spawn'
 # This is safer than 'fork' when running in an application context
 try:
     set_start_method('spawn', force=True)
@@ -49,6 +50,30 @@ def _get_free_port():
 class SimpleNamespace:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+
+class TqdmToGradioProgress:
+    """
+    Adapts tqdm to report progress to a gr.Progress object.
+    """
+    def __init__(self, progress_obj, desc=None, total=None):
+        self.progress_obj = progress_obj
+        self.desc = desc
+        self.total = total
+        self.n = 0
+        self.last_progress = 0
+  
+    def update(self, n=1):
+        self.n += n
+        if self.total:
+            new_progress = min(self.n / self.total, 1.0)
+            # Always update progress to ensure UI stays responsive
+            self.progress_obj(new_progress, f"{self.desc}: {self.n}/{self.total}")
+            self.last_progress = new_progress
+  
+    def close(self):
+        if self.total:
+            self.progress_obj(1.0, f"{self.desc}: Completed")
 
 
 def create_params_from_config(config_data=None):
@@ -91,9 +116,12 @@ def train_model(
     summary_interval=100,
     validation_interval=1000,
     max_steps=None,
+    max_epochs=None,  # New parameter for epoch-based training
     fp16=False,
     config_data=None,
-    force_single_process=False
+    force_single_process=True,  # Always use single process in AudioLab
+    progress=None,  # gr.Progress object for updating UI
+    cancel_token=None  # Token for cancellation
 ):
     """
     Train (or resume training) a WaveTransfer model
@@ -106,31 +134,24 @@ def train_model(
         checkpoint_interval: interval between model checkpoints
         summary_interval: interval between training summaries
         validation_interval: interval between validations
-        max_steps: maximum number of training steps
+        max_steps: maximum number of training steps (deprecated, use max_epochs instead)
+        max_epochs: maximum number of training epochs
         fp16: whether to use 16-bit floating point operations for training
         config_data: optional dictionary with custom parameter values
-        force_single_process: whether to force using a single process for training (for use within GUI apps)
+        force_single_process: whether to force using a single process for training (always True in AudioLab)
+        progress: gr.Progress object for updating training progress in the UI
+        cancel_token: object with a 'cancelled' attribute to check for cancellation
         
     Returns:
         Tuple of (success, model_dir or error_message)
     """
     try:
-        # Detect if we're running in an application context
-        in_application = (
-            hasattr(logging.getLogger(), 'app_context') or 
-            'ADLB.' in logging.Logger.manager.loggerDict or
-            any(name for name in logging.Logger.manager.loggerDict.keys() if 'app' in name.lower()) or
-            os.environ.get('USE_SINGLE_PROCESS') == '1'
-        )
-        
-        # If we're in an application and force_single_process isn't set, warn and force it
-        if in_application and not force_single_process:
-            logger.warning("Detected application context but force_single_process=False. Setting to True to prevent spawning issues.")
-            force_single_process = True
-        
+        # Initialize progress if provided
+        if progress:
+            progress(0.05, "Initializing training...")
+            
         # Set environment variable to inform child processes they should use single process mode
-        if force_single_process:
-            os.environ['USE_SINGLE_PROCESS'] = '1'
+        os.environ['USE_SINGLE_PROCESS'] = '1'
             
         # Validate input directories
         for dir_path in data_dirs:
@@ -154,7 +175,7 @@ def train_model(
             
         # Log training start with parameters
         logger.info(f"Starting WaveTransfer training with model_dir={model_dir}, data_dirs={data_dirs}")
-        logger.info(f"Training parameters: max_steps={max_steps}, checkpoint_interval={checkpoint_interval}, fp16={fp16}, force_single_process={force_single_process}")
+        logger.info(f"Training parameters: max_epochs={max_epochs}, checkpoint_interval={checkpoint_interval}, fp16={fp16}")
         
         # Initialize parameters
         params = create_params_from_config(config_data)
@@ -168,60 +189,105 @@ def train_model(
             checkpoint_interval=checkpoint_interval,
             summary_interval=summary_interval,
             validation_interval=validation_interval,
-            max_steps=max_steps,
+            max_steps=None,  # We'll convert epochs to steps
+            max_epochs=max_epochs,
             fp16=fp16
         )
         
         # Create model directory and save params
         os.makedirs(args.model_dir, exist_ok=True)
         
-        # Save params as a proper config file rather than copying the module
-        params_file = os.path.join(args.model_dir, 'params_config.json')
-        with open(params_file, 'w') as f:
-            # Convert numpy arrays to lists for JSON serialization
-            params_dict = {k: v.tolist() if hasattr(v, 'tolist') else v for k, v in params.items()}
-            json.dump(params_dict, f, indent=2)
-        
+        # Try to create the dataset first to catch potential data issues
         try:
             # Try to create the dataset first to catch potential data issues
             from modules.wavetransfer.dataset import from_path as dataset_from_path
-            _ = dataset_from_path(args.data_dirs, args.training_files, params)
-            logger.info("Dataset successfully initialized. Starting training...")
+            dataset = dataset_from_path(args.data_dirs, args.training_files, params)
+            dataset_size = len(dataset)
+            
+            # Calculate total epochs
+            current_epoch = 0
+            total_epochs = max_epochs if max_epochs else 10  # Default to 10 epochs if not specified
+            
+            # If max_steps was provided (legacy), convert to epochs
+            if max_steps and not max_epochs:
+                total_epochs = max(1, max_steps // dataset_size)
+                args.max_epochs = total_epochs
+            
+            # Calculate steps per epoch
+            steps_per_epoch = dataset_size
+            
+            # Set max_steps based on epochs for backward compatibility
+            args.max_steps = total_epochs * steps_per_epoch if args.max_epochs else None
+            
+            # Load current epoch from config if available
+            if os.path.exists(os.path.join(model_dir, 'training_state.json')):
+                try:
+                    with open(os.path.join(model_dir, 'training_state.json'), 'r') as f:
+                        training_state = json.load(f)
+                        current_epoch = training_state.get('current_epoch', 0)
+                        logger.info(f"Resuming training from epoch {current_epoch}")
+                except Exception as e:
+                    logger.warning(f"Failed to load training state: {str(e)}")
+            
+            logger.info(f"Dataset contains {dataset_size} examples. Training for {total_epochs} epochs.")
+            
+            if progress:
+                progress(0.1, f"Dataset initialized with {dataset_size} examples. Starting training...")
+                
         except Exception as e:
             error_message = f"Failed to initialize dataset: {str(e)}"
             logger.error(error_message)
             return False, error_message
         
-        # Always use single process for any in-app training
-        if in_application:
-            force_single_process = True
-            logger.info("Running in application context, forcing single process mode")
+        # Save the initial training state
+        training_state = {
+            'current_epoch': current_epoch,
+            'total_epochs': total_epochs,
+            'steps_per_epoch': steps_per_epoch,
+            'dataset_size': dataset_size
+        }
+        with open(os.path.join(model_dir, 'training_state.json'), 'w') as f:
+            json.dump(training_state, f, indent=2)
         
-        # Check if multi-GPU training is possible and desired
-        replica_count = device_count()
-        if replica_count > 1 and not force_single_process:
-            if params.batch_size % replica_count != 0:
-                logger.error(f'Batch size {params.batch_size} is not evenly divisible by # GPUs {replica_count}.')
-                logger.info(f'Adjusting batch size from {params.batch_size} to {params.batch_size - (params.batch_size % replica_count)}')
-                # Adjust batch size to be divisible by replica count
-                params.batch_size = params.batch_size - (params.batch_size % replica_count)
-                if params.batch_size == 0:
-                    params.batch_size = replica_count
-                    logger.info(f'Batch size set to minimum value: {params.batch_size}')
-            
-            params.batch_size = params.batch_size // replica_count
-            port = _get_free_port()
-            
-            # Use distributed training with spawning
-            logger.info(f"Using distributed training across {replica_count} GPUs")
-            spawn(train_distributed, args=(replica_count, port, args, params), nprocs=replica_count, join=True)
+        # Set up custom tqdm handler for progress reporting
+        if progress:
+            # Create a tqdm handler that will be passed to the training function
+            def tqdm_handler(total, desc):
+                # Directly update the progress bar for better UI responsiveness
+                if "Epoch" in desc:
+                    try:
+                        epoch_num = int(desc.split()[-1])
+                        # Calculate progress as percentage of total epochs
+                        progress_value = min((epoch_num / total_epochs) * 0.9, 0.9)
+                        # Update the UI with a descriptive message
+                        progress(progress_value, f"Training epoch {epoch_num} of {total_epochs} ({epoch_num/total_epochs:.0%} complete)")
+                    except ValueError:
+                        # If we can't parse the epoch number, use a simple message
+                        progress(0.5, f"Training in progress: {desc}")
+                
+                # For validation, show a different message
+                elif "Validation" in desc:
+                    progress(0.95, f"Running validation...")
+                
+                # Return an object compatible with tqdm's interface
+                return TqdmToGradioProgress(progress, desc=desc, total=total)
+                
+            progress(0.15, f"Starting training for {total_epochs} epochs...")
         else:
-            # Use simple single-process training for GUI apps or when forced
-            if force_single_process and replica_count > 1:
-                logger.info(f"Multiple GPUs detected ({replica_count}), but using single process mode due to force_single_process=True")
-                logger.info("Multi-GPU capabilities will not be utilized")
-            train(args, params)
+            tqdm_handler = None
+            
+        # Always use single process mode in AudioLab
+        replica_count = device_count()
+        if replica_count > 1:
+            logger.info(f"Multiple GPUs detected ({replica_count}), but using single process mode as required in AudioLab")
+            
+        # Call train with the progress handler and cancellation token
+        train(args, params, tqdm_handler=tqdm_handler, cancel_token=cancel_token)
         
+        # Final progress update
+        if progress:
+            progress(1.0, "Training completed successfully!")
+            
         logger.info(f"WaveTransfer training completed successfully: {model_dir}")
         return True, model_dir
         
@@ -245,49 +311,6 @@ def train_model(
 
 
 if __name__ == '__main__':
-    # Only import argparse when running as script
-    from argparse import ArgumentParser
-    
-    parser = ArgumentParser(description='train (or resume training) a WaveGrad model')
-    parser.add_argument('--model_dir',
-        help='directory in which to store model checkpoints and training logs')
-    parser.add_argument('--data_dirs', nargs='+',
-        help='space separated list of directories from which to read .wav files for training')
-    parser.add_argument('--training_files', nargs='+', default=None,
-        help='space separated list of files containing the list of wav samples used for training')
-    parser.add_argument('--validation_files', nargs='+', default=None,
-        help='space separated list of files containing the list of wav samples used for validation')
-    parser.add_argument('--checkpoint_interval', default=None, type=int)
-    parser.add_argument('--summary_interval', default=100, type=int)
-    parser.add_argument('--validation_interval', default=1000, type=int)
-    parser.add_argument('--max_steps', default=None, type=int,
-        help='maximum number of training steps')
-    parser.add_argument('--fp16', action='store_true', default=False,
-        help='use 16-bit floating point operations for training')
-    parser.add_argument('--config', type=str, default=None,
-        help='path to config JSON file with custom parameters')
-    parser.add_argument('--force_single_process', action='store_true', default=False,
-        help='force using a single process for training (for use within GUI apps)')
-    
-    args = parser.parse_args()
-    
-    # Load custom config if provided
-    config_data = None
-    if args.config and os.path.exists(args.config):
-        with open(args.config, 'r') as f:
-            config_data = json.load(f)
-    
-    train_model(
-        args.model_dir,
-        args.data_dirs,
-        args.training_files,
-        args.validation_files,
-        args.checkpoint_interval,
-        args.summary_interval,
-        args.validation_interval,
-        args.max_steps,
-        args.fp16,
-        config_data,
-        args.force_single_process
-    )
+    # This block won't be used in AudioLab context
+    pass
 

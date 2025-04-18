@@ -13,6 +13,7 @@ import yaml
 import json
 import traceback
 from typing import Optional, List
+import threading
 
 import gradio as gr
 from handlers.args import ArgHandler
@@ -29,6 +30,17 @@ from modules.wavetransfer.params import get_default_params
 SEND_TO_PROCESS_BUTTON = None
 OUTPUT_AUDIO = None
 logger = logging.getLogger("ADLB.WaveTransfer")
+
+# Track active training processes for cancellation
+class CancellationToken:
+    def __init__(self):
+        self.cancelled = False
+        
+    def cancel(self):
+        self.cancelled = True
+
+# Active training token
+active_training_token = None
 
 # Available base models or configurations
 DEFAULT_CONF_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "modules", "wavetransfer", "bddm", "conf.yml")
@@ -331,10 +343,10 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem"
                             )
                             
-                            max_steps = gr.Number(
-                                label="Maximum Training Steps",
+                            max_epochs = gr.Number(
+                                label="Maximum Training Epochs",
                                 value=10000,
-                                elem_id="wavetransfer_max_steps",
+                                elem_id="wavetransfer_max_epochs",
                                 elem_classes="hintitem"
                             )
                             
@@ -375,7 +387,9 @@ def render(arg_handler: ArgHandler):
                         # Right column - Actions and logs
                         gr.Markdown("### 🚀 Training")
                         
-                        train_btn = gr.Button("🚀 Start Training", variant="primary")
+                        with gr.Row():
+                            train_btn = gr.Button("🚀 Start Training", variant="primary")
+                            cancel_train_btn = gr.Button("🛑 Cancel Training", variant="stop")
                         
                         training_status = gr.Markdown(
                             value="Ready to train. Set up your project and click 'Start Training'.",
@@ -413,7 +427,7 @@ def render(arg_handler: ArgHandler):
                     existing_project,
                     training_mode,
                     uploaded_files,
-                    max_steps,
+                    max_epochs,
                     checkpoint_interval,
                     fp16,
                     noise_sched_steps,
@@ -421,6 +435,10 @@ def render(arg_handler: ArgHandler):
                     progress=gr.Progress()
                 ):
                     """Start training based on selected mode"""
+                    # Create a cancellation token
+                    global active_training_token
+                    active_training_token = CancellationToken()
+                    
                     # Use existing project if in continue mode, otherwise create new
                     if training_mode in ["Continue Training", "Schedule Network"]:
                         if not existing_project:
@@ -520,7 +538,7 @@ def render(arg_handler: ArgHandler):
                         
                         progress(0.2, "Starting model training...")
                         log_content += f"Model directory: {model_directory}\n"
-                        log_content += f"Max steps: {max_steps}\n"
+                        log_content += f"Max epochs: {max_epochs}\n"
                         log_content += f"Checkpoint interval: {checkpoint_interval}\n"
                         log_content += f"Using FP16: {fp16}\n"
                         
@@ -528,10 +546,12 @@ def render(arg_handler: ArgHandler):
                         success, result = train_model(
                             model_dir=model_directory,
                             data_dirs=data_dirs_list,
-                            max_steps=int(max_steps) if max_steps is not None else None,
+                            max_epochs=int(max_epochs) if max_epochs is not None else None,
                             checkpoint_interval=int(checkpoint_interval) if checkpoint_interval is not None else None,
                             fp16=fp16,
-                            force_single_process=True
+                            force_single_process=True,
+                            progress=progress,
+                            cancel_token=active_training_token
                         )
                         
                         if success:
@@ -549,6 +569,11 @@ def render(arg_handler: ArgHandler):
                             
                             return "✅ Model training completed successfully! You may now train the schedule network.", log_content
                         else:
+                            # Check if cancelled
+                            if active_training_token and active_training_token.cancelled:
+                                log_content += f"⏹️ Training cancelled by user.\n"
+                                return f"⏹️ Training cancelled by user", log_content
+                            
                             # Display detailed error information
                             log_content += f"❌ Model training failed with error:\n{result}\n"
                             
@@ -566,6 +591,14 @@ def render(arg_handler: ArgHandler):
                                 log_content += f"Failed to save error log: {str(e)}\n"
                             
                             return f"❌ Model training failed. Check the training log for details.", log_content
+                
+                def cancel_training():
+                    """Cancel the current training process."""
+                    global active_training_token
+                    if active_training_token:
+                        active_training_token.cancel()
+                        return "Cancellation requested. Training will stop after the current batch completes..."
+                    return "No active training to cancel."
                 
                 # Connect training functions
                 refresh_train_projects_btn.click(
@@ -592,7 +625,7 @@ def render(arg_handler: ArgHandler):
                         project_list,
                         training_mode,
                         data_dirs,
-                        max_steps,
+                        max_epochs,
                         checkpoint_interval,
                         fp16,
                         noise_sched_steps,
@@ -602,6 +635,11 @@ def render(arg_handler: ArgHandler):
                         training_status,
                         training_log
                     ]
+                )
+                
+                cancel_train_btn.click(
+                    fn=cancel_training,
+                    outputs=[training_status]
                 )
                 
                 # Add a third tab for information
@@ -685,7 +723,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "wavetransfer_project_list": "Select an existing project to continue training or to train the schedule network.",
         "wavetransfer_training_mode": "Choose whether to create a new project, continue training an existing model, or train the schedule network.",
         "wavetransfer_data_dirs": "Upload audio files of your target instrument. These will be used to train the model.",
-        "wavetransfer_max_steps": "Maximum number of training steps. More steps = better quality but longer training time.",
+        "wavetransfer_max_epochs": "Maximum number of training epochs. More epochs = better quality but longer training time.",
         "wavetransfer_checkpoint_interval": "How often to save model checkpoints during training.",
         "wavetransfer_fp16": "Use half-precision (16-bit) floating point for training. Speeds up training with minimal quality loss.",
         "wavetransfer_noise_sched_steps": "Number of noise steps for the schedule network. This affects generation quality and speed.",
@@ -705,13 +743,13 @@ def register_api_endpoints(api):
     class TrainWaveTransferRequest(BaseModel):
         project_name: str = Field(..., description="Name of the project to create or continue")
         continue_training: bool = Field(False, description="Whether to continue training an existing project")
-        max_steps: Optional[int] = Field(10000, description="Maximum number of training steps")
+        max_epochs: Optional[int] = Field(10000, description="Maximum number of training epochs")
         checkpoint_interval: Optional[int] = Field(5000, description="Interval between model checkpoints")
         fp16: bool = Field(True, description="Whether to use 16-bit floating point operations for training")
     
     class TrainWaveTransferScheduleRequest(BaseModel):
         project_name: str = Field(..., description="Name of the existing project")
-        max_steps: Optional[int] = Field(5000, description="Maximum number of training steps")
+        max_epochs: Optional[int] = Field(5000, description="Maximum number of training epochs")
         checkpoint_interval: Optional[int] = Field(1000, description="Interval between model checkpoints")
         fp16: bool = Field(True, description="Whether to use 16-bit floating point operations for training")
         noise_steps: int = Field(50, description="Number of noise steps for the schedule")
@@ -776,10 +814,11 @@ def register_api_endpoints(api):
             success, result = train_model(
                 model_dir=model_dir,
                 data_dirs=[data_dir],
-                max_steps=request.max_steps,
+                max_epochs=request.max_epochs,
                 checkpoint_interval=request.checkpoint_interval,
                 fp16=request.fp16,
-                force_single_process=True  # Always use single process for API calls
+                force_single_process=True,
+                progress=None  # No progress bar for API calls
             )
             
             if success:
@@ -844,7 +883,7 @@ def register_api_endpoints(api):
             # Train the schedule network
             success, result = train_schedule_network(
                 model_dir=model_dir,
-                max_steps=request.max_steps,
+                max_epochs=request.max_epochs,
                 checkpoint_interval=request.checkpoint_interval,
                 fp16=request.fp16,
                 force_single_process=True  # Always use single process for API calls
