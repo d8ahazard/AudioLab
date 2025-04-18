@@ -27,7 +27,7 @@ from modules.wavetransfer.bddm.diffusion_utils import compute_diffusion_params, 
 from modules.wavetransfer.bddm.models import get_schedule_network
 
 from modules.wavetransfer.model import WaveGrad
-from modules.wavetransfer.params import AttrDict, params as base_params
+from modules.wavetransfer.params import AttrDict, get_default_params
 from modules.wavetransfer.preprocess import get_spec
 from modules.wavetransfer.bddm.data_loader_for_sampler import from_path_valid as dataset_from_path_valid, from_path_background as dataset_from_path_background
 
@@ -51,7 +51,7 @@ class Sampler(object):
         self.clip = config.grad_clip
         self.load = config.load
         print("The model to be loaded is:", self.load)
-        self.model = WaveGrad(AttrDict(base_params)).to('cuda').eval()
+        self.model = WaveGrad(AttrDict(get_default_params())).to('cuda').eval()
         self.schedule = None
         # Initialize diffusion parameters using a pre-specified linear schedule
         noise_schedule = torch.linspace(config.beta_0, config.beta_T, config.T).cuda()
@@ -84,11 +84,11 @@ class Sampler(object):
 
         if self.config.command == 'generate':
             self.test_dir = self.config.test_dir
-            self.bg_list = dataset_from_path_background([self.config.background_dir], [], base_params)
+            self.bg_list = dataset_from_path_background([self.config.background_dir], [], get_default_params())
         else:
             # Sample a reference audio sample for noise scheduling
-            self.vl_loader = dataset_from_path_valid(self.config.data_dir, self.config.validation_file, base_params, 1)
-            self.bg_list = dataset_from_path_background([self.config.background_dir], self.config.training_file, base_params)
+            self.vl_loader = dataset_from_path_valid(self.config.data_dir, self.config.validation_file, get_default_params(), 1)
+            self.bg_list = dataset_from_path_background([self.config.background_dir], self.config.training_file, get_default_params())
             self.draw_reference_data_pair()
 
     def draw_reference_data_pair(self):
@@ -120,7 +120,7 @@ class Sampler(object):
             filepath = os.path.join(self.test_dir, filename)
             gt_audio, _ = torchaudio.load(filepath)
             gt_audio = normalize(gt_audio, p=float('inf'), dim=-1, eps=1e-12) * 0.95
-            mel_spec = get_spec(gt_audio, AttrDict(base_params))
+            mel_spec = get_spec(gt_audio, AttrDict(get_default_params()))
             mel_spec = mel_spec.cuda()
 
             generated_audio, n_steps = self.sampling(schedule=self.schedule,

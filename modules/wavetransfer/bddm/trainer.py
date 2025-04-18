@@ -26,7 +26,7 @@ from modules.wavetransfer.bddm.diffusion_utils import compute_diffusion_params
 from modules.wavetransfer.bddm.models import get_schedule_network
 
 from modules.wavetransfer.model import WaveGrad
-from modules.wavetransfer.params import AttrDict, params as base_params
+from modules.wavetransfer.params import AttrDict, get_default_params
 from modules.wavetransfer.bddm.data_loader import from_path as dataset_from_path, from_path_valid as dataset_from_path_valid
 
 
@@ -54,7 +54,7 @@ class Trainer(object):
         self.exp_dir = config.exp_dir
         self.clip = config.grad_clip
         self.load = config.load
-        self.model = WaveGrad(AttrDict(base_params)).to('cuda')
+        self.model = WaveGrad(AttrDict(get_default_params())).to('cuda')
         # Define training target
         score_net_path = self.load
         self.training_target = 'schedule_nets'
@@ -82,8 +82,8 @@ class Trainer(object):
         self.device = torch.device("cuda:{}".format(config.local_rank))
         self.local_rank = config.local_rank
         # Get data loaders
-        self.tr_loader = dataset_from_path(config.data_dir, config.training_file, base_params, config.batch_size, config.n_worker)
-        self.vl_loader = dataset_from_path_valid(config.data_dir, config.validation_file, base_params, config.n_worker)
+        self.tr_loader = dataset_from_path(config.data_dir, config.training_file, get_default_params(), config.batch_size, config.n_worker)
+        self.vl_loader = dataset_from_path_valid(config.data_dir, config.validation_file, get_default_params(), config.n_worker)
         self.reset()
 
     def reset(self):
