@@ -1,0 +1,48 @@
+# Adapted from https://github.com/tencent-ailab/bddm under the Apache-2.0 license.
+# General config
+exp_dir: './exp'
+seed: 0
+load: 'path_to/score_net.pt' # path to the trained score model checkpoint
+bddm_load: 'path_to/bddm_net.pkl' # Set to an empty string before training the schedule network. After training, update with the path to the BDDM model.
+# Generation config
+sampling_noise_schedule: 'path_to/noise_schedule.ns' # Set to an empty string if not in the sampling phase. Otherwise, specify the path to the noise schedule for generation.
+only_mixtures: 0 # Used only during generation. Set to 1 if you want to apply timbre transfer exclusively to mixture files.
+use_ddim_steps: 0 # options: 0-DDPM, 1-DDIM, M-DDIM M steps (when noise schedule is not given)
+# Diffusion config
+T: 1000
+beta_0: 0.000001
+beta_T: 0.01
+tau: 250
+# Noise scheduling config
+N: 20
+bddm_search_bins: 9
+noise_scheduling_attempts: 10
+# Score network config
+score_net: 'WaveTransfer'
+# Schedule network config
+schedule_net: 'GALR'
+blocks: 1
+hidden_dim: 128
+input_dim: 128
+window_length: 8
+segment_size: 64
+# Trainer config
+resume_training: False
+save_fp16: True
+steps_per_epoch: 1000
+schedule_net_training_steps: 10000
+lr: 0.00001
+freeze_checkpoint_params: True # only used when provided load path
+batch_size: 1
+patience: 100
+grad_clip: 5.0
+weight_decay: 0.00001
+log_period: 1
+ema_rate: 0.999
+# Data config
+data_dir: ["path_to/dataset/"] # Dataset directory containing the WAV files
+training_file: ["path_to/training_file.txt"] # TXT file listing WAV files for training
+validation_file: ["path_to/validation_file.txt"] # TXT file listing WAV files for validation
+test_dir: "path_to/test_dir/" # Directory containing WAV files for testing
+background_dir: "path_to/background_dir/" # Directory containing WAV files for background embedding computation in FAD score evaluation
+n_worker: 10
