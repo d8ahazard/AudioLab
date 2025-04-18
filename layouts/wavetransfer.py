@@ -12,12 +12,12 @@ import yaml
 from typing import Optional, List
 
 import gradio as gr
-import torch
+from handlers.args import ArgHandler
 from fastapi import Body, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 
 from handlers.args import ArgHandler
-from handlers.config import output_path, model_path
+from handlers.config import output_path
 from modules.wavetransfer.main import train_model
 from modules.wavetransfer.main_schedule_network import train_schedule_network, schedule_noise, infer_schedule_network
 

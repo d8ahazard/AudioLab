@@ -31,7 +31,6 @@ from modules.wavetransfer.params import AttrDict, params as base_params
 from modules.wavetransfer.preprocess import get_spec
 from modules.wavetransfer.bddm.data_loader_for_sampler import from_path_valid as dataset_from_path_valid, from_path_background as dataset_from_path_background
 
-from frechet_audio_distance import FrechetAudioDistance
 
 MAX_WAV_VALUE = 32767
 d = {'0': '3', '1': '4', '2': '5', '3': '0', '4': '1', '5': '2'}
@@ -436,6 +435,8 @@ class Sampler(object):
         Returns:
             fad_score (float):       the FAD score (the lower the better)
         """
+        from frechet_audio_distance import FrechetAudioDistance
+
         gen_audio_list_numpy = []
         resampler = torchaudio.transforms.Resample(self.model.params.sample_rate, 16000).cuda()
         for generated_audio in gen_audio_list:
