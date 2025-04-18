@@ -14,6 +14,7 @@ import json
 import traceback
 from typing import Optional, List
 import threading
+import torchaudio
 
 import gradio as gr
 from handlers.args import ArgHandler
@@ -45,6 +46,59 @@ active_training_token = None
 # Available base models or configurations
 DEFAULT_CONF_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "modules", "wavetransfer", "bddm", "conf.yml")
 arg_handler = ArgHandler()
+
+
+def resample_audio_file(source_path, target_path, target_sr=16000):
+    """Resample an audio file to the target sample rate"""
+    try:
+        waveform, sr = torchaudio.load(source_path)
+        if sr != target_sr:
+            resampler = torchaudio.transforms.Resample(sr, target_sr)
+            waveform = resampler(waveform)
+        torchaudio.save(target_path, waveform, target_sr)
+        return True
+    except Exception as e:
+        logger.error(f"Error resampling audio file {source_path}: {str(e)}")
+        return False
+
+
+def preprocess_audio_files(files, output_dir, target_sr=16000, progress=None):
+    """Preprocess audio files by resampling them to the target sample rate"""
+    os.makedirs(output_dir, exist_ok=True)
+    processed_files = []
+    file_counts = {"wav": 0, "mp3": 0, "other": 0}
+    
+    # Count total valid files for progress tracking
+    total_files = sum(1 for f in files if os.path.isfile(f) and (f.lower().endswith('.wav') or f.lower().endswith('.mp3')))
+    
+    for i, file_path in enumerate(files):
+        if os.path.isfile(file_path):
+            filename = os.path.basename(file_path)
+            if filename.lower().endswith('.wav'):
+                file_counts["wav"] += 1
+                output_filename = filename
+                output_path = os.path.join(output_dir, output_filename)
+                success = resample_audio_file(file_path, output_path, target_sr)
+                if success:
+                    processed_files.append(output_path)
+            elif filename.lower().endswith('.mp3'):
+                file_counts["mp3"] += 1
+                # Convert MP3 to WAV during preprocessing
+                output_filename = filename.rsplit('.', 1)[0] + '.wav'
+                output_path = os.path.join(output_dir, output_filename)
+                success = resample_audio_file(file_path, output_path, target_sr)
+                if success:
+                    processed_files.append(output_path)
+            else:
+                file_counts["other"] += 1
+                
+            # Update progress if provided
+            if progress and total_files > 0:
+                progress_value = min(0.1 + (i / total_files) * 0.4, 0.5)  # Scale from 0.1 to 0.5
+                progress(progress_value, f"Preprocessing file {i+1}/{total_files}: {filename}")
+    
+    return processed_files, file_counts
+
 
 def list_wavetransfer_projects():
     """List all available WaveTransfer projects in the output directory."""
@@ -343,6 +397,13 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem"
                             )
                             
+                            gr.Markdown(
+                                """
+                                > **Note**: Audio files will be automatically resampled to 16kHz for optimal training. 
+                                > This preprocessing step ensures best performance and quality.
+                                """
+                            )
+                            
                             max_epochs = gr.Number(
                                 label="Maximum Training Epochs",
                                 value=10000,
@@ -363,6 +424,9 @@ def render(arg_handler: ArgHandler):
                                 elem_id="wavetransfer_fp16",
                                 elem_classes="hintitem"
                             )
+                            
+                            # Note: Preprocessing (resampling to 16kHz) is always performed since WaveTransfer
+                            # is optimized for 16kHz audio. This improves training speed and quality.
                         
                         with gr.Group(visible=False) as schedule_group:
                             noise_sched_steps = gr.Slider(
@@ -494,39 +558,76 @@ def render(arg_handler: ArgHandler):
                             data_directory = os.path.join(project_dir, "data")
                             os.makedirs(data_directory, exist_ok=True)
                             
-                            # Count file types for logging
-                            file_counts = {"wav": 0, "mp3": 0, "other": 0}
-                            
-                            # Copy uploaded files to data directory
-                            for file_path in uploaded_files:
-                                if os.path.isfile(file_path):
-                                    filename = os.path.basename(file_path)
-                                    dest_path = os.path.join(data_directory, filename)
-                                    shutil.copy(file_path, dest_path)
-                                    
-                                    # Count file type
-                                    if filename.lower().endswith('.wav'):
-                                        file_counts["wav"] += 1
-                                    elif filename.lower().endswith('.mp3'):
-                                        file_counts["mp3"] += 1
-                                    else:
-                                        file_counts["other"] += 1
+                            # Optionally preprocess audio files
+                            if True:  # Preprocessing is always performed
+                                progress(0.1, "Preprocessing audio files (resampling to 16kHz)...")
+                                log_content += f"Preprocessing audio files to 16kHz sample rate...\n"
+                                
+                                # Create preprocessing directory
+                                preproc_directory = os.path.join(project_dir, "data_preproc")
+                                processed_files, file_counts = preprocess_audio_files(
+                                    uploaded_files, 
+                                    preproc_directory, 
+                                    target_sr=16000, 
+                                    progress=progress
+                                )
+                                
+                                # Check if preprocessing was successful
+                                if not processed_files:
+                                    return "⚠️ Audio preprocessing failed. Check logs for details.", ""
+                                
+                                log_content += f"Preprocessed {len(processed_files)} files to 16kHz sample rate.\n"
+                                # Use preprocessed files for training
+                                data_dirs_list = [preproc_directory]
+                                
+                                # Log file counts
+                                log_content += f"\nPreprocessed {len(processed_files)} files:\n"
+                                log_content += f"- WAV files: {file_counts['wav']}\n"
+                                log_content += f"- MP3 files: {file_counts['mp3']}\n"
+                                if file_counts["other"] > 0:
+                                    log_content += f"- Other files: {file_counts['other']} (these were ignored)\n"
+                                
+                            else:
+                                # Copy uploaded files to data directory without preprocessing
+                                # Count file types for logging
+                                file_counts = {"wav": 0, "mp3": 0, "other": 0}
+                                
+                                # Copy uploaded files to data directory
+                                for file_path in uploaded_files:
+                                    if os.path.isfile(file_path):
+                                        filename = os.path.basename(file_path)
+                                        dest_path = os.path.join(data_directory, filename)
+                                        shutil.copy(file_path, dest_path)
                                         
-                                    log_content += f"Added training file: {filename}\n"
-                            
-                            # Log file counts
-                            log_content += f"\nUploaded {len(uploaded_files)} files:\n"
-                            log_content += f"- WAV files: {file_counts['wav']}\n"
-                            log_content += f"- MP3 files: {file_counts['mp3']}\n"
-                            if file_counts["other"] > 0:
-                                log_content += f"- Other files: {file_counts['other']} (these will be ignored)\n"
-                            
-                            # Use data directory as source
-                            data_dirs_list = [data_directory]
+                                        # Count file type
+                                        if filename.lower().endswith('.wav'):
+                                            file_counts["wav"] += 1
+                                        elif filename.lower().endswith('.mp3'):
+                                            file_counts["mp3"] += 1
+                                        else:
+                                            file_counts["other"] += 1
+                                            
+                                        log_content += f"Added training file: {filename}\n"
+                                
+                                # Log file counts
+                                log_content += f"\nUploaded {len(uploaded_files)} files:\n"
+                                log_content += f"- WAV files: {file_counts['wav']}\n"
+                                log_content += f"- MP3 files: {file_counts['mp3']}\n"
+                                if file_counts["other"] > 0:
+                                    log_content += f"- Other files: {file_counts['other']} (these will be ignored)\n"
+                                
+                                # Use data directory as source
+                                data_dirs_list = [data_directory]
                         else:
                             # For continue training, use existing data directory
                             data_directory = os.path.join(project_dir, "data")
-                            if os.path.exists(data_directory):
+                            preproc_directory = os.path.join(project_dir, "data_preproc")
+                            
+                            # Check if we have preprocessed directory first
+                            if os.path.exists(preproc_directory) and any(os.listdir(preproc_directory)):
+                                data_dirs_list = [preproc_directory]
+                                log_content += f"Using existing preprocessed data directory: {preproc_directory}\n"
+                            elif os.path.exists(data_directory):
                                 data_dirs_list = [data_directory]
                                 log_content += f"Using existing data directory: {data_directory}\n"
                             else:
@@ -536,7 +637,7 @@ def render(arg_handler: ArgHandler):
                         model_directory = os.path.join(project_dir, "model")
                         os.makedirs(model_directory, exist_ok=True)
                         
-                        progress(0.2, "Starting model training...")
+                        progress(0.5, "Starting model training...")
                         log_content += f"Model directory: {model_directory}\n"
                         log_content += f"Max epochs: {max_epochs}\n"
                         log_content += f"Checkpoint interval: {checkpoint_interval}\n"
@@ -794,12 +895,15 @@ def register_api_endpoints(api):
             os.makedirs(model_dir, exist_ok=True)
             
             # Handle uploaded files if present
+            saved_files = []
             if files:
                 for file in files:
                     content = await file.read()
                     filename = file.filename
-                    with open(os.path.join(data_dir, filename), "wb") as f:
+                    file_path = os.path.join(data_dir, filename)
+                    with open(file_path, "wb") as f:
                         f.write(content)
+                    saved_files.append(file_path)
             
             # Verify data directory has files if not continuing training
             if not request.continue_training and not files:
@@ -810,10 +914,26 @@ def register_api_endpoints(api):
                         content={"error": "No audio files provided for training. Please upload audio files."}
                     )
             
+            # Handle preprocessing
+            if saved_files:
+                # Create preprocessing directory
+                preproc_dir = os.path.join(project_dir, "data_preproc")
+                processed_files, _ = preprocess_audio_files(saved_files, preproc_dir, target_sr=16000)
+                
+                if processed_files:
+                    # Use preprocessed files for training
+                    train_data_dir = preproc_dir
+                else:
+                    # Fallback to original files if preprocessing failed
+                    train_data_dir = data_dir
+            else:
+                # Use original data directory
+                train_data_dir = data_dir
+            
             # Train the model
             success, result = train_model(
                 model_dir=model_dir,
-                data_dirs=[data_dir],
+                data_dirs=[train_data_dir],
                 max_epochs=request.max_epochs,
                 checkpoint_interval=request.checkpoint_interval,
                 fp16=request.fp16,
