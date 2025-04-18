@@ -16,7 +16,7 @@
 # ==============================================================================
 
 from torch.cuda import device_count
-from torch.multiprocessing import spawn
+from torch.multiprocessing import spawn, set_start_method
 import os
 import shutil
 import traceback
@@ -29,6 +29,14 @@ from modules.wavetransfer.params import AttrDict, get_default_params
 
 # Set up logger
 logger = logging.getLogger("ADLB.WaveTransfer.Training")
+
+# Try to set the multiprocessing start method to 'spawn'
+# This is safer than 'fork' when running in an application context
+try:
+    set_start_method('spawn', force=True)
+except RuntimeError:
+    # Method already set, which is fine
+    pass
 
 
 def _get_free_port():
@@ -60,6 +68,17 @@ def create_params_from_config(config_data=None):
     if config_data:
         params.override(config_data)
     
+    # Using 64 as crop_mel_frames value - this means we need ~1.2 seconds of audio
+    # per training example, which should be easily available in full songs
+    params.crop_mel_frames = 64  # Slightly smaller than default (66)
+    
+    # Enable better debugging
+    print(f"PARAMETER SETTINGS:")
+    print(f"- crop_mel_frames: {params.crop_mel_frames}")
+    print(f"- hop_samples: {params.hop_samples}")
+    print(f"- sample_rate: {params.sample_rate}")
+    print(f"- Min audio length needed (seconds): {(params.crop_mel_frames - 1) * params.hop_samples / params.sample_rate}")
+    
     return params
 
 
@@ -73,7 +92,8 @@ def train_model(
     validation_interval=1000,
     max_steps=None,
     fp16=False,
-    config_data=None
+    config_data=None,
+    force_single_process=False
 ):
     """
     Train (or resume training) a WaveTransfer model
@@ -89,14 +109,52 @@ def train_model(
         max_steps: maximum number of training steps
         fp16: whether to use 16-bit floating point operations for training
         config_data: optional dictionary with custom parameter values
+        force_single_process: whether to force using a single process for training (for use within GUI apps)
         
     Returns:
         Tuple of (success, model_dir or error_message)
     """
     try:
+        # Detect if we're running in an application context
+        in_application = (
+            hasattr(logging.getLogger(), 'app_context') or 
+            'ADLB.' in logging.Logger.manager.loggerDict or
+            any(name for name in logging.Logger.manager.loggerDict.keys() if 'app' in name.lower()) or
+            os.environ.get('USE_SINGLE_PROCESS') == '1'
+        )
+        
+        # If we're in an application and force_single_process isn't set, warn and force it
+        if in_application and not force_single_process:
+            logger.warning("Detected application context but force_single_process=False. Setting to True to prevent spawning issues.")
+            force_single_process = True
+        
+        # Set environment variable to inform child processes they should use single process mode
+        if force_single_process:
+            os.environ['USE_SINGLE_PROCESS'] = '1'
+            
+        # Validate input directories
+        for dir_path in data_dirs:
+            if not os.path.exists(dir_path):
+                error_message = f"Data directory not found: {dir_path}"
+                logger.error(error_message)
+                return False, error_message
+                
+        # Verify there are audio files in the directories
+        has_audio_files = False
+        for dir_path in data_dirs:
+            wav_files = [f for f in os.listdir(dir_path) if f.endswith('.wav') or f.endswith('.mp3')]
+            if wav_files:
+                has_audio_files = True
+                break
+                
+        if not has_audio_files:
+            error_message = f"No audio files (.wav or .mp3) found in any of the provided directories: {data_dirs}"
+            logger.error(error_message)
+            return False, error_message
+            
         # Log training start with parameters
         logger.info(f"Starting WaveTransfer training with model_dir={model_dir}, data_dirs={data_dirs}")
-        logger.info(f"Training parameters: max_steps={max_steps}, checkpoint_interval={checkpoint_interval}, fp16={fp16}")
+        logger.info(f"Training parameters: max_steps={max_steps}, checkpoint_interval={checkpoint_interval}, fp16={fp16}, force_single_process={force_single_process}")
         
         # Initialize parameters
         params = create_params_from_config(config_data)
@@ -124,9 +182,24 @@ def train_model(
             params_dict = {k: v.tolist() if hasattr(v, 'tolist') else v for k, v in params.items()}
             json.dump(params_dict, f, indent=2)
         
+        try:
+            # Try to create the dataset first to catch potential data issues
+            from modules.wavetransfer.dataset import from_path as dataset_from_path
+            _ = dataset_from_path(args.data_dirs, args.training_files, params)
+            logger.info("Dataset successfully initialized. Starting training...")
+        except Exception as e:
+            error_message = f"Failed to initialize dataset: {str(e)}"
+            logger.error(error_message)
+            return False, error_message
+        
+        # Always use single process for any in-app training
+        if in_application:
+            force_single_process = True
+            logger.info("Running in application context, forcing single process mode")
+        
         # Check if multi-GPU training is possible and desired
         replica_count = device_count()
-        if replica_count > 1:
+        if replica_count > 1 and not force_single_process:
             if params.batch_size % replica_count != 0:
                 logger.error(f'Batch size {params.batch_size} is not evenly divisible by # GPUs {replica_count}.')
                 logger.info(f'Adjusting batch size from {params.batch_size} to {params.batch_size - (params.batch_size % replica_count)}')
@@ -138,8 +211,15 @@ def train_model(
             
             params.batch_size = params.batch_size // replica_count
             port = _get_free_port()
+            
+            # Use distributed training with spawning
+            logger.info(f"Using distributed training across {replica_count} GPUs")
             spawn(train_distributed, args=(replica_count, port, args, params), nprocs=replica_count, join=True)
         else:
+            # Use simple single-process training for GUI apps or when forced
+            if force_single_process and replica_count > 1:
+                logger.info(f"Multiple GPUs detected ({replica_count}), but using single process mode due to force_single_process=True")
+                logger.info("Multi-GPU capabilities will not be utilized")
             train(args, params)
         
         logger.info(f"WaveTransfer training completed successfully: {model_dir}")
@@ -186,6 +266,8 @@ if __name__ == '__main__':
         help='use 16-bit floating point operations for training')
     parser.add_argument('--config', type=str, default=None,
         help='path to config JSON file with custom parameters')
+    parser.add_argument('--force_single_process', action='store_true', default=False,
+        help='force using a single process for training (for use within GUI apps)')
     
     args = parser.parse_args()
     
@@ -205,6 +287,7 @@ if __name__ == '__main__':
         args.validation_interval,
         args.max_steps,
         args.fp16,
-        config_data
+        config_data,
+        args.force_single_process
     )
 

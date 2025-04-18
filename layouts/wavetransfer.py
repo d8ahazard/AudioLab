@@ -8,6 +8,7 @@ import os
 import shutil
 import time
 import tempfile
+from fastapi.responses import JSONResponse
 import yaml
 import json
 import traceback
@@ -475,11 +476,32 @@ def render(arg_handler: ArgHandler):
                             data_directory = os.path.join(project_dir, "data")
                             os.makedirs(data_directory, exist_ok=True)
                             
+                            # Count file types for logging
+                            file_counts = {"wav": 0, "mp3": 0, "other": 0}
+                            
                             # Copy uploaded files to data directory
                             for file_path in uploaded_files:
                                 if os.path.isfile(file_path):
-                                    shutil.copy(file_path, os.path.join(data_directory, os.path.basename(file_path)))
-                                    log_content += f"Added training file: {os.path.basename(file_path)}\n"
+                                    filename = os.path.basename(file_path)
+                                    dest_path = os.path.join(data_directory, filename)
+                                    shutil.copy(file_path, dest_path)
+                                    
+                                    # Count file type
+                                    if filename.lower().endswith('.wav'):
+                                        file_counts["wav"] += 1
+                                    elif filename.lower().endswith('.mp3'):
+                                        file_counts["mp3"] += 1
+                                    else:
+                                        file_counts["other"] += 1
+                                        
+                                    log_content += f"Added training file: {filename}\n"
+                            
+                            # Log file counts
+                            log_content += f"\nUploaded {len(uploaded_files)} files:\n"
+                            log_content += f"- WAV files: {file_counts['wav']}\n"
+                            log_content += f"- MP3 files: {file_counts['mp3']}\n"
+                            if file_counts["other"] > 0:
+                                log_content += f"- Other files: {file_counts['other']} (these will be ignored)\n"
                             
                             # Use data directory as source
                             data_dirs_list = [data_directory]
@@ -508,7 +530,8 @@ def render(arg_handler: ArgHandler):
                             data_dirs=data_dirs_list,
                             max_steps=int(max_steps) if max_steps is not None else None,
                             checkpoint_interval=int(checkpoint_interval) if checkpoint_interval is not None else None,
-                            fp16=fp16
+                            fp16=fp16,
+                            force_single_process=True
                         )
                         
                         if success:
@@ -686,6 +709,14 @@ def register_api_endpoints(api):
         checkpoint_interval: Optional[int] = Field(5000, description="Interval between model checkpoints")
         fp16: bool = Field(True, description="Whether to use 16-bit floating point operations for training")
     
+    class TrainWaveTransferScheduleRequest(BaseModel):
+        project_name: str = Field(..., description="Name of the existing project")
+        max_steps: Optional[int] = Field(5000, description="Maximum number of training steps")
+        checkpoint_interval: Optional[int] = Field(1000, description="Interval between model checkpoints")
+        fp16: bool = Field(True, description="Whether to use 16-bit floating point operations for training")
+        noise_steps: int = Field(50, description="Number of noise steps for the schedule")
+        noise_schedule_type: str = Field("cosine", description="Type of noise schedule (linear or cosine)")
+    
     class ScheduleNetworkRequest(BaseModel):
         project_name: str = Field(..., description="Name of the existing project")
         noise_steps: int = Field(50, description="Number of noise steps for the schedule")
@@ -703,88 +734,149 @@ def register_api_endpoints(api):
         request: TrainWaveTransferRequest = Body(...),
         files: List[UploadFile] = File(None)
     ):
-        """Train a WaveTransfer model for instrument timbre transfer."""
+        """Train a WaveTransfer model with the specified parameters."""
         try:
-            # Create project directory
-            project_dir = os.path.join(output_path, "wavetransfer", request.project_name)
-            os.makedirs(project_dir, exist_ok=True)
+            # Create or validate project
+            project_name = request.project_name
+            if not project_name:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Project name is required"}
+                )
+                
+            # Set up project directory
+            project_dir = os.path.join("outputs", "wavetransfer", project_name)
+            if not os.path.exists(project_dir):
+                os.makedirs(project_dir, exist_ok=True)
             
-            # Process uploaded files
+            # Check if main files exist
             data_dir = os.path.join(project_dir, "data")
-            os.makedirs(data_dir, exist_ok=True)
-            
-            if files and not request.continue_training:
-                for file in files:
-                    file_path = os.path.join(data_dir, file.filename)
-                    with open(file_path, "wb") as f:
-                        f.write(await file.read())
-            
-            # Set up model directory
             model_dir = os.path.join(project_dir, "model")
+            os.makedirs(data_dir, exist_ok=True)
             os.makedirs(model_dir, exist_ok=True)
             
-            # Train model
+            # Handle uploaded files if present
+            if files:
+                for file in files:
+                    content = await file.read()
+                    filename = file.filename
+                    with open(os.path.join(data_dir, filename), "wb") as f:
+                        f.write(content)
+            
+            # Verify data directory has files if not continuing training
+            if not request.continue_training and not files:
+                wav_files = [f for f in os.listdir(data_dir) if f.endswith('.wav') or f.endswith('.mp3')]
+                if not wav_files:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "No audio files provided for training. Please upload audio files."}
+                    )
+            
+            # Train the model
             success, result = train_model(
                 model_dir=model_dir,
                 data_dirs=[data_dir],
                 max_steps=request.max_steps,
                 checkpoint_interval=request.checkpoint_interval,
-                fp16=request.fp16
+                fp16=request.fp16,
+                force_single_process=True  # Always use single process for API calls
             )
             
-            if not success:
-                raise HTTPException(status_code=500, detail=f"Training failed: {result}")
-            
-            # Create default config
-            config_path = create_project_config(
-                project_dir,
-                load=os.path.join(model_dir, "checkpoint"),
-                N=50,
-                noise_schedule="cosine"
-            )
-            
-            return {
-                "success": True, 
-                "message": "Model training completed successfully",
-                "project_dir": project_dir,
-                "config_path": config_path
-            }
-            
+            if success:
+                # Create default config
+                config_path = create_project_config(
+                    project_dir,
+                    load=os.path.join(model_dir, "checkpoint"),
+                    N=50,
+                    noise_schedule="cosine"
+                )
+                
+                return {
+                    "success": True,
+                    "message": "Model training completed successfully",
+                    "model_dir": result,
+                    "config_path": config_path
+                }
+            else:
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "success": False,
+                        "error": "Training failed",
+                        "details": result
+                    }
+                )
+                
         except Exception as e:
-            logger.error(f"Error in train_wavetransfer_model: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            traceback_str = traceback.format_exc()
+            logger.error(f"API error in train_wavetransfer_model: {str(e)}\n{traceback_str}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": str(e),
+                    "traceback": traceback_str
+                }
+            )
     
     @api.post("/api/v1/wavetransfer/schedule", tags=["Audio Generation"])
-    async def train_schedule_network(request: ScheduleNetworkRequest = Body(...)):
-        """Train the schedule network for a trained WaveTransfer model."""
+    async def train_wavetransfer_schedule(
+        request: TrainWaveTransferScheduleRequest = Body(...),
+    ):
+        """Train a WaveTransfer noise schedule network."""
         try:
-            # Check if project exists
-            project_dir = os.path.join(output_path, "wavetransfer", request.project_name)
-            if not os.path.exists(project_dir):
-                raise HTTPException(status_code=404, detail=f"Project not found: {request.project_name}")
+            # Create or validate project
+            project_name = request.project_name
+            if not project_name:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Project name is required"}
+                )
             
-            # Create/update config
-            config_path = create_project_config(
-                project_dir,
-                N=request.noise_steps,
-                noise_schedule=request.noise_schedule_type
+            # Set up project directory  
+            project_dir = os.path.join("outputs", "wavetransfer", project_name)
+            os.makedirs(project_dir, exist_ok=True)
+            
+            # Set up directories
+            model_dir = os.path.join(project_dir, "model")
+            os.makedirs(model_dir, exist_ok=True)
+            
+            # Train the schedule network
+            success, result = train_schedule_network(
+                model_dir=model_dir,
+                max_steps=request.max_steps,
+                checkpoint_interval=request.checkpoint_interval,
+                fp16=request.fp16,
+                force_single_process=True  # Always use single process for API calls
             )
             
-            # Train schedule network
-            success, result = schedule_noise(config_path, project_dir)
-            
-            if not success:
-                raise HTTPException(status_code=500, detail=f"Schedule network training failed: {result}")
-            
-            return {
-                "success": True, 
-                "message": "Schedule network training completed successfully",
-                "project_dir": project_dir
-            }
-            
+            if success:
+                return {
+                    "success": True,
+                    "message": "Schedule network training completed successfully",
+                    "model_dir": result
+                }
+            else:
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "success": False,
+                        "error": "Training failed",
+                        "details": result
+                    }
+                )
+                
         except Exception as e:
-            logger.error(f"Error in train_schedule_network: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            traceback_str = traceback.format_exc()
+            logger.error(f"API error in train_wavetransfer_schedule: {str(e)}\n{traceback_str}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": str(e),
+                    "traceback": traceback_str
+                }
+            )
     
     @api.post("/api/v1/wavetransfer/generate", tags=["Audio Generation"])
     async def generate_audio(

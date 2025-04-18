@@ -111,6 +111,11 @@ class WaveGradLearner:
 
   def train(self, max_steps=None):
     device = next(self.model.parameters()).device
+    
+    # Check if dataset is empty
+    if len(self.dataset) == 0:
+      raise ValueError("Dataset is empty. No valid audio files were found. Check your data directory and file formats.")
+    
     while True:
       for features in tqdm(self.dataset, desc=f'Epoch {self.step // len(self.dataset)}') if self.is_master else self.dataset:
         if max_steps is not None and self.step >= max_steps:
