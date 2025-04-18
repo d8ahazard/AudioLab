@@ -7,6 +7,8 @@ import shutil
 import hashlib
 import numpy as np
 import yaml
+import logging
+import traceback
 
 import torch
 torch.backends.cudnn.enabled = True
@@ -14,6 +16,10 @@ torch.backends.cudnn.benchmark = True
 
 from modules.wavetransfer.bddm import trainer, sampler
 from modules.wavetransfer.bddm.log_utils import log
+from modules.wavetransfer.params import AttrDict, get_default_params
+
+# Setup logger
+logger = logging.getLogger("ADLB.WaveTransfer.ScheduleNetwork")
 
 
 def dict_hash_5char(dictionary):
@@ -35,7 +41,17 @@ def start_exp(config, config_hash):
         return
     log('Experiment directory: %s' % (config.exp_dir), config)
     # Backup the config file
-    shutil.copyfile(config.config, os.path.join(config.exp_dir, 'conf.yml'))
+    config_path = getattr(config, 'config', None)
+    if config_path and os.path.exists(config_path):
+        shutil.copyfile(config_path, os.path.join(config.exp_dir, 'conf.yml'))
+    else:
+        # Save config as JSON if no config file exists
+        with open(os.path.join(config.exp_dir, 'conf.json'), 'w') as f:
+            # Convert config to dict for serialization
+            config_dict = {k: v for k, v in config.__dict__.items() 
+                          if not k.startswith('__') and not callable(v)}
+            json.dump(config_dict, f, indent=2, default=lambda x: x.tolist() if hasattr(x, 'tolist') else str(x))
+    
     # Create a backup scripts sub-folder
     os.makedirs(os.path.join(config.exp_dir, 'backup_scripts'), exist_ok=True)
     # Backup all .py files under bddm/
@@ -63,19 +79,42 @@ class SimpleNamespace:
         self.__dict__.update(kwargs)
 
 
+def load_config_from_file(config_path):
+    """Load configuration from a file (YAML or JSON)"""
+    logger.info(f"Loading configuration from: {config_path}")
+    
+    if config_path.endswith('.yml') or config_path.endswith('.yaml'):
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    elif config_path.endswith('.json'):
+        with open(config_path) as f:
+            return json.load(f)
+    else:
+        logger.warning(f"Unknown config file format: {config_path}, assuming YAML")
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+
+
 def setup_config(config_path, local_rank=0, seed=42):
-    """Set up configuration from YAML file"""
-    with open(config_path) as f:
-        yaml_config = yaml.safe_load(f)
+    """Set up configuration from config file"""
+    # Load configuration from file
+    file_config = load_config_from_file(config_path)
     
-    config_hash = dict_hash_5char(yaml_config)
-    config = yaml_config.copy()
-    config['config'] = config_path
-    config['local_rank'] = local_rank
-    config['seed'] = seed
+    # Get default parameters and override with file config
+    base_params = get_default_params()
+    base_params.override(file_config)
     
-    # Convert dict to namespace without using argparse
-    config = SimpleNamespace(**config)
+    # Convert to dictionary and add config metadata
+    config_dict = dict(base_params)
+    config_dict['config'] = config_path
+    config_dict['local_rank'] = local_rank
+    config_dict['seed'] = seed
+    
+    # Generate hash for the main configuration (excluding metadata)
+    config_hash = dict_hash_5char({k: v for k, v in file_config.items()})
+    
+    # Convert dict to namespace
+    config = SimpleNamespace(**config_dict)
     
     # Set random seed for reproducible results
     np.random.seed(config.seed)
@@ -88,77 +127,134 @@ def setup_config(config_path, local_rank=0, seed=42):
 
 def train_schedule_network(config_path, project_dir=None, local_rank=0):
     """Train the schedule network using configuration from YAML file"""
-    config, config_hash = setup_config(config_path, local_rank)
-    
-    # Override exp_dir if project_dir is provided
-    if project_dir:
-        config.exp_dir = project_dir
-    
-    # Create/retrieve exp dir
-    start_exp(config, config_hash)
-    log(f'Starting training with config: {config_path}', config)
-    
     try:
+        logger.info(f"Starting schedule network training with config: {config_path}")
+        
+        config, config_hash = setup_config(config_path, local_rank)
+        
+        # Override exp_dir if project_dir is provided
+        if project_dir:
+            config.exp_dir = project_dir
+        
+        # Create/retrieve exp dir
+        start_exp(config, config_hash)
+        log(f'Starting training with config: {config_path}', config)
+        
         # Create Trainer for training
         model_trainer = trainer.Trainer(config)
         model_trainer.train()
         log('-' * 80, config)
+        
+        logger.info(f"Schedule network training completed successfully: {config.exp_dir}")
         return True, config.exp_dir
         
     except Exception as e:
-        log('-' * 80, config)
-        log(f'Error during training: {str(e)}', config)
-        return False, str(e)
+        # Capture full traceback
+        error_traceback = traceback.format_exc()
+        error_message = f"{str(e)}\n\nTraceback:\n{error_traceback}"
+        
+        # Log the detailed error
+        logger.error(f"Schedule network training failed: {error_message}")
+        log('-' * 80, config if 'config' in locals() else None)
+        log(f'Error during training: {error_message}', config if 'config' in locals() else None)
+        
+        # Save the error to a log file
+        try:
+            if project_dir and os.path.exists(project_dir):
+                with open(os.path.join(project_dir, 'schedule_error_log.txt'), 'w') as f:
+                    f.write(error_message)
+        except Exception as log_error:
+            logger.error(f"Failed to write error log: {log_error}")
+        
+        return False, error_message
 
 
 def schedule_noise(config_path, project_dir=None, local_rank=0):
     """Run noise scheduling using trained model"""
-    config, config_hash = setup_config(config_path, local_rank)
-    
-    # Override exp_dir if project_dir is provided
-    if project_dir:
-        config.exp_dir = project_dir
-    
-    # Create/retrieve exp dir
-    start_exp(config, config_hash)
-    log(f'Starting noise scheduling with config: {config_path}', config)
-    
     try:
+        logger.info(f"Starting noise scheduling with config: {config_path}")
+        
+        config, config_hash = setup_config(config_path, local_rank)
+        
+        # Override exp_dir if project_dir is provided
+        if project_dir:
+            config.exp_dir = project_dir
+        
+        # Create/retrieve exp dir
+        start_exp(config, config_hash)
+        log(f'Starting noise scheduling with config: {config_path}', config)
+        
         # Create Sampler for noise scheduling
         model_sampler = sampler.Sampler(config)
         model_sampler.noise_scheduling_without_params()
         log('-' * 80, config)
+        
+        logger.info(f"Noise scheduling completed successfully: {config.exp_dir}")
         return True, config.exp_dir
         
     except Exception as e:
-        log('-' * 80, config)
-        log(f'Error during noise scheduling: {str(e)}', config)
-        return False, str(e)
+        # Capture full traceback
+        error_traceback = traceback.format_exc()
+        error_message = f"{str(e)}\n\nTraceback:\n{error_traceback}"
+        
+        # Log the detailed error
+        logger.error(f"Noise scheduling failed: {error_message}")
+        log('-' * 80, config if 'config' in locals() else None)
+        log(f'Error during noise scheduling: {error_message}', config if 'config' in locals() else None)
+        
+        # Save the error to a log file
+        try:
+            if project_dir and os.path.exists(project_dir):
+                with open(os.path.join(project_dir, 'schedule_error_log.txt'), 'w') as f:
+                    f.write(error_message)
+        except Exception as log_error:
+            logger.error(f"Failed to write error log: {log_error}")
+        
+        return False, error_message
 
 
 def infer_schedule_network(config_path, project_dir=None, local_rank=0):
     """Generate audio using trained model"""
-    config, config_hash = setup_config(config_path, local_rank)
-    
-    # Override exp_dir if project_dir is provided
-    if project_dir:
-        config.exp_dir = project_dir
-    
-    # Create/retrieve exp dir
-    start_exp(config, config_hash)
-    log(f'Starting generation with config: {config_path}', config)
-    
     try:
+        logger.info(f"Starting generation with config: {config_path}")
+        
+        config, config_hash = setup_config(config_path, local_rank)
+        
+        # Override exp_dir if project_dir is provided
+        if project_dir:
+            config.exp_dir = project_dir
+        
+        # Create/retrieve exp dir
+        start_exp(config, config_hash)
+        log(f'Starting generation with config: {config_path}', config)
+        
         # Create Sampler for generation
         model_sampler = sampler.Sampler(config)
         output_files = model_sampler.generate()
         log('-' * 80, config)
+        
+        logger.info(f"Generation completed successfully, files: {output_files}")
         return True, output_files
         
     except Exception as e:
-        log('-' * 80, config)
-        log(f'Error during generation: {str(e)}', config)
-        return False, str(e)
+        # Capture full traceback
+        error_traceback = traceback.format_exc()
+        error_message = f"{str(e)}\n\nTraceback:\n{error_traceback}"
+        
+        # Log the detailed error
+        logger.error(f"Generation failed: {error_message}")
+        log('-' * 80, config if 'config' in locals() else None)
+        log(f'Error during generation: {error_message}', config if 'config' in locals() else None)
+        
+        # Save the error to a log file
+        try:
+            if project_dir and os.path.exists(project_dir):
+                with open(os.path.join(project_dir, 'inference_error_log.txt'), 'w') as f:
+                    f.write(error_message)
+        except Exception as log_error:
+            logger.error(f"Failed to write error log: {log_error}")
+        
+        return False, error_message
 
 
 if __name__ == '__main__':

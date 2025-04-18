@@ -28,7 +28,7 @@ from tqdm import tqdm
 from modules.wavetransfer.dataset import from_path as dataset_from_path
 from modules.wavetransfer.dataset import from_path_valid as dataset_from_path_valid
 from modules.wavetransfer.model import WaveGrad
-from modules.wavetransfer.params import params
+from modules.wavetransfer.params import get_default_params
 from modules.wavetransfer.preprocess import get_spec
 from modules.wavetransfer.utils import plot_spectrogram, plot_audio, len_audio
 

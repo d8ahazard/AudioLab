@@ -9,6 +9,8 @@ import shutil
 import time
 import tempfile
 import yaml
+import json
+import traceback
 from typing import Optional, List
 
 import gradio as gr
@@ -20,6 +22,7 @@ from handlers.args import ArgHandler
 from handlers.config import output_path
 from modules.wavetransfer.main import train_model
 from modules.wavetransfer.main_schedule_network import train_schedule_network, schedule_noise, infer_schedule_network
+from modules.wavetransfer.params import get_default_params
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -28,7 +31,7 @@ logger = logging.getLogger("ADLB.WaveTransfer")
 
 # Available base models or configurations
 DEFAULT_CONF_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "modules", "wavetransfer", "bddm", "conf.yml")
-
+arg_handler = ArgHandler()
 
 def list_wavetransfer_projects():
     """List all available WaveTransfer projects in the output directory."""
@@ -57,26 +60,56 @@ def send_to_process(file_to_send, existing_inputs):
 
 
 def create_project_config(project_dir, config_template=DEFAULT_CONF_PATH, **kwargs):
-    """Create a configuration file for a project based on template."""
-    if not os.path.exists(config_template):
-        raise FileNotFoundError(f"Config template not found: {config_template}")
+    """Create a configuration file for a project based on template or defaults."""
+    # Create project directory
+    os.makedirs(project_dir, exist_ok=True)
     
-    # Load template configuration
-    with open(config_template, 'r') as f:
-        config = yaml.safe_load(f)
+    # Start with default parameters
+    config = get_default_params()
     
-    # Update configuration with provided parameters
+    # If template exists, load and override with it
+    if config_template and os.path.exists(config_template):
+        try:
+            if config_template.endswith('.yml') or config_template.endswith('.yaml'):
+                with open(config_template, 'r') as f:
+                    template_config = yaml.safe_load(f)
+            elif config_template.endswith('.json'):
+                with open(config_template, 'r') as f:
+                    template_config = json.load(f)
+            else:
+                # Assume YAML for other formats
+                with open(config_template, 'r') as f:
+                    template_config = yaml.safe_load(f)
+                    
+            # Override defaults with template
+            config.override(template_config)
+        except Exception as e:
+            logger.error(f"Error loading config template {config_template}: {str(e)}")
+            # Continue with defaults
+    
+    # Override with provided kwargs
     for key, value in kwargs.items():
         if key in config:
             config[key] = value
     
-    # Create project directory
-    os.makedirs(project_dir, exist_ok=True)
-    
-    # Write updated configuration
+    # Write configuration file (both YAML and JSON for compatibility)
     config_path = os.path.join(project_dir, 'conf.yml')
-    with open(config_path, 'w') as f:
-        yaml.dump(config, f)
+    try:
+        # Convert numpy arrays to lists for serialization
+        config_dict = {k: v.tolist() if hasattr(v, 'tolist') else v for k, v in config.items()}
+        
+        # Save as YAML
+        with open(config_path, 'w') as f:
+            yaml.dump(config_dict, f)
+            
+        # Also save as JSON for easier parsing
+        json_config_path = os.path.join(project_dir, 'conf.json')
+        with open(json_config_path, 'w') as f:
+            json.dump(config_dict, f, indent=2)
+            
+    except Exception as e:
+        logger.error(f"Error saving config: {str(e)}")
+        raise
     
     return config_path
 
@@ -364,9 +397,9 @@ def render(arg_handler: ArgHandler):
                 def toggle_training_mode(mode):
                     """Show/hide appropriate UI elements based on training mode"""
                     if mode == "New Project" or mode == "Continue Training":
-                        return gr.Group.update(visible=True), gr.Group.update(visible=False)
+                        return gr.update(visible=True), gr.update(visible=False)
                     else:  # Schedule Network
-                        return gr.Group.update(visible=False), gr.Group.update(visible=True)
+                        return gr.update(visible=False), gr.update(visible=True)
                 
                 def update_project_name(selected_project):
                     """Update project name when an existing project is selected"""
@@ -493,8 +526,23 @@ def render(arg_handler: ArgHandler):
                             
                             return "✅ Model training completed successfully! You may now train the schedule network.", log_content
                         else:
-                            log_content += f"❌ Model training failed: {result}\n"
-                            return f"❌ Model training failed: {result}", log_content
+                            # Display detailed error information
+                            log_content += f"❌ Model training failed with error:\n{result}\n"
+                            
+                            # Log the full error details
+                            logger.error(f"Training failed for project {project}: {result}")
+                            
+                            # Save the error log to the project directory
+                            try:
+                                error_log_path = os.path.join(project_dir, "training_error.log")
+                                with open(error_log_path, "w") as f:
+                                    f.write(f"Training failed at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                                    f.write(f"Error details:\n{result}\n")
+                                log_content += f"Error details saved to: {error_log_path}\n"
+                            except Exception as e:
+                                log_content += f"Failed to save error log: {str(e)}\n"
+                            
+                            return f"❌ Model training failed. Check the training log for details.", log_content
                 
                 # Connect training functions
                 refresh_train_projects_btn.click(
