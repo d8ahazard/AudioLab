@@ -118,6 +118,7 @@ def train_model(
     max_steps=None,
     max_epochs=None,  # New parameter for epoch-based training
     fp16=False,
+    batch_size=None,  # Added batch_size parameter
     config_data=None,
     force_single_process=True,  # Always use single process in AudioLab
     progress=None,  # gr.Progress object for updating UI
@@ -137,6 +138,7 @@ def train_model(
         max_steps: maximum number of training steps (deprecated, use max_epochs instead)
         max_epochs: maximum number of training epochs
         fp16: whether to use 16-bit floating point operations for training
+        batch_size: number of audio examples processed in each training iteration
         config_data: optional dictionary with custom parameter values
         force_single_process: whether to force using a single process for training (always True in AudioLab)
         progress: gr.Progress object for updating training progress in the UI
@@ -175,10 +177,15 @@ def train_model(
             
         # Log training start with parameters
         logger.info(f"Starting WaveTransfer training with model_dir={model_dir}, data_dirs={data_dirs}")
-        logger.info(f"Training parameters: max_epochs={max_epochs}, checkpoint_interval={checkpoint_interval}, fp16={fp16}")
+        logger.info(f"Training parameters: max_epochs={max_epochs}, checkpoint_interval={checkpoint_interval}, fp16={fp16}, batch_size={batch_size}")
         
         # Initialize parameters
         params = create_params_from_config(config_data)
+        
+        # Override batch_size if provided
+        if batch_size is not None:
+            params.batch_size = batch_size
+            logger.info(f"Overriding default batch size with: {batch_size}")
         
         # Create a configuration object without using argparse
         args = SimpleNamespace(

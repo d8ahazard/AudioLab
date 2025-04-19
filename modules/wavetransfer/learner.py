@@ -21,6 +21,7 @@ import torch
 import torchaudio
 import torch.nn as nn
 import json
+import logging
 
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
@@ -33,6 +34,8 @@ from modules.wavetransfer.params import get_default_params
 from modules.wavetransfer.preprocess import get_spec
 from modules.wavetransfer.utils import plot_spectrogram, plot_audio, len_audio
 
+# Set up logger
+logger = logging.getLogger(__name__)
 
 def _nested_map(struct, map_fn):
   if isinstance(struct, tuple):
@@ -126,22 +129,28 @@ class WaveGradLearner:
     # Save current epoch to training state
     self._save_training_state(current_epoch, max_epochs or (max_steps // dataset_size if max_steps else 10))
     
+    # Calculate total steps for display
+    total_steps = max_steps if max_steps else dataset_size * (max_epochs or 10)
+    
+    # Update validation_interval to run once per epoch instead of every few steps
+    self.validation_interval = dataset_size  # Once per epoch
+    
     # Main training loop
     while True:
       # Check if we've reached max epochs
       if max_epochs is not None and current_epoch >= max_epochs:
-        logger.info(f"Reached maximum epochs ({max_epochs}). Training complete.")
+        print(f"Reached maximum epochs ({max_epochs}). Training complete.")
         return
         
       # Create appropriate progress bar based on tqdm_handler or default tqdm
       if tqdm_handler:
         # Use the provided tqdm_handler to create a progress tracking object
-        progress_bar = tqdm_handler(len(self.dataset), f'Epoch {current_epoch}')
+        progress_bar = tqdm_handler(len(self.dataset), f'Epoch {current_epoch+1}/{max_epochs} (Step {self.step}/{total_steps})')
         use_progress = True
       else:
         # Use standard tqdm only if this is the master process
         if self.is_master:
-          progress_bar = tqdm(self.dataset, desc=f'Epoch {current_epoch}')
+          progress_bar = tqdm(self.dataset, desc=f'Epoch {current_epoch+1}/{max_epochs} (Step {self.step}/{total_steps})')
           use_progress = True
         else:
           progress_bar = self.dataset
@@ -150,7 +159,7 @@ class WaveGradLearner:
       for features in progress_bar:
         # Check for cancellation
         if cancel_token and hasattr(cancel_token, 'cancelled') and cancel_token.cancelled:
-          logger.info("Training cancelled by user.")
+          print("Training cancelled by user.")
           if use_progress and hasattr(progress_bar, 'close'):
             progress_bar.close()
           return
@@ -165,6 +174,12 @@ class WaveGradLearner:
         loss = self.train_step(features)
         if torch.isnan(loss).any():
           raise RuntimeError(f'Detected NaN loss at step {self.step}.')
+        
+        # Update progress bar with current loss
+        if use_progress and hasattr(progress_bar, 'set_postfix'):
+          progress_bar.set_postfix(loss=f"{loss.item():.5f}")
+          
+        # Handle checkpoints and validation
         if self.is_master:
           if self.step % self.summary_interval == 0:
             self._write_summary(self.step, features, loss)
@@ -305,7 +320,7 @@ class WaveGradLearner:
       else:
         # Use standard tqdm only if this is the master process
         if self.is_master:
-          progress_bar = tqdm(self.dataset_val, desc=f'Validation')
+          progress_bar = tqdm(self.dataset_val, desc=f'Validation', leave=False)
           use_progress = True
         else:
           progress_bar = self.dataset_val
@@ -334,36 +349,52 @@ class WaveGradLearner:
         predicted = self.model(noisy_audio, spectrogram, noise_scale.squeeze(1))
         loss = self.loss_fn(noise, predicted.squeeze(1))
         losses.append(loss.cpu().numpy())
-
-        audio_pred = self.predict(spectrogram)
-        audio_len = len_audio(spectrogram)
-        spec_pred = get_spec(audio_pred.squeeze(0)[:audio_len], self.params)
-        spec_gt = get_spec(audio.squeeze(0)[:audio_len], self.params)
-
-        if i<5:
-          audio_preds.append(audio_pred.squeeze(0).cpu().numpy())
-          spec_preds.append(spec_pred.squeeze(0).cpu().numpy())
-          audio_gt.append(audio.squeeze(0).cpu().numpy())
-          spec_cond_gt.append(spectrogram.squeeze(0).cpu().numpy())
-          spec_gts.append(spec_gt.squeeze(0).cpu().numpy())
-          audio_cond_inst_gt.append(audio_cond_inst.squeeze(0).cpu().numpy())
-
-        # L1 Mel-Spectrogram Loss
-        mel_spec_loss = torch.nn.L1Loss()(spec_pred.squeeze(0), spec_gt.squeeze(0)).item()
-        mel_spec_losses.append(mel_spec_loss)
         
-        # Update progress bar
-        if use_progress and hasattr(progress_bar, 'update'):
-          progress_bar.update(1)
+        # Update progress bar with current loss
+        if use_progress and hasattr(progress_bar, 'set_postfix'):
+          progress_bar.set_postfix(loss=f"{loss.item():.5f}")
+
+        # We only need to generate samples for a few examples to save time
+        if i < 4:  # Only process first 4 samples
+          audio_pred = self.predict(spectrogram)
+          audio_len = len_audio(spectrogram)
+          
+          audio_preds.append(audio_pred[0, :audio_len].detach().cpu().numpy())
+          
+          with torch.no_grad():
+            # Get mel spectrograms
+            spec_pred = get_spec(audio_pred[0, :audio_len].detach().cpu().numpy(), self.params.n_mels, sample_rate=self.params.sample_rate, 
+                                hop_samples=self.params.hop_samples, win_samples=self.params.hop_samples*4,
+                                fmin=self.params.fmin, fmax=self.params.fmax)
+            spec_preds.append(spec_pred)
+            spec_gts.append(features['spectrogram'][0].detach().cpu().numpy())
+            audio_gt.append(features['audio'][0, :audio_len].detach().cpu().numpy())
+            audio_cond_inst_gt.append(features['audio_cond_inst'][0, :audio_len].detach().cpu().numpy())
+            spec_cond = get_spec(features['audio_cond_inst'][0, :audio_len].detach().cpu().numpy(), self.params.n_mels, sample_rate=self.params.sample_rate, 
+                              hop_samples=self.params.hop_samples, win_samples=self.params.hop_samples*4,
+                              fmin=self.params.fmin, fmax=self.params.fmax)
+            spec_cond_gt.append(spec_cond)
+            
+            # Compute mel loss
+            mel_spec_loss = torch.nn.functional.l1_loss(
+              torch.tensor(spec_pred), 
+              torch.tensor(features['spectrogram'][0].detach().cpu().numpy())
+            )
+            mel_spec_losses.append(mel_spec_loss.item())
       
-      # Close progress bar
       if use_progress and hasattr(progress_bar, 'close'):
         progress_bar.close()
-
+      
+      # Combine and compute aggregate metrics
       loss_valid = np.mean(losses)
-      mel_spec_losses_mean = np.mean(mel_spec_losses)
+      mel_spec_losses_mean = np.mean(mel_spec_losses) if mel_spec_losses else 0.0
+      
+      print(f"Validation: Mean Loss: {loss_valid:.5f}, Mel Loss: {mel_spec_losses_mean:.5f}")
+      
+      # Write summary with validation info
       self._write_summary_valid(self.step, loss_valid, mel_spec_losses_mean,
-                                audio_preds, spec_preds, audio_gt, spec_gts, audio_cond_inst_gt, spec_cond_gt)
+                            audio_preds, spec_preds, audio_gt, spec_gts,
+                            audio_cond_inst_gt, spec_cond_gt)
 
 
 def _train_impl(replica_id, model, dataset, dataset_val, args, params, tqdm_handler=None):

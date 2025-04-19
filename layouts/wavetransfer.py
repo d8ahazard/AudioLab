@@ -43,6 +43,63 @@ class CancellationToken:
 # Active training token
 active_training_token = None
 
+# Threaded training wrapper
+class ThreadedTrainer:
+    def __init__(self):
+        self.result = None
+        self.success = False
+        self.error = None
+        self.thread = None
+        self.is_running = False
+        self.progress = None
+        
+    def train_schedule_network_thread(self, config_path, project_dir):
+        try:
+            # Ensure we're using a single process
+            # Modify environment to prevent subprocess spawning
+            os.environ["USE_SINGLE_PROCESS"] = "1"
+            os.environ["OMP_NUM_THREADS"] = "1"
+            
+            # Run the training function directly, no subprocess
+            from modules.wavetransfer.main_schedule_network import train_schedule_network as train_func
+            
+            # Run training function with single process, passing the progress object
+            self.success, self.result = train_func(config_path, project_dir, progress=self.progress)
+        except Exception as e:
+            self.success = False
+            self.error = str(e)
+            self.result = traceback.format_exc()
+        finally:
+            self.is_running = False
+    
+    def start_training(self, config_path, project_dir, progress=None):
+        """Start the training in a thread without spawning processes"""
+        if self.is_running:
+            return False, "Training already in progress"
+        
+        self.is_running = True
+        self.progress = progress
+        self.thread = threading.Thread(
+            target=self.train_schedule_network_thread,
+            args=(config_path, project_dir)
+        )
+        self.thread.daemon = True
+        self.thread.start()
+        return True, "Training started in background thread"
+    
+    def get_result(self):
+        """Get the current training result"""
+        if self.is_running:
+            return None, "Training still in progress"
+        
+        if self.success:
+            return self.success, self.result
+        else:
+            return self.success, self.error or self.result
+
+# Create a single instance of ThreadedTrainer to be used by both GUI and API
+schedule_trainer = ThreadedTrainer()
+
 # Available base models or configurations
 DEFAULT_CONF_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "modules", "wavetransfer", "bddm", "conf.yml")
 arg_handler = ArgHandler()
@@ -169,7 +226,7 @@ def create_project_config(project_dir, config_template=DEFAULT_CONF_PATH, **kwar
         with open(config_path, 'w') as f:
             yaml.dump(config_dict, f)
             
-        # Also save as JSON for easier parsing
+        # Also save as JSON for easier parsing      
         json_config_path = os.path.join(project_dir, 'conf.json')
         with open(json_config_path, 'w') as f:
             json.dump(config_dict, f, indent=2)
@@ -411,6 +468,16 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem"
                             )
                             
+                            batch_size = gr.Slider(
+                                minimum=1,
+                                maximum=64,
+                                step=1,
+                                value=32,
+                                label="Batch Size",
+                                elem_id="wavetransfer_batch_size",
+                                elem_classes="hintitem"
+                            )
+                            
                             checkpoint_interval = gr.Number(
                                 label="Checkpoint Interval",
                                 value=5000,
@@ -446,6 +513,10 @@ def render(arg_handler: ArgHandler):
                                 elem_id="wavetransfer_noise_sched_type",
                                 elem_classes="hintitem"
                             )
+                        
+                        with gr.Group(visible=False) as schedule_status_group:
+                            check_status_btn = gr.Button("🔄 Check Schedule Training Status")
+                            schedule_status = gr.Markdown("No schedule network training in progress.")
                     
                     with gr.Column():
                         # Right column - Actions and logs
@@ -476,9 +547,9 @@ def render(arg_handler: ArgHandler):
                 def toggle_training_mode(mode):
                     """Show/hide appropriate UI elements based on training mode"""
                     if mode == "New Project" or mode == "Continue Training":
-                        return gr.update(visible=True), gr.update(visible=False)
+                        return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
                     else:  # Schedule Network
-                        return gr.update(visible=False), gr.update(visible=True)
+                        return gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
                 
                 def update_project_name(selected_project):
                     """Update project name when an existing project is selected"""
@@ -492,6 +563,7 @@ def render(arg_handler: ArgHandler):
                     training_mode,
                     uploaded_files,
                     max_epochs,
+                    batch_size,
                     checkpoint_interval,
                     fp16,
                     noise_sched_steps,
@@ -526,26 +598,62 @@ def render(arg_handler: ArgHandler):
                         log_content += f"Noise schedule steps: {noise_sched_steps}\n"
                         log_content += f"Noise schedule type: {noise_sched_type}\n"
                         
+                        # Find data directory to use
+                        data_directory = os.path.join(project_dir, "data")
+                        preproc_directory = os.path.join(project_dir, "data_preproc")
+                        
+                        # Check if we have preprocessed directory first
+                        if os.path.exists(preproc_directory) and any(os.listdir(preproc_directory)):
+                            data_dirs_list = [preproc_directory]
+                            log_content += f"Using existing preprocessed data directory: {preproc_directory}\n"
+                        elif os.path.exists(data_directory):
+                            data_dirs_list = [data_directory]
+                            log_content += f"Using existing data directory: {data_directory}\n"
+                        else:
+                            return "⚠️ No data directory found for existing project.", ""
+                        
                         # Create/update config
                         config_path = create_project_config(
                             project_dir,
                             N=int(noise_sched_steps),
-                            noise_schedule=noise_sched_type
+                            noise_schedule=noise_sched_type,
+                            # Point to model checkpoint from previous training
+                            load=os.path.join(project_dir, "model", "weights.pt"),
+                            # Set data directories directly for schedule network training
+                            data_dir=data_dirs_list,
+                            # Use empty training/validation files to force direct file processing mode
+                            training_file=[],
+                            validation_file=[]
                         )
                         
                         progress(0.2, "Training schedule network...")
                         log_content += f"Using config: {config_path}\n"
                         
-                        # Train schedule network
-                        success, result = train_schedule_network(config_path, project_dir)
+                        # Start the schedule network training in a background thread
+                        start_success, start_msg = schedule_trainer.start_training(config_path, project_dir, progress=progress)
                         
-                        if success:
-                            log_content += f"✅ Schedule network training completed.\n"
-                            log_content += f"Results saved to: {result}\n"
-                            return "✅ Schedule network training completed successfully!", log_content
-                        else:
-                            log_content += f"❌ Schedule network training failed: {result}\n"
-                            return f"❌ Schedule network training failed: {result}", log_content
+                        if not start_success:
+                            log_content += f"❌ Failed to start schedule network training: {start_msg}\n"
+                            return f"❌ Failed to start schedule network training: {start_msg}", log_content
+                        
+                        # Poll for training progress
+                        log_content += f"⏳ Schedule network training started in background.\n"
+                        log_content += f"You can continue using other features while training runs.\n"
+                        
+                        # Check if training is done (for immediate completion)
+                        training_result = schedule_trainer.get_result()
+                        if training_result[0] is not None:  # Training completed
+                            success, result = training_result
+                            if success:
+                                log_content += f"✅ Schedule network training completed.\n"
+                                log_content += f"Results saved to: {result}\n"
+                                return "✅ Schedule network training completed successfully!", log_content
+                            else:
+                                log_content += f"❌ Schedule network training failed: {result}\n"
+                                return f"❌ Schedule network training failed: {result}", log_content
+                        
+                        # If not done, return the in-progress status
+                        return "⏳ Schedule network training is running in the background. Check back later for results.", log_content
                     
                     else:  # Main model training (new or continue)
                         # Validate files for new project
@@ -640,6 +748,7 @@ def render(arg_handler: ArgHandler):
                         progress(0.5, "Starting model training...")
                         log_content += f"Model directory: {model_directory}\n"
                         log_content += f"Max epochs: {max_epochs}\n"
+                        log_content += f"Batch size: {batch_size}\n"
                         log_content += f"Checkpoint interval: {checkpoint_interval}\n"
                         log_content += f"Using FP16: {fp16}\n"
                         
@@ -650,9 +759,11 @@ def render(arg_handler: ArgHandler):
                             max_epochs=int(max_epochs) if max_epochs is not None else None,
                             checkpoint_interval=int(checkpoint_interval) if checkpoint_interval is not None else None,
                             fp16=fp16,
+                            batch_size=int(batch_size) if batch_size is not None else None,
                             force_single_process=True,
                             progress=progress,
-                            cancel_token=active_training_token
+                            cancel_token=active_training_token,
+                            config_data={"batch_size": int(batch_size)}
                         )
                         
                         if success:
@@ -662,7 +773,7 @@ def render(arg_handler: ArgHandler):
                             # Create default config for later use
                             config_path = create_project_config(
                                 project_dir,
-                                load=os.path.join(model_directory, "checkpoint"),
+                                load=os.path.join(model_directory, "weights.pt"),
                                 N=50,
                                 noise_schedule="cosine"
                             )
@@ -701,6 +812,21 @@ def render(arg_handler: ArgHandler):
                         return "Cancellation requested. Training will stop after the current batch completes..."
                     return "No active training to cancel."
                 
+                def check_schedule_training_status():
+                    """Check the status of currently running schedule network training"""
+                    if not schedule_trainer.is_running:
+                        # Check if we have a completed result
+                        training_result = schedule_trainer.get_result()
+                        if training_result[0] is not None:  # Training completed
+                            success, result = training_result
+                            if success:
+                                return "✅ Schedule network training completed successfully.\nResults saved to: " + str(result)
+                            else:
+                                return "❌ Schedule network training failed:\n" + str(result)
+                        return "No schedule network training in progress."
+                    else:
+                        return "⏳ Schedule network training is currently running..."
+                
                 # Connect training functions
                 refresh_train_projects_btn.click(
                     fn=refresh_train_projects,
@@ -710,7 +836,7 @@ def render(arg_handler: ArgHandler):
                 training_mode.change(
                     fn=toggle_training_mode,
                     inputs=[training_mode],
-                    outputs=[new_project_group, schedule_group]
+                    outputs=[new_project_group, schedule_group, schedule_status_group]
                 )
                 
                 project_list.change(
@@ -727,6 +853,7 @@ def render(arg_handler: ArgHandler):
                         training_mode,
                         data_dirs,
                         max_epochs,
+                        batch_size,
                         checkpoint_interval,
                         fp16,
                         noise_sched_steps,
@@ -741,6 +868,11 @@ def render(arg_handler: ArgHandler):
                 cancel_train_btn.click(
                     fn=cancel_training,
                     outputs=[training_status]
+                )
+                
+                check_status_btn.click(
+                    fn=check_schedule_training_status,
+                    outputs=[schedule_status]
                 )
                 
                 # Add a third tab for information
@@ -825,6 +957,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "wavetransfer_training_mode": "Choose whether to create a new project, continue training an existing model, or train the schedule network.",
         "wavetransfer_data_dirs": "Upload audio files of your target instrument. These will be used to train the model.",
         "wavetransfer_max_epochs": "Maximum number of training epochs. More epochs = better quality but longer training time.",
+        "wavetransfer_batch_size": "Number of audio examples processed in each training iteration. Higher values use more memory but can speed up training.",
         "wavetransfer_checkpoint_interval": "How often to save model checkpoints during training.",
         "wavetransfer_fp16": "Use half-precision (16-bit) floating point for training. Speeds up training with minimal quality loss.",
         "wavetransfer_noise_sched_steps": "Number of noise steps for the schedule network. This affects generation quality and speed.",
@@ -847,6 +980,7 @@ def register_api_endpoints(api):
         max_epochs: Optional[int] = Field(10000, description="Maximum number of training epochs")
         checkpoint_interval: Optional[int] = Field(5000, description="Interval between model checkpoints")
         fp16: bool = Field(True, description="Whether to use 16-bit floating point operations for training")
+        batch_size: Optional[int] = Field(32, description="Number of audio examples to process in each training batch")
     
     class TrainWaveTransferScheduleRequest(BaseModel):
         project_name: str = Field(..., description="Name of the existing project")
@@ -937,6 +1071,7 @@ def register_api_endpoints(api):
                 max_epochs=request.max_epochs,
                 checkpoint_interval=request.checkpoint_interval,
                 fp16=request.fp16,
+                batch_size=request.batch_size,
                 force_single_process=True,
                 progress=None  # No progress bar for API calls
             )
@@ -945,7 +1080,7 @@ def register_api_endpoints(api):
                 # Create default config
                 config_path = create_project_config(
                     project_dir,
-                    load=os.path.join(model_dir, "checkpoint"),
+                    load=os.path.join(model_dir, "weights.pt"),
                     N=50,
                     noise_schedule="cosine"
                 )
@@ -1000,14 +1135,56 @@ def register_api_endpoints(api):
             model_dir = os.path.join(project_dir, "model")
             os.makedirs(model_dir, exist_ok=True)
             
-            # Train the schedule network
-            success, result = train_schedule_network(
-                model_dir=model_dir,
-                max_epochs=request.max_epochs,
-                checkpoint_interval=request.checkpoint_interval,
-                fp16=request.fp16,
-                force_single_process=True  # Always use single process for API calls
+            # Find data directory to use
+            data_directory = os.path.join(project_dir, "data")
+            preproc_directory = os.path.join(project_dir, "data_preproc")
+            
+            # Check if we have preprocessed directory first
+            if os.path.exists(preproc_directory) and any(os.listdir(preproc_directory)):
+                data_dirs_list = [preproc_directory]
+            elif os.path.exists(data_directory) and any(os.listdir(data_directory)):
+                data_dirs_list = [data_directory]
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "No data directory found for existing project"}
+                )
+            
+            # Create configuration for the schedule network
+            config_path = create_project_config(
+                project_dir,
+                N=request.noise_steps,
+                noise_schedule=request.noise_schedule_type,
+                # Point to model checkpoint from previous training
+                load=os.path.join(model_dir, "weights.pt"),
+                # Set data directories directly for schedule network training
+                data_dir=data_dirs_list,
+                # Use empty training/validation files to force direct file processing mode
+                training_file=[],
+                validation_file=[]
             )
+            
+            # Train the schedule network
+            start_success, start_msg = schedule_trainer.start_training(config_path, project_dir, progress=None)
+            
+            if not start_success:
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "success": False, 
+                        "error": "Failed to start training",
+                        "details": start_msg
+                    }
+                )
+            
+            # For API we'll wait for the training to complete
+            # We could make this async in a future update
+            while True:
+                training_result = schedule_trainer.get_result()
+                if training_result[0] is not None:  # Training completed
+                    success, result = training_result
+                    break
+                time.sleep(2)  # Poll every 2 seconds
             
             if success:
                 return {

@@ -18,6 +18,7 @@ import os
 import time
 import copy
 import torch
+from tqdm.auto import tqdm
 
 from modules.wavetransfer.bddm.ema import EMAHelper
 from modules.wavetransfer.bddm.loss import StepLoss
@@ -38,6 +39,56 @@ def _nested_map(struct, map_fn):
   if isinstance(struct, dict):
     return { k: _nested_map(v, map_fn) for k, v in struct.items() }
   return map_fn(struct)
+
+
+# Class to adapt tqdm to Gradio progress
+class TqdmToGradioProgress:
+    """Adapts tqdm to report progress to a gr.Progress object."""
+    def __init__(self, progress_obj, desc=None, total=None):
+        self.progress_obj = progress_obj
+        self.desc = desc
+        self.total = total
+        self.n = 0
+        self.last_progress = 0
+  
+    def update(self, n=1):
+        self.n += n
+        if self.total and self.progress_obj:
+            new_progress = min(self.n / self.total, 1.0)
+            # Update progress
+            try:
+                self.progress_obj(new_progress, f"{self.desc}: {self.n}/{self.total}")
+                self.last_progress = new_progress
+            except Exception as e:
+                # Silent exception handling for progress bar errors
+                pass
+  
+    def close(self):
+        if self.total and self.progress_obj:
+            try:
+                self.progress_obj(1.0, f"{self.desc}: Completed")
+            except Exception as e:
+                # Silent exception handling for progress bar errors
+                pass
+            
+    def set_description(self, desc):
+        self.desc = desc
+        if self.progress_obj:
+            try:
+                self.progress_obj(self.last_progress, f"{self.desc}: {self.n}/{self.total}")
+            except Exception as e:
+                # Silent exception handling for progress bar errors
+                pass
+                
+    # Required for tqdm to use this as a file-like object
+    def write(self, s):
+        # This is required for tqdm to work
+        pass
+        
+    # Required for tqdm cleanup
+    def flush(self):
+        # This is required for tqdm to work
+        pass
 
 
 
@@ -81,6 +132,10 @@ class Trainer(object):
         self.ema_helper.register(model_to_train)
         self.device = torch.device("cuda:{}".format(config.local_rank))
         self.local_rank = config.local_rank
+        
+        # Get Gradio progress object if available
+        self.gradio_progress = getattr(config, 'gradio_progress', None)
+        
         # Get data loaders
         self.tr_loader = dataset_from_path(config.data_dir, config.training_file, get_default_params(), config.batch_size, config.n_worker)
         self.vl_loader = dataset_from_path_valid(config.data_dir, config.validation_file, get_default_params(), config.n_worker)
@@ -131,36 +186,59 @@ class Trainer(object):
 
     def train(self):
         """
-        Start the main training process
+        Train model
         """
-        best_state = copy.deepcopy(self.model.state_dict())
-        while self.training_step < self.n_training_steps:
+        # Get data loaders and optimizer
+        self.reset()
+        
+        # Set the total steps we want to train
+        total_steps = self.n_training_steps
+        
+        # Set up gradio progress tracking if available
+        try:
+            self.gradio_progress = self.config.progress_callback
+        except Exception as e:
+            # Gracefully handle any Gradio progress errors
+            print(f"Progress bar error: {str(e)}")
+            self.gradio_progress = None
+            
+        # Main training loop
+        while self.training_step < total_steps:
+            # Calculate overall progress (as a percentage)
+            overall_progress = min(1.0, self.training_step / total_steps)
+            progress_percent = int(overall_progress * 100)
+            
+            try:
+                if self.gradio_progress is not None:
+                    self.gradio_progress(overall_progress, f"Overall progress: {progress_percent}% - Step {self.training_step}/{total_steps}")
+            except Exception as e:
+                # Gracefully handle progress bar errors
+                print(f"Progress bar error: {str(e)}")
+                self.gradio_progress = None
+            
             # Train one epoch
-            log("Start training %s from step %d ......."%(
-                self.training_target, self.training_step), self.config)
             self.model.train()
-            start = time.time()
             tr_avg_loss = self._run_one_epoch(validate=False)
-            log('-' * 85, self.config)
-            log('Train Summary | Step {} | Time {:.2f}s | Train Loss {:.5f}'.format(
-                self.training_step, time.time()-start, tr_avg_loss), self.config)
-            log('-' * 85, self.config)
+            
             # Start validation
-            log('Start validation ......', self.config)
+            try:
+                if self.gradio_progress is not None:
+                    self.gradio_progress(min(0.95, overall_progress + 0.05), 
+                        f"Running validation (Overall: {progress_percent}%)")
+            except Exception as e:
+                # Gracefully handle progress bar errors
+                self.gradio_progress = None
+                
             self.model.eval()
-            start = time.time()
             with torch.no_grad():
                 val_loss = self._run_one_epoch(validate=True)
-            log('-' * 85, self.config)
-            log('Valid Summary | Step {} | Time {:.2f}s | Valid Loss {:.5f}'.format(
-                self.training_step, time.time()-start, val_loss.item()), self.config)
-            log('-' * 85, self.config)
+            
+            # Check for improvement
             if val_loss >= self.min_val_loss:
                 # LR decays
                 self.val_no_impv += 1
                 if self.val_no_impv == self.config.patience:
-                    log("No imporvement for %d epochs, early stopped!"%(
-                        self.config.patience), self.config)
+                    print(f"No improvement for {self.config.patience} epochs, early stopped!")
                     break
                 if self.val_no_impv >= self.config.patience // 2:
                     self.model.load_state_dict(best_state)
@@ -172,7 +250,15 @@ class Trainer(object):
                 file_path = os.path.join(self.exp_dir, self.training_target,
                                             '%d.pkl' % self.training_step)
                 torch.save(model_serialized, file_path)
-                log("Found better model, saved to %s" % file_path, self.config)
+                print(f"Found better model, saved to {file_path}")
+        
+        # Complete progress
+        try:
+            if self.gradio_progress is not None:
+                self.gradio_progress(1.0, "Schedule network training completed!")
+        except Exception as e:
+            # Gracefully handle progress bar errors
+            pass
 
     def _run_one_epoch(self, validate=False):
         """
@@ -187,39 +273,59 @@ class Trainer(object):
         total_loss, total_cnt = 0, 0
         data_loader = self.vl_loader if validate else self.tr_loader
         start_step = self.training_step
-        for i, batch in enumerate(data_loader):
+        
+        # Create progress bar
+        desc = 'Validation' if validate else 'Training'
+        total_batches = len(data_loader)
+        epoch_info = f"Step {self.training_step}/{self.n_training_steps}" if not validate else ""
+        
+        # Create standard tqdm for console output
+        progress_bar = tqdm(enumerate(data_loader), desc=f"{desc} {epoch_info}", total=total_batches)
+            
+        for i, batch in progress_bar:
             if batch == None:
                 continue
+                
             features = _nested_map(batch, lambda x: x.cuda() if isinstance(x, torch.Tensor) else x)
             loss = self.loss_func(self.model, features)
             total_loss += loss.detach().sum()
             total_cnt += len(loss)
             avg_loss = loss.mean()
+            
+            # Update progress bar description
+            try:
+                progress_bar.set_description(f"{desc} {epoch_info} | Loss: {avg_loss:.5f}")
+                
+                # Update Gradio progress separately (don't use tqdm with custom file)
+                if self.gradio_progress is not None:
+                    # Calculate fraction complete for this batch
+                    batch_progress = (i + 1) / total_batches
+                    self.gradio_progress(batch_progress, f"{desc}: {i+1}/{total_batches} | Loss: {avg_loss:.5f}")
+            except Exception:
+                # Silently handle any progress bar issues
+                pass
+            
             if not validate:
                 self.optimizer.zero_grad()
                 avg_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
                 self.optimizer.step()
                 self.training_step += len(loss)
-                if i % self.config.log_period == 0:
-                    log('Train Step {} | Avg. Loss {:.5f} | New Loss {:.5f} | {:.2f}s/step'.format(
-                        self.training_step, total_loss / total_cnt, avg_loss,
-                        (time.time() - start) / (self.training_step - start_step)), self.config)
+                
+                # Don't log training steps to console
                 if self.training_target == 'schedule_nets':
                     self.ema_helper.update(self.model.schedule_net)
+                    
                 if self.training_step >= self.n_training_steps or\
                         max(i, self.training_step - start_step) >= self.config.steps_per_epoch:
                     # Release grad memory
                     self.optimizer.zero_grad()
                     return total_loss / total_cnt
-            else:
-                if i % self.config.log_period == 0:
-                    log('Valid Step {} | Avg. Loss {:.5f} | New Loss {:.5f} | {:.2f}s/step'.format(
-                        i + 1, total_loss/total_cnt, avg_loss,
-                        (time.time() - start) / (i + 1)), self.config)
+            
         if not validate:
             # Release grad memory
             self.optimizer.zero_grad()
+            
         torch.cuda.empty_cache()
         return total_loss / total_cnt
 

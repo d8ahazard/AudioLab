@@ -125,7 +125,7 @@ def setup_config(config_path, local_rank=0, seed=42):
     return config, config_hash
 
 
-def train_schedule_network(config_path, project_dir=None, local_rank=0):
+def train_schedule_network(config_path, project_dir=None, local_rank=0, progress=None):
     """Train the schedule network using configuration from YAML file"""
     try:
         logger.info(f"Starting schedule network training with config: {config_path}")
@@ -135,6 +135,13 @@ def train_schedule_network(config_path, project_dir=None, local_rank=0):
         # Override exp_dir if project_dir is provided
         if project_dir:
             config.exp_dir = project_dir
+        
+        # IMPORTANT: Force the schedule network to train from scratch
+        # This prevents trying to load weights from the main model
+        config.load = ''
+        
+        # Add progress to config for trainer to use
+        config.gradio_progress = progress
         
         # Create/retrieve exp dir
         start_exp(config, config_hash)
