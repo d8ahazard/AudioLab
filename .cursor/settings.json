@@ -1,0 +1,119 @@
+{
+  "projectName": "AudioLab",
+  "projectType": "Python Application",
+  "description": "Open-source audio processing application focused on voice-cloning, audio separation, and audio manipulation",
+  "mainFile": "main.py",
+  "entryPoints": ["main.py", "api.py"],
+  "documentation": ["README.md", "PROJECT_NOTES.md", "CONTRIBUTING.md"],
+  "codeContextFiles": [
+    "wrappers/base_wrapper.py",
+    "util/audio_track.py",
+    "util/data_classes.py",
+    "handlers/args.py",
+    "handlers/config.py"
+  ],
+  "moduleGroups": [
+    {
+      "name": "Core Application",
+      "files": ["main.py", "api.py", "requirements.txt"]
+    },
+    {
+      "name": "Wrapper Modules",
+      "directory": "wrappers/",
+      "description": "Processing modules for the Process tab"
+    },
+    {
+      "name": "Layout Modules",
+      "directory": "layouts/",
+      "description": "UI layouts for different application tabs"
+    },
+    {
+      "name": "Core Modules",
+      "directory": "modules/",
+      "description": "Core functional modules of the application"
+    },
+    {
+      "name": "Handler Modules",
+      "directory": "handlers/",
+      "description": "Handler modules for specific audio operations"
+    },
+    {
+      "name": "Utility Modules",
+      "directory": "util/",
+      "description": "Utility classes and functions"
+    }
+  ],
+  "featureModules": [
+    {
+      "name": "Process",
+      "files": ["layouts/process.py", "wrappers/*.py"],
+      "description": "Main audio processing pipeline"
+    },
+    {
+      "name": "DiffRhythm",
+      "files": ["layouts/diffrythm.py", "modules/diffrythm/*"],
+      "description": "End-to-end full-length song generation"
+    },
+    {
+      "name": "WaveTransfer",
+      "files": ["layouts/wavetransfer.py", "modules/wavetransfer/*"],
+      "description": "Multi-instrument timbre transfer"
+    },
+    {
+      "name": "Orpheus",
+      "files": ["layouts/orpheus.py", "modules/orpheus/*"],
+      "description": "Real-time high-quality TTS system"
+    },
+    {
+      "name": "Stable Audio",
+      "files": ["layouts/stable_audio.py", "modules/stable_audio/*"],
+      "description": "Text-to-audio generation"
+    },
+    {
+      "name": "Transcribe",
+      "files": ["layouts/transcribe.py"],
+      "description": "Audio transcription with speaker diarization"
+    },
+    {
+      "name": "RVC Train",
+      "files": ["layouts/rvc_train.py", "modules/rvc/*"],
+      "description": "Voice model training"
+    }
+  ],
+  "commonErrorPatterns": [
+    {
+      "pattern": "UI element not found",
+      "investigationFiles": ["layouts/*.py"],
+      "solution": "Check element IDs and event listeners"
+    },
+    {
+      "pattern": "Model not found",
+      "investigationFiles": ["modules/*/", "wrappers/*.py"],
+      "solution": "Verify model paths and availability"
+    },
+    {
+      "pattern": "CUDA out of memory",
+      "investigationFiles": ["modules/*/", "wrappers/*.py"],
+      "solution": "Check for memory leaks or implement chunked processing"
+    },
+    {
+      "pattern": "Audio processing failed",
+      "investigationFiles": ["wrappers/*.py", "util/audio_track.py"],
+      "solution": "Check audio format, sample rate, and channels"
+    },
+    {
+      "pattern": "API endpoint error",
+      "investigationFiles": ["api.py", "wrappers/*.py"],
+      "solution": "Verify endpoint registration and parameter validation"
+    }
+  ],
+  "ignorePaths": [
+    "venv/",
+    "__pycache__/",
+    "models/",
+    "outputs/",
+    "temp_uploads/",
+    ".git/",
+    ".idea/"
+  ]
+} 
