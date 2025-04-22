@@ -9,6 +9,7 @@ import numpy as np
 import yaml
 import logging
 import traceback
+import copy
 
 import torch
 torch.backends.cudnn.enabled = True
@@ -110,6 +111,10 @@ def setup_config(config_path, local_rank=0, seed=42):
     config_dict['local_rank'] = local_rank
     config_dict['seed'] = seed
     
+    # Add command attribute for compatibility with Trainer/Sampler
+    if 'command' not in config_dict:
+        config_dict['command'] = 'train'  # Default to train mode
+    
     # Generate hash for the main configuration (excluding metadata)
     config_hash = dict_hash_5char({k: v for k, v in file_config.items()})
     
@@ -136,10 +141,17 @@ def train_schedule_network(config_path, project_dir=None, local_rank=0, progress
         if project_dir:
             config.exp_dir = project_dir
         
-        # IMPORTANT: Force the schedule network to train from scratch
-        # This prevents trying to load weights from the main model
-        config.load = ''
+        # IMPORTANT: Create a local copy of the config for modifications
+        # we should only train the schedule network, and avoid loading the main model
+        config = copy.copy(config)
         
+        # Set command explicitly for the trainer
+        config.command = 'train'
+        
+        # Never load the main model for schedule network training
+        if hasattr(config, 'load'):
+            config.load = ''
+            
         # Add progress to config for trainer to use
         config.gradio_progress = progress
         
@@ -149,6 +161,17 @@ def train_schedule_network(config_path, project_dir=None, local_rank=0, progress
         
         # Create Trainer for training
         model_trainer = trainer.Trainer(config)
+        
+        # Verify that the schedule network is properly initialized
+        if not hasattr(model_trainer.model, 'schedule_net') or model_trainer.model.schedule_net is None:
+            from modules.wavetransfer.bddm.models import get_schedule_network
+            model_trainer.model.schedule_net = get_schedule_network(config).cuda().eval()
+            log('Initialized schedule network from scratch', config)
+            
+        # Set training target explicitly to schedule_nets
+        model_trainer.training_target = 'schedule_nets'
+        
+        # Train the model
         model_trainer.train()
         log('-' * 80, config)
         
@@ -186,6 +209,9 @@ def schedule_noise(config_path, project_dir=None, local_rank=0):
         # Override exp_dir if project_dir is provided
         if project_dir:
             config.exp_dir = project_dir
+        
+        # Set command explicitly for the scheduler
+        config.command = 'schedule'
         
         # Create/retrieve exp dir
         start_exp(config, config_hash)
@@ -230,6 +256,9 @@ def infer_schedule_network(config_path, project_dir=None, local_rank=0):
         # Override exp_dir if project_dir is provided
         if project_dir:
             config.exp_dir = project_dir
+        
+        # Set command explicitly for the sampler
+        config.command = 'generate'
         
         # Create/retrieve exp dir
         start_exp(config, config_hash)

@@ -94,25 +94,114 @@ class WaveGradLearner:
     self.step = state_dict['step']
 
   def save_to_checkpoint(self, filename='weights'):
-    save_basename = f'{filename}-{self.step}.pt'
+    save_basename = f'{filename}-{self.step}.safetensors'
     save_name = f'{self.model_dir}/{save_basename}'
-    link_name = f'{self.model_dir}/{filename}.pt'
-    torch.save(self.state_dict(), save_name)
-    if os.name == 'nt':
-      torch.save(self.state_dict(), link_name)
-    else:
-      if os.path.islink(link_name):
-        os.unlink(link_name)
-      os.symlink(save_basename, link_name)
+    link_name = f'{self.model_dir}/{filename}.safetensors'
+    
+    try:
+      from safetensors.torch import save_file
+      # Extract and prepare model state dict for safetensors
+      state_dict = self.state_dict()
+      model_state = state_dict['model']
+      
+      # Save model weights with safetensors
+      save_file(model_state, save_name)
+      
+      # Save optimizer and other state separately with torch
+      metadata_path = f'{self.model_dir}/{filename}-{self.step}.metadata.pt'
+      torch.save({
+        'optimizer': state_dict['optimizer'],
+        'scaler': state_dict['scaler'],
+        'step': state_dict['step']
+      }, metadata_path)
+      
+      # Create symbolic link or copy for the latest checkpoint
+      if os.name == 'nt':
+        # Windows doesn't handle symlinks well, so we'll just make a copy
+        save_file(model_state, link_name)
+        torch.save({
+          'optimizer': state_dict['optimizer'],
+          'scaler': state_dict['scaler'],
+          'step': state_dict['step']
+        }, f'{self.model_dir}/{filename}.metadata.pt')
+      else:
+        # On Unix systems we can use symlinks
+        if os.path.islink(link_name):
+          os.unlink(link_name)
+        os.symlink(save_basename, link_name)
+        
+        # Also symlink the metadata
+        metadata_link = f'{self.model_dir}/{filename}.metadata.pt'
+        if os.path.islink(metadata_link):
+          os.unlink(metadata_link)
+        os.symlink(f'{filename}-{self.step}.metadata.pt', metadata_link)
+        
+      print(f"Saved checkpoint to {save_name} using safetensors")
+      
+    except ImportError:
+      # Fallback to torch.save if safetensors is not available
+      save_basename = f'{filename}-{self.step}.pt'
+      save_name = f'{self.model_dir}/{save_basename}'
+      link_name = f'{self.model_dir}/{filename}.pt'
+      
+      torch.save(self.state_dict(), save_name)
+      if os.name == 'nt':
+        torch.save(self.state_dict(), link_name)
+      else:
+        if os.path.islink(link_name):
+          os.unlink(link_name)
+        os.symlink(save_basename, link_name)
+      print(f"Saved checkpoint to {save_name} using torch.save")
 
   def restore_from_checkpoint(self, filename='weights'):
     try:
-      checkpoint = torch.load(f'{self.model_dir}/{filename}.pt')
-      self.load_state_dict(checkpoint)
-      print("Restored model from checkpoint: {}".format(f'{self.model_dir}/{filename}.pt'))
-      return True
-    except FileNotFoundError:
+      # First try to load with safetensors
+      model_path = f'{self.model_dir}/{filename}.safetensors'
+      metadata_path = f'{self.model_dir}/{filename}.metadata.pt'
+      
+      if os.path.exists(model_path) and os.path.exists(metadata_path):
+        from safetensors.torch import load_file
+        # Load model weights
+        model_state = load_file(model_path, device='cpu')
+        # Load optimizer and other state
+        metadata = torch.load(metadata_path)
+        
+        # Combine into full state dict
+        state_dict = {
+          'model': model_state,
+          'optimizer': metadata['optimizer'],
+          'scaler': metadata['scaler'],
+          'step': metadata['step']
+        }
+        
+        self.load_state_dict(state_dict)
+        print(f"Restored model from safetensors checkpoint: {model_path}")
+        return True
+        
+      # Fall back to torch.load
+      checkpoint_path = f'{self.model_dir}/{filename}.pt'
+      if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        self.load_state_dict(checkpoint)
+        print(f"Restored model from torch checkpoint: {checkpoint_path}")
+        return True
+      
       print("No checkpoint found. Starting training from scratch.")
+      return False
+    
+    except (ImportError, FileNotFoundError, RuntimeError) as e:
+      # Try torch checkpoint as fallback
+      try:
+        checkpoint_path = f'{self.model_dir}/{filename}.pt'
+        if os.path.exists(checkpoint_path):
+          checkpoint = torch.load(checkpoint_path)
+          self.load_state_dict(checkpoint)
+          print(f"Restored model from torch checkpoint: {checkpoint_path}")
+          return True
+      except:
+        pass
+      
+      print(f"Failed to load checkpoint: {e}. Starting training from scratch.")
       return False
 
   def train(self, max_steps=None, max_epochs=None, tqdm_handler=None, cancel_token=None):

@@ -618,7 +618,7 @@ def render(arg_handler: ArgHandler):
                             N=int(noise_sched_steps),
                             noise_schedule=noise_sched_type,
                             # Point to model checkpoint from previous training
-                            load=os.path.join(project_dir, "model", "weights.pt"),
+                            load=os.path.join(project_dir, "model", "weights.safetensors"),
                             # Set data directories directly for schedule network training
                             data_dir=data_dirs_list,
                             # Use empty training/validation files to force direct file processing mode
@@ -763,7 +763,7 @@ def render(arg_handler: ArgHandler):
                             force_single_process=True,
                             progress=progress,
                             cancel_token=active_training_token,
-                            config_data={"batch_size": int(batch_size)}
+                            config_data={"exp_dir": model_directory, "load": os.path.join(model_directory, "weights.safetensors"), "bddm_load": os.path.join(model_directory, "schedule_nets", "{}.safetensors".format(noise_sched_steps)), "sampling_noise_schedule": os.path.join(model_directory, "schedule_nets", "{}.safetensors".format(noise_sched_type)), "test_dir": temp_dir, "background_dir": background_dir}
                         )
                         
                         if success:
@@ -773,7 +773,7 @@ def render(arg_handler: ArgHandler):
                             # Create default config for later use
                             config_path = create_project_config(
                                 project_dir,
-                                load=os.path.join(model_directory, "weights.pt"),
+                                load=os.path.join(model_directory, "weights.safetensors"),
                                 N=50,
                                 noise_schedule="cosine"
                             )
@@ -1080,7 +1080,7 @@ def register_api_endpoints(api):
                 # Create default config
                 config_path = create_project_config(
                     project_dir,
-                    load=os.path.join(model_dir, "weights.pt"),
+                    load=os.path.join(model_dir, "weights.safetensors"),
                     N=50,
                     noise_schedule="cosine"
                 )
@@ -1156,7 +1156,7 @@ def register_api_endpoints(api):
                 N=request.noise_steps,
                 noise_schedule=request.noise_schedule_type,
                 # Point to model checkpoint from previous training
-                load=os.path.join(model_dir, "weights.pt"),
+                load=os.path.join(model_dir, "weights.safetensors"),
                 # Set data directories directly for schedule network training
                 data_dir=data_dirs_list,
                 # Use empty training/validation files to force direct file processing mode

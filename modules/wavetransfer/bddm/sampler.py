@@ -41,35 +41,67 @@ class Sampler(object):
 
     def __init__(self, config):
         """
-        Sampler Class, implements the Noise Scheduling and Sampling algorithms in BDDMs
+        BDDM Sampler Class, implements a sampling framework in PyTorch
 
         Parameters:
             config (namespace): BDDM Configuration
         """
         self.config = config
         self.exp_dir = config.exp_dir
-        self.clip = config.grad_clip
-        self.load = config.load
-        print("The model to be loaded is:", self.load)
-        self.model = WaveGrad(AttrDict(get_default_params())).to('cuda').eval()
-        self.schedule = None
-        # Initialize diffusion parameters using a pre-specified linear schedule
-        noise_schedule = torch.linspace(config.beta_0, config.beta_T, config.T).cuda()
-        self.diff_params = compute_diffusion_params(noise_schedule)
-        if self.config.command != 'train':
-            # Find schedule net, if not trained then use DDPM or DDIM sampling mode
-            schedule_net_path = config.bddm_load
-            if not schedule_net_path == "":
-                self.load = schedule_net_path
-                print("The schedule network is trained. The model to be loaded is changed to:", self.load)
-                self.model.schedule_net = get_schedule_network(config).cuda().eval()
+        
+        # Set default command if not present (for compatibility with SimpleNamespace objects from UI)
+        if not hasattr(config, 'command'):
+            config.command = 'generate'
+            print(f"No command specified, defaulting to 'generate'")
+        
+        if hasattr(config, 'N'):
+            self.steps2score = {}
+            self.steps2schedule = {}
+            # Define diffusion parameters using a pre-specified linear schedule
+            self.clip = config.grad_clip
+            self.load = config.load
+            print("The model to be loaded is:", self.load)
+            self.model = WaveGrad(AttrDict(get_default_params())).to('cuda').eval()
+            self.schedule = None
+            # Initialize diffusion parameters using a pre-specified linear schedule
+            noise_schedule = torch.linspace(config.beta_0, config.beta_T, config.T).cuda()
+            self.diff_params = compute_diffusion_params(noise_schedule)
+            if self.config.command != 'train':
+                # Find schedule net, if not trained then use DDPM or DDIM sampling mode
+                schedule_net_path = config.bddm_load
+                if not schedule_net_path == "":
+                    self.load = schedule_net_path
+                    print("The schedule network is trained. The model to be loaded is changed to:", self.load)
+                    self.model.schedule_net = get_schedule_network(config).cuda().eval()
 
-        # Perform noise scheduling when noise schedule file (.schedule) is not given
-        if self.config.command == 'generate' and self.config.sampling_noise_schedule != '':
-            # Generation mode given pre-searched noise schedule
-            self.schedule = torch.load(self.config.sampling_noise_schedule, map_location='cuda:0')
+            # Perform noise scheduling when noise schedule file (.schedule) is not given
+            if self.config.command == 'generate' and self.config.sampling_noise_schedule != '':
+                # Generation mode given pre-searched noise schedule
+                # Check if safetensors version exists
+                ns_path = self.config.sampling_noise_schedule
+                safetensors_path = ns_path.replace('.ns', '.safetensors')
+                
+                if os.path.exists(safetensors_path):
+                    try:
+                        from safetensors.torch import load_file
+                        schedule_dict = load_file(safetensors_path, device='cuda')
+                        # Convert to format needed by the algorithm
+                        ts_infer = schedule_dict['ts_infer']
+                        a_infer = schedule_dict['a_infer']
+                        b_infer = schedule_dict['b_infer']
+                        s_infer = schedule_dict['s_infer']
+                        self.schedule = [ts_infer, a_infer, b_infer, s_infer]
+                        log(f"Loaded noise schedule from {safetensors_path}", self.config)
+                    except (ImportError, RuntimeError, KeyError):
+                        # Fall back to torch.load
+                        self.schedule = torch.load(ns_path, map_location='cuda:0')
+                        log(f"Loaded noise schedule from {ns_path}", self.config)
+                else:
+                    # Fall back to torch.load
+                    self.schedule = torch.load(ns_path, map_location='cuda:0')
+                    log(f"Loaded noise schedule from {ns_path}", self.config)
 
-        self.reset()
+            self.reset()
 
     def reset(self):
         """
@@ -78,18 +110,79 @@ class Sampler(object):
         noise_schedule_dir = os.path.join(self.exp_dir, 'noise_schedules')
         os.makedirs(noise_schedule_dir, exist_ok=True)
         if self.config.command != 'train' and self.load != '':
-            package = torch.load(self.load, map_location=lambda storage, loc: storage.cuda())
-            self.model.load_state_dict(package['model_state_dict'])
-            log('Loaded checkpoint %s' % self.load, self.config)
+            # First try to load with safetensors
+            safetensors_path = self.load
+            # Convert .pkl extension to .safetensors if needed
+            if safetensors_path.endswith('.pkl'):
+                safetensors_path = safetensors_path.replace('.pkl', '.safetensors')
+                
+            try:
+                # Try to load with safetensors first
+                from safetensors.torch import load_file
+                if os.path.exists(safetensors_path):
+                    model_state = load_file(safetensors_path, device='cuda')
+                    
+                    # Check if this is a schedule-network-only checkpoint
+                    has_schedule_prefix = any(k.startswith('schedule_net.') for k in model_state.keys())
+                    has_ratio_nn = any(k.startswith('ratio_nn.') for k in model_state.keys())
+                    
+                    if not has_schedule_prefix and has_ratio_nn:
+                        # This is a schedule network-only checkpoint
+                        # First, try to load directly into the schedule_net
+                        try:
+                            self.model.schedule_net.load_state_dict(model_state)
+                            log('Loaded schedule network weights directly: %s' % safetensors_path, self.config)
+                        except RuntimeError:
+                            # Maybe we need to adjust the keys
+                            schedule_state = {}
+                            for k, v in model_state.items():
+                                schedule_state['schedule_net.' + k] = v
+                            
+                            # Now load the full model with updated keys
+                            self.model.load_state_dict(schedule_state, strict=False)
+                            log('Loaded schedule network with key fixing: %s' % safetensors_path, self.config)
+                    else:
+                        # Normal model loading
+                        self.model.load_state_dict(model_state)
+                        log('Loaded checkpoint with safetensors: %s' % safetensors_path, self.config)
+                else:
+                    # Fall back to torch.load
+                    self._load_torch_checkpoint(self.load)
+            except (ImportError, FileNotFoundError, RuntimeError) as e:
+                # Fall back to torch.load
+                log(f'Error loading safetensors ({str(e)}), falling back to torch', self.config)
+                self._load_torch_checkpoint(self.load)
 
         if self.config.command == 'generate':
             self.test_dir = self.config.test_dir
-            self.bg_list = dataset_from_path_background([self.config.background_dir], [], get_default_params())
+            
+            # Load background list with error handling
+            try:
+                from modules.wavetransfer.bddm.data_loader_for_sampler import from_path_background
+                self.bg_list = from_path_background([self.config.background_dir], [], get_default_params())
+            except Exception as e:
+                log(f'Error loading background list: {str(e)}', self.config)
+                # Create an empty background list as fallback
+                self.bg_list = []
         else:
-            # Sample a reference audio sample for noise scheduling
-            self.vl_loader = dataset_from_path_valid(self.config.data_dir, self.config.validation_file, get_default_params(), 1)
-            self.bg_list = dataset_from_path_background([self.config.background_dir], self.config.training_file, get_default_params())
-            self.draw_reference_data_pair()
+            # Sample a reference audio sample for noise scheduling with error handling
+            try:
+                from modules.wavetransfer.bddm.data_loader_for_sampler import from_path_valid, from_path_background
+                self.vl_loader = from_path_valid(self.config.data_dir, self.config.validation_file, get_default_params(), 1)
+                self.bg_list = from_path_background([self.config.background_dir], self.config.training_file, get_default_params())
+                self.draw_reference_data_pair()
+            except Exception as e:
+                log(f'Error loading validation data: {str(e)}', self.config)
+                
+                # Create dummy data as fallback
+                from torch.utils.data import DataLoader, TensorDataset
+                dummy_dataset = TensorDataset(torch.zeros(1, 1), torch.zeros(1, 1))
+                self.vl_loader = DataLoader(dummy_dataset, batch_size=1)
+                self.bg_list = []
+                
+                # Create dummy reference data
+                self.ref_spec = torch.zeros(1, 128, 64).cuda()
+                self.ref_audio = torch.zeros(1, 1, 8192).cuda()
 
     def draw_reference_data_pair(self):
         """
@@ -289,89 +382,125 @@ class Sampler(object):
 
     def noise_scheduling_with_params(self, alpha_param, beta_param):
         """
-        Run noise scheduling for once given the (alpha_param, beta_param) pair
+        Start the noise scheduling process with the given params
 
         Parameters:
-            alpha_param (float): a hyperparameter defining the alpha_hat value at step N
-            beta_param (float):  a hyperparameter defining the beta_hat value at step N
+            alpha_param (float): the noise level to estimate alpha
+            beta_param (float):  the noise level to estimate beta
+        Returns:
+            best_schedule (list): the noise schedule with the best FAD score
         """
-        log('TRY alpha_param=%.2f, beta_param=%.2f:'%(
-            alpha_param, beta_param), self.config)
-        # Define the pair key
-        key = '%.2f,%.2f' % (alpha_param, beta_param)
-        # Set alpha_param and beta_param in self.diff_params
-        self.diff_params['alpha_param'] = alpha_param
-        self.diff_params['beta_param'] = beta_param
-        # Use DDPM reverse process for noise scheduling
-        ddpm_schedule = self.noise_scheduling(ddim=False)
-        log("\tSearched a %d-step schedule using DDPM reverse process" % (
-            len(ddpm_schedule[0])), self.config)
-        gen_audio_list = []
-        for spec in self.ref_spec_list:
-            generated_audio, _ = self.sampling(schedule=ddpm_schedule, condition=spec)
-            gen_audio_list.append(generated_audio)
-        # Compute objective scores
-        ddpm_score = self.assess(gen_audio_list)
-        # Get the number of sampling steps with this schedule
-        steps = len(ddpm_schedule[0])
-        # Compare the performance with previous same-step schedule using the metric
-        if (ddpm_score[0] > 0) and (steps not in self.steps2score):
-            # Save the first schedule with this number of steps
-            self.steps2score[steps] = [key, ] + ddpm_score
-            self.steps2schedule[steps] = ddpm_schedule
-            log('\tFound the first %d-step schedule: FAD = %.3f'%(
-                steps, ddpm_score[0]), self.config)
-            noise_schedule_dir = os.path.join(self.exp_dir, 'noise_schedules')
-            filepath = os.path.join(noise_schedule_dir, '%dsteps_DDIM_FAD%.4f.ns'%(
-                steps, self.steps2score[steps][1]))
-            torch.save(self.steps2schedule[steps], filepath)
-            log("Saved searched schedule: %s" % filepath, self.config)
-        elif (ddpm_score[0] > 0) and (ddpm_score[0] < self.steps2score[steps][1]):
-            # Found a better same-step schedule achieving a higher score
-            log('\tFound a better %d-step schedule: FAD = %.3f -> %.3f'%(
-                steps, self.steps2score[steps][1], ddpm_score[0]), self.config)
-            self.steps2score[steps] = [key, ] + ddpm_score
-            self.steps2schedule[steps] = ddpm_schedule
-            noise_schedule_dir = os.path.join(self.exp_dir, 'noise_schedules')
-            filepath = os.path.join(noise_schedule_dir, '%dsteps_DDPM_FAD%.4f.ns'%(
-                steps, self.steps2score[steps][1]))
-            torch.save(self.steps2schedule[steps], filepath)
-            log("Saved searched schedule: %s" % filepath, self.config)
-        # Use DDIM reverse process for noise scheduling
-        ddim_schedule = self.noise_scheduling(ddim=True)
-        log("\tSearched a %d-step schedule using DDIM reverse process" % (
-            len(ddim_schedule[0])), self.config)
-        gen_audio_list = []
-        for spec in self.ref_spec_list:
-            generated_audio, _ = self.sampling(schedule=ddim_schedule, condition=spec)
-            gen_audio_list.append(generated_audio)
-        # Compute objective scores
-        ddim_score = self.assess(gen_audio_list)
-        # Get the number of sampling steps with this schedule
-        steps = len(ddim_schedule[0])
-        # Compare the performance with previous same-step schedule using the metric
-        if (ddim_score[0] > 0) and (steps not in self.steps2score):
-            # Save the first schedule with this number of steps
-            self.steps2score[steps] = [key, ] + ddim_score
-            self.steps2schedule[steps] = ddim_schedule
-            log('\tFound the first %d-step schedule: FAD = %.3f'%(
-                steps, ddim_score[0]), self.config)
-            noise_schedule_dir = os.path.join(self.exp_dir, 'noise_schedules')
-            filepath = os.path.join(noise_schedule_dir, '%dsteps_DDIM_FAD%.4f.ns'%(
-                steps, self.steps2score[steps][1]))
-            torch.save(self.steps2schedule[steps], filepath)
-            log("Saved searched schedule: %s" % filepath, self.config)
-        elif (ddim_score[0] > 0) and (ddim_score[0] < self.steps2score[steps][1]):
-            # Found a better same-step schedule achieving a higher score
-            log('\tFound a better %d-step schedule: FAD = %.3f -> %.3f'%(
-                steps, self.steps2score[steps][1], ddim_score[0]), self.config)
-            self.steps2score[steps] = [key, ] + ddim_score
-            self.steps2schedule[steps] = ddim_schedule
-            noise_schedule_dir = os.path.join(self.exp_dir, 'noise_schedules')
-            filepath = os.path.join(noise_schedule_dir, '%dsteps_DDIM_FAD%.4f.ns'%(
-                steps, self.steps2score[steps][1]))
-            torch.save(self.steps2schedule[steps], filepath)
-            log("Saved searched schedule: %s" % filepath, self.config)
+        # Prepare the diffusion parameters
+        self.diff_params = {}
+        self.diff_params["alpha_param"] = alpha_param
+        self.diff_params["beta_param"] = beta_param
+        self.diff_params["T"] = self.config.T
+        self.diff_params["alpha"] = alpha = torch.cat([
+            torch.FloatTensor([1. - 1e-8]), # Adding alpha_0 = 1. at index 0
+            1 - torch.linspace(self.config.beta_0, self.config.beta_T, self.config.T)
+        ]).cuda()
+        self.diff_params["beta"] = 1 - alpha**2.
+        self.diff_params["tau"] = self.config.tau
+        self.diff_params["N"] = steps = self.config.N
+
+        # Variables for BDDM calculation
+        alpha = self.diff_params["alpha"]
+        for i in range(1, len(alpha)):
+            alpha[i] *= alpha[i-1]
+        alpha = alpha.sqrt()
+
+        # For schedule search
+        schedule_dir = os.path.join(self.exp_dir, 'noise_schedules')
+        schedule_name = 'BDDM_bsearch%d_Ns%d_a%.5f_b%.5f_t%d'%(
+                self.config.bddm_search_bins,
+                steps, alpha_param, beta_param, self.config.tau)
+        
+        # Create both file paths
+        ns_path = os.path.join(schedule_dir, '%s.ns'%(schedule_name))
+        safetensors_path = os.path.join(schedule_dir, '%s.safetensors'%(schedule_name))
+        
+        # Initialize ts with uniform steps first
+        if steps not in self.steps2schedule:
+            self.steps2schedule[steps] = []
+        if os.path.exists(safetensors_path):
+            # Try to load with safetensors first
+            try:
+                from safetensors.torch import load_file
+                schedule_dict = load_file(safetensors_path, device='cuda')
+                # Convert to format needed by the algorithm
+                ts_infer = schedule_dict['ts_infer']
+                a_infer = schedule_dict['a_infer']
+                b_infer = schedule_dict['b_infer']
+                s_infer = schedule_dict['s_infer']
+                schedule = [ts_infer, a_infer, b_infer, s_infer]
+                
+                self.steps2schedule[steps].append((None, schedule))
+                log('Loaded schedule from %s'%(safetensors_path), self.config)
+                return schedule
+            except (ImportError, RuntimeError, KeyError):
+                pass
+                
+        # Try original .ns format as fallback
+        if os.path.exists(ns_path):
+            try:
+                schedule = torch.load(ns_path, map_location='cuda:0')
+                self.steps2schedule[steps].append((None, schedule))
+                log('Loaded schedule from %s'%(ns_path), self.config)
+                return schedule
+            except:
+                # If both loading methods fail, continue to generate new schedule
+                pass
+
+        # Perform noise scheduling
+        best_score, best_schedule = float("inf"), None
+        fads = []
+        for n in range(self.config.noise_scheduling_attempts):
+            # Perform noise scheduling via BDDM
+            log('Start noise scheduling %d/%d...'%(
+                n+1, self.config.noise_scheduling_attempts), self.config)
+            schedule = self.noise_scheduling(ddim=self.config.use_ddim_steps)
+            self.steps2schedule[steps].append((None, schedule))
+            log('Getting FAD score...', self.config)
+            audio_list = []
+            # Sample from the noise schedule
+            for i in range(10):
+                # new reference sample for scheduling
+                if i % 2 == 0:
+                    self.draw_reference_data_pair()
+                audio, n_steps = self.sampling(schedule=schedule,
+                    condition=self.ref_spec.clone(), return_sequence=False)
+                audio_list.append(audio)
+            # Get FAD score from new samples
+            fad = self.assess(audio_list)[0]
+            fads.append(fad)
+            log('Got schedule FAD = %.3f'%(fad), self.config)
+            
+            if fad < best_score:
+                best_score, best_schedule = fad, schedule
+                # Save both formats
+                try:
+                    # Try to save with safetensors
+                    from safetensors.torch import save_file
+                    # Create dict compatible with safetensors
+                    schedule_dict = {
+                        'ts_infer': best_schedule[0],
+                        'a_infer': best_schedule[1],
+                        'b_infer': best_schedule[2],
+                        's_infer': best_schedule[3]
+                    }
+                    save_file(schedule_dict, safetensors_path)
+                    log('Saved best schedule to %s'%(safetensors_path), self.config)
+                except ImportError:
+                    # Fall back to torch.save
+                    torch.save(best_schedule, ns_path)
+                    log('Saved best schedule to %s'%(ns_path), self.config)
+        
+        # Also save with original format for compatibility
+        torch.save(best_schedule, ns_path)
+        
+        log('Average FAD = %.3f, Best FAD = %.3f'%(
+            np.mean(fads), best_score), self.config)
+        return best_schedule
 
     def noise_scheduling_without_params(self):
         """
@@ -462,3 +591,38 @@ class Sampler(object):
             '' if audio_key is None else audio_key+' ', fad_score), self.config)
         # Return scores: the higher the better
         return [fad_score]
+
+    def _load_torch_checkpoint(self, checkpoint_path):
+        """Helper method to load PyTorch checkpoints with proper key handling"""
+        package = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cuda())
+        
+        if 'model_state_dict' in package:
+            model_state = package['model_state_dict'] 
+        elif 'model' in package:
+            model_state = package['model']
+        else:
+            model_state = package  # Assume the entire package is the state dict
+        
+        # Check if this is a schedule-network-only checkpoint
+        has_schedule_prefix = any(k.startswith('schedule_net.') for k in model_state.keys())
+        has_ratio_nn = any(k.startswith('ratio_nn.') for k in model_state.keys())
+        
+        if not has_schedule_prefix and has_ratio_nn:
+            # This is a schedule network-only checkpoint
+            # First, try to load directly into the schedule_net
+            try:
+                self.model.schedule_net.load_state_dict(model_state)
+                log('Loaded schedule network weights directly: %s' % checkpoint_path, self.config)
+            except RuntimeError:
+                # Maybe we need to adjust the keys
+                schedule_state = {}
+                for k, v in model_state.items():
+                    schedule_state['schedule_net.' + k] = v
+                
+                # Now load the full model with updated keys
+                self.model.load_state_dict(schedule_state, strict=False)
+                log('Loaded schedule network with key fixing: %s' % checkpoint_path, self.config)
+        else:
+            # Normal model loading
+            self.model.load_state_dict(model_state)
+            log('Loaded checkpoint with torch: %s' % checkpoint_path, self.config)

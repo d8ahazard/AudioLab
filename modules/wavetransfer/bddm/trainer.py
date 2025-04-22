@@ -18,7 +18,9 @@ import os
 import time
 import copy
 import torch
-from tqdm.auto import tqdm
+import torch.nn as nn
+from tqdm import tqdm
+import yaml
 
 from modules.wavetransfer.bddm.ema import EMAHelper
 from modules.wavetransfer.bddm.loss import StepLoss
@@ -28,7 +30,7 @@ from modules.wavetransfer.bddm.models import get_schedule_network
 
 from modules.wavetransfer.model import WaveGrad
 from modules.wavetransfer.params import AttrDict, get_default_params
-from modules.wavetransfer.bddm.data_loader import from_path as dataset_from_path, from_path_valid as dataset_from_path_valid
+from modules.wavetransfer.bddm.data_loader import from_path, from_path_valid
 
 
 def _nested_map(struct, map_fn):
@@ -96,19 +98,51 @@ class Trainer(object):
 
     def __init__(self, config):
         """
-        Trainer Class, implements a general multi-GPU training framework in PyTorch
+        Trainer Constructor
 
         Parameters:
             config (namespace): BDDM Configuration
         """
         self.config = config
-        self.exp_dir = config.exp_dir
+        self.local_rank = config.local_rank
+        
+        # Set default command if not present (for compatibility with SimpleNamespace objects from UI)
+        if not hasattr(config, 'command'):
+            config.command = 'train'
+            print(f"No command specified, defaulting to 'train'")
+
+        if config.command == 'train' and config.schedule_net == 'GALR':
+            self.load = config.bddm_load
+            self.model = WaveGrad(AttrDict(get_default_params())).cuda().train()
+            
+            # Always create a new schedule network for training
+            self.model.schedule_net = get_schedule_network(config).cuda().train()
+            
+            # Initialize the training environment
+            # Note: This is a custom change for the schedule network
+            print(f"Initializing schedule network for training mode")
+            self.training_target = 'schedule_nets'
+            self.n_training_steps = config.schedule_net_training_steps
+        else:
+            # Default for other commands
+            print(f"Initializing for command: {config.command}")
+            self.load = config.load
+            self.training_target = None
+            self.n_training_steps = config.schedule_net_training_steps
+            self.model = WaveGrad(AttrDict(get_default_params())).cuda().eval()
+            
+            # Load the schedule network for testing
+            if hasattr(self.config, 'sampling_noise_schedule') and self.config.sampling_noise_schedule and config.command == 'generate':
+                print(f"Using noise schedule file: {self.config.sampling_noise_schedule}")
+            elif config.command != 'train':
+                print(f"Initializing default schedule network for non-training mode")
+                self.model.schedule_net = get_schedule_network(config).cuda().eval()
+
+        # Prepare EMA (Exponential Moving Average) for training
+        self.ema_helper = EMAHelper(mu=config.ema_rate)
+        self.ema_helper.register(self.model.schedule_net)
         self.clip = config.grad_clip
-        self.load = config.load
-        self.model = WaveGrad(AttrDict(get_default_params())).to('cuda')
-        # Define training target
-        score_net_path = self.load
-        self.training_target = 'schedule_nets'
+        self.exp_dir = config.exp_dir
         torch.autograd.set_detect_anomaly(True)
         # Initialize diffusion parameters using a pre-specified linear schedule
         noise_schedule = torch.linspace(config.beta_0, config.beta_T, config.T).cuda()
@@ -117,28 +151,37 @@ class Trainer(object):
             self.diff_params["tau"] = config.tau
             for p in self.model.parameters():
                 p.requires_grad = False
-            # Define the schedule net as a sub-module of the score net for convenience
-            self.model.schedule_net = get_schedule_network(config).cuda()
             self.loss_func = StepLoss(config, self.diff_params)
-            self.n_training_steps = config.schedule_net_training_steps
             # In practice using batch size = 1 would lead to much lower step loss
             config.batch_size = 1
             model_to_train = self.model.schedule_net
         # Define optimizer
         self.optimizer = torch.optim.AdamW(model_to_train.parameters(),
             lr=config.lr, weight_decay=config.weight_decay, amsgrad=True)
-        # Define EMA training helper
-        self.ema_helper = EMAHelper(mu=config.ema_rate)
-        self.ema_helper.register(model_to_train)
         self.device = torch.device("cuda:{}".format(config.local_rank))
-        self.local_rank = config.local_rank
         
         # Get Gradio progress object if available
         self.gradio_progress = getattr(config, 'gradio_progress', None)
         
-        # Get data loaders
-        self.tr_loader = dataset_from_path(config.data_dir, config.training_file, get_default_params(), config.batch_size, config.n_worker)
-        self.vl_loader = dataset_from_path_valid(config.data_dir, config.validation_file, get_default_params(), config.n_worker)
+        # Get data loaders with error handling
+        try:
+            self.tr_loader = from_path(config.data_dir, config.training_file, get_default_params(), config.batch_size, config.n_worker)
+            self.vl_loader = from_path_valid(config.data_dir, config.validation_file, get_default_params(), config.n_worker)
+            log('Successfully created data loaders', config)
+        except Exception as e:
+            log(f'Error creating data loaders: {str(e)}', config)
+            print(f"Error creating data loaders: {str(e)}")
+            
+            # Create empty loaders as fallback
+            from torch.utils.data import DataLoader, TensorDataset
+            dummy_dataset = TensorDataset(torch.zeros(1, 1), torch.zeros(1, 1))
+            self.tr_loader = DataLoader(dummy_dataset, batch_size=1)
+            self.vl_loader = DataLoader(dummy_dataset, batch_size=1)
+            
+            # Reraise exception if this is not a UI call (no gradio progress)
+            if not self.gradio_progress:
+                raise
+        
         self.reset()
 
     def reset(self):
@@ -148,41 +191,104 @@ class Trainer(object):
         self.tr_loss, self.vl_loss = [], []
         self.training_step = 0
         if self.load != '':
-            package = torch.load(self.load, map_location=lambda storage, loc: storage.cuda())
-            init_state_dict = self.model.state_dict()
-            mismatch_params = set()
-            # Remove the checkpoint params that are not found in model
-            for key in list(package['model'].keys()):
-                if key not in init_state_dict.keys():
-                    param = copy.deepcopy(package['model'][key])
-                    del package['model'][key]
-                    log('ignored: %s in checkpoint not found in model'%key, self.config)
-                elif package['model'][key].size() != init_state_dict[key].size():
-                    log(package['model'][key].size(), self.config)
-                    log(init_state_dict[key].size(), self.config)
-                    log('ignored: %s in checkpoint size mismatched'%key, self.config)
-                    del package['model'][key]
-            # Replace the ignored checkpoint params by the init params
-            for key in list(init_state_dict.keys()):
-                if key not in package['model'].keys():
-                    mismatch_params.add(key)
-                    log('ignored: %s in model not found in checkpoint'%key, self.config)
-                    package['model'][key] = init_state_dict[key]
-            self.model.load_state_dict(package['model'])
-            if self.config.resume_training and len(mismatch_params) == 0:
-                # Load steps to resume training
-                if 'schedule_net_training_step' in package:
-                    self.training_step = package['schedule_net_training_step']
-            if self.config.freeze_checkpoint_params and len(mismatch_params) > 0:
-                # Only update new parameters defined in model
-                for key, param in self.model.named_parameters():
-                    if key not in mismatch_params:
-                        param.requires_grad = False
-            log('Loaded checkpoint %s' % self.load, self.config)
-        # Create save folder
-        os.makedirs(self.exp_dir, exist_ok=True)
+            # First try to load with safetensors
+            safetensors_path = self.load
+            # Convert .pkl or .pt extension to .safetensors if needed
+            if safetensors_path.endswith('.pkl') or safetensors_path.endswith('.pt'):
+                safetensors_path = safetensors_path.rsplit('.', 1)[0] + '.safetensors'
+                
+            try:
+                # Try to load with safetensors first
+                from safetensors.torch import load_file
+                if os.path.exists(safetensors_path):
+                    model_state = load_file(safetensors_path, device='cuda')
+                    
+                    # Fix key prefixes for schedule_net
+                    if self.training_target == 'schedule_nets':
+                        # Check if keys start with schedule_net or not
+                        has_schedule_prefix = any(k.startswith('schedule_net.') for k in model_state.keys())
+                        
+                        if not has_schedule_prefix:
+                            # This is a schedule network-only checkpoint
+                            # Load directly into the schedule network
+                            schedule_state = {}
+                            for k, v in model_state.items():
+                                if k.startswith('ratio_nn.'):
+                                    schedule_state['schedule_net.' + k] = v
+                                else:
+                                    schedule_state[k] = v
+                            
+                            # Initialize the model with schedule_net parameters only
+                            self.model.schedule_net.load_state_dict({k.replace('schedule_net.', ''): v 
+                                                                    for k, v in schedule_state.items() 
+                                                                    if k.startswith('schedule_net.')})
+                            log('Loaded schedule network weights with safetensors: %s' % safetensors_path, self.config)
+                        else:
+                            # This is a combined checkpoint, load normally
+                            self.model.load_state_dict(model_state)
+                            log('Loaded checkpoint with safetensors: %s' % safetensors_path, self.config)
+                    else:
+                        # For non-schedule network training, load normally
+                        self.model.load_state_dict(model_state)
+                        log('Loaded checkpoint with safetensors: %s' % safetensors_path, self.config)
+                else:
+                    # Fall back to torch.load
+                    self._load_torch_checkpoint(self.load)
+            except (ImportError, FileNotFoundError, RuntimeError) as e:
+                # Fall back to torch.load
+                log(f'Error loading safetensors, falling back to torch: {str(e)}', self.config)
+                self._load_torch_checkpoint(self.load)
+        
+        torch.cuda.empty_cache()
+        if self.training_target is None:
+            self.training_target, self.n_training_steps = (
+                'schedule_nets', self.config.schedule_net_training_steps)
         self.prev_val_loss, self.min_val_loss = float("inf"), float("inf")
         self.val_no_impv, self.halving = 0, 0
+
+    def _load_torch_checkpoint(self, checkpoint_path):
+        """Helper method to load PyTorch checkpoints with proper key handling"""
+        package = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cuda())
+        
+        if 'model_state_dict' in package:
+            model_state = package['model_state_dict']
+        elif 'model' in package:
+            model_state = package['model']
+        else:
+            model_state = package  # Assume the entire package is the state dict
+                
+        # Fix key prefixes for schedule_net
+        if self.training_target == 'schedule_nets':
+            # Check if keys start with schedule_net or not
+            has_schedule_prefix = any(k.startswith('schedule_net.') for k in model_state.keys())
+            
+            if not has_schedule_prefix:
+                # This is a schedule network-only checkpoint
+                # Load directly into the schedule network
+                try:
+                    self.model.schedule_net.load_state_dict(model_state)
+                    log('Loaded schedule network weights directly: %s' % checkpoint_path, self.config)
+                except RuntimeError:
+                    # Maybe the keys have weird structure, try to fix them
+                    schedule_state = {}
+                    for k, v in model_state.items():
+                        if k.startswith('ratio_nn.'):
+                            schedule_state[k] = v
+                        
+                    self.model.schedule_net.load_state_dict(schedule_state)
+                    log('Loaded schedule network weights with key fixing: %s' % checkpoint_path, self.config)
+            else:
+                # This is a combined checkpoint, extract schedule_net part
+                schedule_state = {k.replace('schedule_net.', ''): v 
+                                 for k, v in model_state.items() 
+                                 if k.startswith('schedule_net.')}
+                
+                self.model.schedule_net.load_state_dict(schedule_state)
+                log('Loaded schedule network from full checkpoint: %s' % checkpoint_path, self.config)
+        else:
+            # For non-schedule network training, load normally
+            self.model.load_state_dict(model_state)
+            log('Loaded checkpoint with torch: %s' % checkpoint_path, self.config)
 
     def train(self):
         """
@@ -248,9 +354,36 @@ class Trainer(object):
                 best_state = copy.deepcopy(self.ema_helper.state_dict())
                 model_serialized = self.serialize()
                 file_path = os.path.join(self.exp_dir, self.training_target,
+                                            '%d.safetensors' % self.training_step)
+                try:
+                    from safetensors.torch import save_file
+                    # Convert model state dict to a format suitable for safetensors
+                    
+                    # If this is a schedule_net-only training, save just those weights
+                    if self.training_target == 'schedule_nets':
+                        # Extract only schedule network state for saving
+                        # When saving schedule-only, don't use the "schedule_net." prefix
+                        save_state = model_serialized['model_state_dict']
+                        save_file(save_state, file_path)
+                        
+                        # Also save a metadata file with training step
+                        metadata_path = os.path.join(self.exp_dir, self.training_target,
+                                                '%d_metadata.pt' % self.training_step)
+                        torch.save({
+                            'schedule_net_training_step': self.training_step,
+                            'config': self.config
+                        }, metadata_path)
+                    else:
+                        # Save full model with original method
+                        save_file(model_serialized['model_state_dict'], file_path)
+                    
+                    print(f"Found better model, saved to {file_path}")
+                except ImportError:
+                    # Fallback to torch.save if safetensors is not available
+                    file_path = os.path.join(self.exp_dir, self.training_target,
                                             '%d.pkl' % self.training_step)
-                torch.save(model_serialized, file_path)
-                print(f"Found better model, saved to {file_path}")
+                    torch.save(model_serialized, file_path)
+                    print(f"Found better model, saved to {file_path} (using torch.save)")
         
         # Complete progress
         try:
@@ -281,46 +414,55 @@ class Trainer(object):
         
         # Create standard tqdm for console output
         progress_bar = tqdm(enumerate(data_loader), desc=f"{desc} {epoch_info}", total=total_batches)
+        
+        # Set models to appropriate mode
+        if validate:
+            self.model.eval()
+        else:
+            self.model.train()
             
         for i, batch in progress_bar:
             if batch == None:
                 continue
                 
             features = _nested_map(batch, lambda x: x.cuda() if isinstance(x, torch.Tensor) else x)
-            loss = self.loss_func(self.model, features)
-            total_loss += loss.detach().sum()
-            total_cnt += len(loss)
-            avg_loss = loss.mean()
             
-            # Update progress bar description
-            try:
-                progress_bar.set_description(f"{desc} {epoch_info} | Loss: {avg_loss:.5f}")
+            with torch.set_grad_enabled(not validate):
+                loss = self.loss_func(self.model, features)
+                total_loss += loss.detach().sum()
+                total_cnt += len(loss)
+                avg_loss = loss.mean()
                 
-                # Update Gradio progress separately (don't use tqdm with custom file)
-                if self.gradio_progress is not None:
-                    # Calculate fraction complete for this batch
-                    batch_progress = (i + 1) / total_batches
-                    self.gradio_progress(batch_progress, f"{desc}: {i+1}/{total_batches} | Loss: {avg_loss:.5f}")
-            except Exception:
-                # Silently handle any progress bar issues
-                pass
-            
-            if not validate:
-                self.optimizer.zero_grad()
-                avg_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
-                self.optimizer.step()
-                self.training_step += len(loss)
-                
-                # Don't log training steps to console
-                if self.training_target == 'schedule_nets':
-                    self.ema_helper.update(self.model.schedule_net)
+                # Update progress bar description
+                try:
+                    progress_bar.set_description(f"{desc} {epoch_info} | Loss: {avg_loss:.5f}")
                     
-                if self.training_step >= self.n_training_steps or\
-                        max(i, self.training_step - start_step) >= self.config.steps_per_epoch:
-                    # Release grad memory
+                    # Update Gradio progress separately (don't use tqdm with custom file)
+                    if self.gradio_progress is not None:
+                        # Calculate fraction complete for this batch
+                        batch_progress = (i + 1) / total_batches
+                        self.gradio_progress(batch_progress, f"{desc}: {i+1}/{total_batches} | Loss: {avg_loss:.5f}")
+                except Exception:
+                    # Silently handle any progress bar issues
+                    pass
+                
+                if not validate:
                     self.optimizer.zero_grad()
-                    return total_loss / total_cnt
+                    avg_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                    self.optimizer.step()
+                    self.training_step += len(loss)
+                    
+                    # Don't log training steps to console
+                    if self.training_target == 'schedule_nets':
+                        # Update EMA for schedule network
+                        self.ema_helper.update(self.model.schedule_net)
+                        
+                    if self.training_step >= self.n_training_steps or\
+                            max(i, self.training_step - start_step) >= self.config.steps_per_epoch:
+                        # Release grad memory
+                        self.optimizer.zero_grad()
+                        return total_loss / total_cnt
             
         if not validate:
             # Release grad memory
@@ -336,18 +478,34 @@ class Trainer(object):
         Returns:
             package (dict): the serialized package to be saved
         """
-        model_state = copy.deepcopy(self.model.state_dict())
-        ema_state = copy.deepcopy(self.ema_helper.state_dict())
-        for p in self.ema_helper.state_dict():
-            model_state['schedule_net.'+p] =  ema_state[p]
-        if self.config.save_fp16:
-            for p in model_state:
-                model_state[p] = model_state[p].half()
+        # Check if we're training the schedule network only
+        if self.training_target == 'schedule_nets':
+            # Save just the schedule network parameters
+            model_state = copy.deepcopy(self.model.schedule_net.state_dict())
+            ema_state = copy.deepcopy(self.ema_helper.state_dict())
+            
+            # When saving schedule network, don't use the 'schedule_net.' prefix
+            # as it'll be loaded directly into the schedule network
+            if self.config.save_fp16:
+                for p in model_state:
+                    model_state[p] = model_state[p].half()
+                for p in ema_state:
+                    ema_state[p] = ema_state[p].half()
+        else:
+            # Full model serialization
+            model_state = copy.deepcopy(self.model.state_dict())
+            ema_state = copy.deepcopy(self.ema_helper.state_dict())
+            for p in self.ema_helper.state_dict():
+                model_state['schedule_net.'+p] = ema_state[p]
+            if self.config.save_fp16:
+                for p in model_state:
+                    model_state[p] = model_state[p].half()
+                    
         package = {
-            # hyper-parameter
-            'config': self.config,
             # state
             'model_state_dict': model_state
         }
+        # Since safetensors doesn't support arbitrary Python objects, 
+        # we'll need to save config separately when using safetensors
         package['schedule_net_training_step'] = self.training_step
         return package

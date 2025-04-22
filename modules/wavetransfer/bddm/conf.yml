@@ -2,8 +2,8 @@
 # General config
 exp_dir: './exp'
 seed: 0
-load: 'path_to/score_net.pt' # path to the trained score model checkpoint
-bddm_load: 'path_to/bddm_net.pkl' # Set to an empty string before training the schedule network. After training, update with the path to the BDDM model.
+load: 'path_to/score_net.safetensors' # path to the trained score model checkpoint
+bddm_load: 'path_to/bddm_net.safetensors' # Set to an empty string before training the schedule network. After training, update with the path to the BDDM model.
 # Generation config
 sampling_noise_schedule: 'path_to/noise_schedule.ns' # Set to an empty string if not in the sampling phase. Otherwise, specify the path to the noise schedule for generation.
 only_mixtures: 0 # Used only during generation. Set to 1 if you want to apply timbre transfer exclusively to mixture files.
