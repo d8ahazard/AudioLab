@@ -11,7 +11,9 @@ import logging
 import shutil
 import torch
 from typing import Optional
-
+from openvoice_cli.api import ToneColorConverter
+import openvoice_cli.se_extractor as se_extractor
+        
 from handlers.config import model_path
 from modules.cloning.model_utils import initialize_openvoice_model
 
@@ -19,14 +21,13 @@ logger = logging.getLogger(__name__)
 
 # Will be initialized when needed
 tone_color_converter = None
-se_extractor = None
 
 def initialize_openvoice():
     """
     Initialize the OpenVoice converter and dependencies.
     This is done lazily on first use to avoid unnecessary imports and memory usage.
     """
-    global tone_color_converter, se_extractor
+    global tone_color_converter
     
     if tone_color_converter is not None:
         # Already initialized
@@ -34,8 +35,6 @@ def initialize_openvoice():
     
     try:
         # Import OpenVoice only when needed
-        from openvoice import ToneColorConverter
-        import openvoice.se_extractor as se_extractor_module
         
         logger.info("Loading OpenVoice dependencies")
         
@@ -47,9 +46,6 @@ def initialize_openvoice():
         logger.info(f"Initializing OpenVoice converter on {device}")
         tone_color_converter = ToneColorConverter(config_path, device=device)
         tone_color_converter.load_ckpt(checkpoint_path)
-        
-        # Store the SE extractor module
-        se_extractor = se_extractor_module
         
         logger.info("OpenVoice initialized successfully")
         return True
@@ -83,12 +79,11 @@ def clone_voice(target_speaker_path: str, source_speaker_path: str, output_path:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             
-        logger.info(f"Extracting speaker embedding for target: {target_speaker_path}")
-        use_vad = False
-        source_se, _ = se_extractor.get_se(target_speaker_path, tone_color_converter, vad=use_vad)
-        
         logger.info(f"Extracting speaker embedding for source: {source_speaker_path}")
-        target_se, _ = se_extractor.get_se(source_speaker_path, tone_color_converter, vad=use_vad)
+        source_se, _ = se_extractor.get_se(source_speaker_path, tone_color_converter, vad=True)
+        
+        logger.info(f"Extracting speaker embedding for target: {target_speaker_path}")
+        target_se, _ = se_extractor.get_se(target_speaker_path, tone_color_converter, vad=True)
         
         # Run the tone color converter
         logger.info(f"Converting voice with tau={tau}")
@@ -120,14 +115,11 @@ def clone_voice(target_speaker_path: str, source_speaker_path: str, output_path:
 
 def cleanup():
     """Release resources used by OpenVoice."""
-    global tone_color_converter, se_extractor
+    global tone_color_converter
     
     if tone_color_converter is not None:
         del tone_color_converter
         tone_color_converter = None
-        
-    if se_extractor is not None:
-        se_extractor = None
         
     gc.collect()
     if torch.cuda.is_available():

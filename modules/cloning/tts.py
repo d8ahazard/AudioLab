@@ -11,7 +11,7 @@ import torch
 import tempfile
 import numpy as np
 import soundfile as sf
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Union
 
 from handlers.config import model_path
 from modules.cloning.model_utils import get_huggingface_model_path
@@ -50,23 +50,26 @@ def initialize_tts():
         config = XttsConfig()
         config.load_json(os.path.join(xtts_path, "config.json"))
         
-        # Adjust paths to be absolute
-        if not os.path.isabs(config.model_args.speaker_encoder_model_path):
-            config.model_args.speaker_encoder_model_path = os.path.join(
-                xtts_path, config.model_args.speaker_encoder_model_path
-            )
-            
-        if not os.path.isabs(config.model_args.checkpoint_file):
-            config.model_args.checkpoint_file = os.path.join(
-                xtts_path, config.model_args.checkpoint_file
-            )
+        # Check model config structure and adjust paths if needed
+        # For XTTS-v2, the structure might be different from previous versions
+        if hasattr(config.model_args, "speaker_encoder_model_path"):
+            if not os.path.isabs(config.model_args.speaker_encoder_model_path):
+                config.model_args.speaker_encoder_model_path = os.path.join(
+                    xtts_path, config.model_args.speaker_encoder_model_path
+                )
+                
+        if hasattr(config.model_args, "checkpoint_file"):
+            if not os.path.isabs(config.model_args.checkpoint_file):
+                config.model_args.checkpoint_file = os.path.join(
+                    xtts_path, config.model_args.checkpoint_file
+                )
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {device}")
         
         # Load the model
         tts_model = Xtts.init_from_config(config)
-        tts_model.load_checkpoint(config, config.model_args.checkpoint_file, eval=True)
+        tts_model.load_checkpoint(config, checkpoint_dir=xtts_path, eval=True)
         tts_model.to(device)
         
         # No need for separate vocoder in XTTS v2
@@ -147,9 +150,12 @@ def clone_voice(target_speaker_path: str, source_speaker_path: str, output_path:
         # Generate audio with voice cloning
         logger.info("Generating TTS audio with voice cloning")
         
+        # Convert source_speaker_path to a list if it's a string
+        speaker_audio_paths = [source_speaker_path] if isinstance(source_speaker_path, str) else source_speaker_path
+        
         # Get speaker embedding from source speaker
         gpt_cond_latent, speaker_embedding = tts_model.get_conditioning_latents(
-            audio_path=source_speaker_path
+            audio_path=speaker_audio_paths
         )
         
         # Determine language (simple heuristic, can be improved)
@@ -163,11 +169,12 @@ def clone_voice(target_speaker_path: str, source_speaker_path: str, output_path:
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
             temperature=0.75,
+            enable_text_splitting=True,
         )
         
         # Save the audio file
-        output_sample_rate = tts_model.output_sample_rate
-        sf.write(output_path, model_output, output_sample_rate)
+        output_sample_rate = getattr(tts_model, 'output_sample_rate', 24000)
+        sf.write(output_path, model_output["wav"], output_sample_rate)
         
         logger.info(f"TTS cloning complete: {output_path}")
         return output_path
