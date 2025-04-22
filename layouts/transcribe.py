@@ -377,6 +377,12 @@ def render(arg_handler: ArgHandler):
                 return "", gr.update(visible=True, value=selected_file)
                 
             return "", gr.update(visible=False)
+
+        # Function to populate file dropdown when transcription files are available
+        def populate_file_dropdown(file_list):
+            if not file_list:
+                return gr.update(choices=[], value=None, visible=False)
+            return gr.update(choices=file_list, value=file_list[0] if file_list else None, visible=True)
             
         # Event handler for the transcribe button
         transcribe_button.click(
@@ -394,10 +400,27 @@ def render(arg_handler: ArgHandler):
             outputs=[status_display, OUTPUT_TRANSCRIPTION]
         )
         
-        # Event handler for file selection
+        # Add file selector dropdown
+        file_selector = gr.Dropdown(
+            label="Select Output File",
+            choices=[],
+            visible=False,
+            elem_classes="hintitem",
+            elem_id="transcribe_file_selector",
+            key="transcribe_file_selector"
+        )
+        
+        # Update file selector when transcription files are available
         OUTPUT_TRANSCRIPTION.change(
-            fn=update_preview,
+            fn=populate_file_dropdown,
             inputs=[OUTPUT_TRANSCRIPTION],
+            outputs=[file_selector]
+        )
+        
+        # Event handler for file selection
+        file_selector.change(
+            fn=update_preview,
+            inputs=[file_selector],
             outputs=[output_text, OUTPUT_AUDIO]
         )
     
