@@ -15,6 +15,7 @@ ffmpeg_progress_yield
 frechet_audio_distance
 ftfy>=6.3.1
 gradio>=5.1.0
+hf_xet
 huggingface_hub>=0.27.1
 kanjize
 matchering>=2.0.6
@@ -28,6 +29,7 @@ numpy
 onnxruntime-gpu>=1.20.1
 onnxsim
 opencv-python>=4.10.0.84
+openvoice-cli
 pandas>=2.2.3
 pesq
 phonemizer>=3.3.0

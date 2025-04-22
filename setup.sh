@@ -174,6 +174,7 @@ pip install mamba-ssm
 echo "[6/8] Installing specific ONNX and ONNX Runtime versions..."
 pip install onnx==1.15.0
 pip install onnxruntime-gpu==1.16.3
+pip install openvoice-cli
 
 echo "[7/8] Installing final dependencies..."
 pip install faiss-cpu
