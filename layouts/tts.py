@@ -7,6 +7,7 @@ import torch
 import gradio as gr
 from torch import Tensor
 from huggingface_hub import hf_hub_download
+import torchaudio
 
 from handlers.args import ArgHandler
 from handlers.tts import TTSHandler
@@ -17,6 +18,7 @@ SEND_TO_PROCESS_BUTTON: gr.Button = None
 OUTPUT_AUDIO: gr.Audio = None
 logger = logging.getLogger(__name__)
 zonos_model = None
+dia_model = None  # Add DIA model global variable
 speaker_sample_file = None
 
 # Maps bracket tags to an 8-D emotion vector (sum=1).
@@ -66,6 +68,33 @@ def download_speaker_model():
                         filename="ResNet293_SimAM_ASP_base_LDA-128.pt", local_dir=model_dir)
     return model_dir
 
+def download_dia_model():
+    """Download DIA model files if they don't exist."""
+    repo_id = "nari-labs/Dia-1.6B"
+    model_dir = os.path.join(model_path, "diatts")
+    os.makedirs(model_dir, exist_ok=True)
+    
+    try:
+        logger.info("Downloading DIA model files...")
+        # Download model files
+        files_to_download = [
+            "config.json",
+            "dia-v0_1.pth"
+        ]
+        
+        for filename in files_to_download:
+            filepath = os.path.join(model_dir, filename)
+            if not os.path.exists(filepath):
+                _ = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=model_dir)
+                logger.info(f"Downloaded {filename}")
+        
+        logger.info("DIA model files downloaded successfully")
+    except Exception as e:
+        logger.error(f"Error downloading DIA model: {e}")
+        raise e
+    
+    return model_dir
+
 def set_espeak_lib_path_win():
     """Set the path to espeak library on Windows."""
     if os.name == "nt":
@@ -85,7 +114,7 @@ def set_espeak_lib_path_win():
             os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = espeak_lib_path
 
 def _parse_text_and_emotions(full_text: str, default_emotion: str):
-    """Parse text and extract emotion tags for Zonos."""
+    """Parse text and extract emotion tags for Zonos with improved chunking."""
     import re
 
     current_emotion_str = None if default_emotion == "Normal" else default_emotion
@@ -99,25 +128,38 @@ def _parse_text_and_emotions(full_text: str, default_emotion: str):
             return None
         return [min(1.0, emo_val[i] + default[i]) for i in range(8)]
 
-    chunks_with_emotion = []
+    # Store chunks with emotion and special markers
+    chunks_with_metadata = []
     lines = full_text.splitlines()
 
     def flush_chunk(buffer, emotion):
         text = buffer.strip()
         if text:
-            chunks_with_emotion.append((text, emotion))
+            chunks_with_metadata.append({"text": text, "emotion": emotion, "newline_after": False})
 
     chunk_buffer = ""
-    for line in lines:
+    prev_line_empty = False
+    
+    for i, line in enumerate(lines):
+        # Handle empty lines as pause markers
         if not line.strip():
-            flush_chunk(chunk_buffer, current_emotion_str)
-            chunk_buffer = ""
+            if chunk_buffer:
+                flush_chunk(chunk_buffer, current_emotion_str)
+                chunk_buffer = ""
+            # Mark the last chunk as having a newline after it
+            if chunks_with_metadata and not prev_line_empty:
+                chunks_with_metadata[-1]["newline_after"] = True
+            prev_line_empty = True
             continue
-
+        
+        prev_line_empty = False
+        
+        # Check for emotion tag at the beginning of the line
         leading_emotion = re.match(r'^\[(\w+)\]\s*(.*)', line.strip())
         if leading_emotion:
-            flush_chunk(chunk_buffer, current_emotion_str)
-            chunk_buffer = ""
+            if chunk_buffer:
+                flush_chunk(chunk_buffer, current_emotion_str)
+                chunk_buffer = ""
             bracket_emo = leading_emotion.group(1).strip()
             remainder_text = leading_emotion.group(2).strip()
             if bracket_emo in EMOTION_MAP:
@@ -125,10 +167,12 @@ def _parse_text_and_emotions(full_text: str, default_emotion: str):
             if remainder_text:
                 chunk_buffer = remainder_text
         else:
-            if chunk_buffer:
+            # If this is not the first line and we have content in buffer, add a space
+            if chunk_buffer and i > 0:
                 chunk_buffer += " "
             chunk_buffer += line.strip()
 
+        # Process inline emotion tags
         while True:
             match = re.search(r'\[(\w+)\]', chunk_buffer)
             if not match:
@@ -138,31 +182,61 @@ def _parse_text_and_emotions(full_text: str, default_emotion: str):
             post_text = chunk_buffer[match.end():].strip()
 
             if pre_text:
-                chunks_with_emotion.append((pre_text, current_emotion_str))
+                chunks_with_metadata.append({"text": pre_text, "emotion": current_emotion_str, "newline_after": False})
             if bracket_emo in EMOTION_MAP:
                 current_emotion_str = bracket_emo
             chunk_buffer = post_text
 
-    flush_chunk(chunk_buffer, current_emotion_str)
+    # Don't forget the last chunk
+    if chunk_buffer:
+        flush_chunk(chunk_buffer, current_emotion_str)
 
-    # Optionally split each chunk by word-limit
+    # Now split by sentences or punctuation if chunks are too large
     final_chunks = []
-    chunk_word_limit = 75
-    for txt, emo in chunks_with_emotion:
-        words = txt.split()
-        temp_buf = []
-        for w in words:
-            temp_buf.append(w)
-            if len(temp_buf) >= chunk_word_limit:
-                final_chunks.append((" ".join(temp_buf), emo))
-                temp_buf = []
-        if temp_buf:
-            final_chunks.append((" ".join(temp_buf), emo))
-
+    max_chars_per_chunk = 200  # Maximum characters per chunk
+    
+    for chunk in chunks_with_metadata:
+        text = chunk["text"]
+        
+        # Split by sentence-ending punctuation if the text is too long
+        if len(text) > max_chars_per_chunk:
+            # Split by sentence endings
+            sentence_pattern = r'(?<=[.!?])\s+'
+            sentences = re.split(sentence_pattern, text)
+            
+            # Further split long sentences by commas, semicolons, etc.
+            for sentence in sentences:
+                if len(sentence) > max_chars_per_chunk:
+                    clause_pattern = r'(?<=[,;:])\s+'
+                    clauses = re.split(clause_pattern, sentence)
+                    
+                    # Add each clause as a separate chunk
+                    for i, clause in enumerate(clauses):
+                        is_last = (i == len(clauses) - 1)
+                        final_chunks.append({
+                            "text": clause,
+                            "emotion": chunk["emotion"],
+                            "newline_after": chunk["newline_after"] if is_last else False
+                        })
+                else:
+                    final_chunks.append({
+                        "text": sentence,
+                        "emotion": chunk["emotion"],
+                        "newline_after": chunk["newline_after"]
+                    })
+        else:
+            final_chunks.append(chunk)
+    
+    # Convert to format expected by the rest of the code
     result = []
-    for txt, e in final_chunks:
-        vec = get_emotion_vector(e)
-        result.append((txt, vec))
+    for chunk in final_chunks:
+        vec = get_emotion_vector(chunk["emotion"])
+        result.append({
+            "text": chunk["text"],
+            "emotion": vec,
+            "newline_after": chunk["newline_after"]
+        })
+    
     return result
 
 def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progress=gr.Progress(track_tqdm=True)):
@@ -190,7 +264,7 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
         s_path = download_speaker_model()
         speaker = zonos_model.make_speaker_embedding(wav, sampling_rate, s_path)
 
-        # 3) Parse text into chunks
+        # 3) Parse text into chunks with metadata
         chunks = _parse_text_and_emotions(text, emotion_choice)
         logger.info(f"Prepared {len(chunks)} chunk(s).")
 
@@ -199,9 +273,14 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
         audio_segments = []
 
         # 4) Generate each chunk -> store as [samples]
-        for idx, (chunk_text, chunk_emotion) in enumerate(chunks):
+        for idx, chunk_data in enumerate(chunks):
+            chunk_text = chunk_data["text"]
+            chunk_emotion = chunk_data["emotion"]
+            newline_after = chunk_data["newline_after"]
+            
             if not chunk_text:
                 continue
+                
             logger.info(f"Generating chunk {idx+1}/{len(chunks)}: {chunk_text[:60]}")
             cond_dict = make_cond_dict(
                 text=chunk_text,
@@ -212,14 +291,35 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
             conditioning = zonos_model.prepare_conditioning(cond_dict)
             codes = zonos_model.generate(conditioning, max_new_tokens=max_new_tokens)
             wavs = zonos_model.autoencoder.decode(codes).cpu()
+            
             if wavs.shape[-1] == 0:
+                logger.warning(f"Chunk {idx+1} produced empty audio, skipping")
                 continue
+                
             audio_segments.append(wavs[0])  # shape [samples]
+            
+            # Add a pause (0.5s) if this chunk should be followed by a newline
+            if newline_after:
+                pause_samples = int(0.5 * sr)  # 0.5 seconds of silence
+                # Create silence with same dimensions as the generated audio
+                if wavs[0].dim() == 1:
+                    # If 1D tensor, create 1D silence
+                    silence = torch.zeros(pause_samples, dtype=wavs[0].dtype)
+                else:
+                    # If multi-dimensional, match the shape pattern
+                    # For example, if shape is [channels, time], create [channels, pause_samples]
+                    shape = list(wavs[0].shape)
+                    shape[-1] = pause_samples  # Replace last dimension with pause length
+                    silence = torch.zeros(shape, dtype=wavs[0].dtype)
+                
+                audio_segments.append(silence)
+                logger.info(f"Added 0.5s pause after chunk {idx+1}")
 
         if not audio_segments:
             return "Error: No chunks generated."
 
         # 5) Concatenate => final_audio [samples]
+        # All segments should now have the same dimension structure
         final_audio = torch.cat(audio_segments, dim=-1)
 
         # 6) (Optional) Apply VAD to remove large leading/trailing silence
@@ -265,6 +365,76 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
         logger.exception("Error in Zonos TTS:")
         return f"Error: {str(e)}"
 
+def run_dia_tts(text, prompt_text, speaker_sample, speed, progress=gr.Progress(track_tqdm=True)):
+    """Generate audio using the DIA TTS model."""
+    import time
+    import torch
+    import soundfile as sf
+    import numpy as np
+    from modules.diatts.dia.model import Dia
+    
+    global dia_model
+    
+    try:
+        # 1) Load DIA model if not already loaded
+        if not dia_model:
+            logger.info("Loading DIA model...")
+            dia_path = download_dia_model()
+            dia_model = Dia.from_pretrained(dia_path, device="cuda" if torch.cuda.is_available() else "cpu")
+            logger.info("DIA model loaded successfully")
+        
+        # 2) Generate audio
+        logger.info("Generating audio with DIA...")
+        
+        # Apply voice cloning if speaker_sample is provided
+        if speaker_sample and prompt_text:
+            logger.info("Using voice cloning with provided audio sample")
+            output_audio_np = dia_model.generate(prompt_text + text, audio_prompt_path=speaker_sample)
+            # os.remove(temp_file)
+        else:
+            # Generate without voice cloning
+            logger.info("Generating without voice cloning")
+            output_audio_np = dia_model.generate(text)
+        
+        # 3) Apply speed adjustment if needed (simple resampling)
+        output_sr = 44100
+
+            # --- Slow down audio ---
+        original_len = len(output_audio_np)
+        # Ensure speed_factor is positive and not excessively small/large to avoid issues
+        speed_factor = max(0.1, min(speed, 5.0))
+        target_len = int(
+            original_len / speed_factor
+        )  # Target length based on speed_factor
+        if (
+            target_len != original_len and target_len > 0
+        ):  # Only interpolate if length changes and is valid
+            x_original = np.arange(original_len)
+            x_resampled = np.linspace(0, original_len - 1, target_len)
+            resampled_audio_np = np.interp(x_resampled, x_original, output_audio_np)
+            output_audio_np = resampled_audio_np
+            print(
+                f"Resampled audio from {original_len} to {target_len} samples for {speed_factor:.2f}x speed."
+            )
+        else:
+            print(f"Skipping audio speed adjustment (factor: {speed_factor:.2f}).")
+    
+        # 4) Save to file
+        timestamp = int(time.time())
+        out_dir = os.path.join(output_path, "dia")
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, f"DIA_{timestamp}.wav")
+        
+        # Save the file (using 44.1kHz sampling rate as per the example)
+        sf.write(out_file, output_audio_np, output_sr)
+        logger.info(f"Audio saved to {out_file}")
+        
+        return gr.update(value=out_file)
+    
+    except Exception as e:
+        logger.exception("Error in DIA TTS:")
+        return f"Error: {str(e)}"
+
 def render_tts():
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
     tts_handler = TTSHandler()
@@ -273,7 +443,8 @@ def render_tts():
     def toggle_ui_elements(model_name):
         """Toggle UI elements based on selected model."""
         zonos_selected = model_name == "Zonos"
-        regular_tts = not zonos_selected
+        dia_selected = model_name == "DIA"
+        regular_tts = not (zonos_selected or dia_selected)
         
         if zonos_selected:
             # When Zonos is selected
@@ -282,7 +453,18 @@ def render_tts():
             return (
                 gr.update(choices=languages, value=language_value),  # language
                 gr.update(visible=True),  # emotion_dropdown
-                gr.update(visible=False)   # speaker_list
+                gr.update(visible=False),  # speaker_list
+                gr.update(visible=False),  # dia_prompt_text
+                gr.update(placeholder="Enter text to synthesize. For Zonos, you can include [Emotion] tags.\nUse empty lines for pauses (0.5s each).")  # input_text placeholder
+            )
+        elif dia_selected:
+            # When DIA is selected
+            return (
+                gr.update(choices=["en"], value="en"),  # language (DIA only supports English)
+                gr.update(visible=False),  # emotion_dropdown
+                gr.update(visible=False),  # speaker_list
+                gr.update(visible=True),  # dia_prompt_text
+                gr.update(placeholder="Enter text to synthesize with DIA. Use [S1] and [S2] tags for different speakers.\nYou can include non-verbal sounds in parentheses like (laughs), (coughs), etc.")  # input_text placeholder
             )
         else:
             # For regular TTS models
@@ -296,20 +478,22 @@ def render_tts():
             return (
                 gr.update(choices=languages, value="en"),  # language
                 gr.update(visible=False),  # emotion_dropdown
-                gr.update(choices=speakers, value=speaker, visible=True)  # speaker_list
+                gr.update(choices=speakers, value=speaker, visible=True),  # speaker_list
+                gr.update(visible=False),  # dia_prompt_text
+                gr.update(placeholder="Enter text to synthesize.")  # input_text placeholder
             )
 
     def update_tts_model(language):
         """Update available models based on selected language (regular TTS)."""
         tts_handler.language = language
         models = tts_handler.available_models()
-        # Always include Zonos as the first option
-        return gr.update(choices=["Zonos"] + models, value=models[0])
+        # Always include DIA and Zonos as the first options
+        return gr.update(choices=["DIA", "Zonos"] + models, value="DIA")
 
     def select_tts_model(model):
         """Handle model selection for regular TTS."""
-        if model == "Zonos":
-            # For Zonos, don't try to load it as a regular TTS model
+        if model == "Zonos" or model == "DIA":
+            # For Zonos or DIA, don't try to load it as a regular TTS model
             return gr.update(choices=[], value=None, visible=False)
         else:
             # For regular TTS models
@@ -323,7 +507,7 @@ def render_tts():
                 # If there's an error loading the model, return empty speaker list
                 return gr.update(choices=[], value=None, visible=True)
 
-    def generate_tts(model, text, language, emotion, speaker_sample, speaker, speed, progress=gr.Progress(track_tqdm=True)):
+    def generate_tts(model, text, language, emotion, speaker_sample, dia_prompt, speaker, speed, progress=gr.Progress(track_tqdm=True)):
         """Dispatch to appropriate TTS generation function based on model."""
         try:
             if not text or text.strip() == "":
@@ -336,6 +520,9 @@ def render_tts():
                 
                 # Generate using Zonos
                 return run_zonos_tts(language, emotion, text, speaker_sample, speed, progress)
+            elif model == "DIA":
+                # Generate using DIA
+                return run_dia_tts(text, dia_prompt, speaker_sample, speed, progress)
             else:
                 # Generate using regular TTS models
                 try:
@@ -352,32 +539,32 @@ def render_tts():
 
     with gr.Blocks() as tts:
         gr.Markdown("# 🗣️ Text to Speech")
-        gr.Markdown("Convert text to natural-sounding speech using Zonos for emotional synthesis or various TTS models. Supports voice cloning from audio references, multiple languages, and adjustable speech parameters.")
+        gr.Markdown("Convert text to natural-sounding speech using DIA for realistic dialogues, Zonos for emotional synthesis, or various other TTS models. Supports voice cloning from audio references, multiple languages, and adjustable speech parameters.")
 
         with gr.Row():
             with gr.Column():
                 gr.Markdown("### 🔧 Settings")
-                # Adding Zonos as the first model
+                # Adding DIA as the first model, followed by Zonos and others
                 tts_model = gr.Dropdown(
                     label="Model",
-                    choices=["Zonos"] + tts_handler.available_models(),
-                    value="Zonos",  # Set Zonos as default
+                    choices=["DIA", "Zonos"] + tts_handler.available_models(),
+                    value="DIA",  # Set DIA as default
                     elem_classes="hintitem", elem_id="tts_infer_model", key="tts_infer_model"
                 )
                 
                 tts_language = gr.Dropdown(
                     label="Language",
-                    choices=supported_language_codes,  # Default to Zonos languages
-                    value="en-us",  # Default for Zonos
+                    choices=["en"],  # Default to English for DIA
+                    value="en",  # Default for DIA
                     elem_classes="hintitem", elem_id="tts_infer_language", key="tts_infer_language"
                 )
                 
-                # Add emotion dropdown for Zonos
+                # Add emotion dropdown for Zonos (initially hidden since DIA is default)
                 emotion_dropdown = gr.Dropdown(
                     label="Emotion",
                     choices=["Normal"] + list(EMOTION_MAP.keys()),
                     value="Normal",
-                    visible=True,  # Initially visible since Zonos is default
+                    visible=False,  # Initially hidden since DIA is default
                     elem_classes="hintitem", elem_id="tts_infer_emotion", key="tts_infer_emotion"
                 )
                 
@@ -388,8 +575,17 @@ def render_tts():
                     label="Speaker",
                     choices=available_speakers,
                     value=selected_speaker,
-                    visible=False,  # Initially hidden since Zonos is default
+                    visible=False,  # Initially hidden since DIA is default
                     elem_classes="hintitem", elem_id="tts_infer_speaker", key="tts_infer_speaker"
+                )
+                
+                # Add DIA prompt textbox
+                dia_prompt_text = gr.Textbox(
+                    label="Voice Clone Prompt (Optional)",
+                    placeholder="For voice cloning, enter the transcript that matches your speaker audio. Use the same [S1]/[S2] format.",
+                    lines=3,
+                    visible=True,  # Initially visible since DIA is default
+                    elem_classes="hintitem", elem_id="tts_infer_dia_prompt", key="tts_infer_dia_prompt"
                 )
                 
                 speed_slider = gr.Slider(
@@ -403,8 +599,8 @@ def render_tts():
                 
                 input_text = gr.Textbox(
                     label="Input Text",
-                    placeholder="Enter text to synthesize. For Zonos, you can include [Emotion] tags.",
-                    lines=3,
+                    placeholder="Enter text to synthesize with DIA. Use [S1] and [S2] tags for different speakers.\nYou can include non-verbal sounds in parentheses like (laughs), (coughs), etc.",
+                    lines=5,
                     elem_classes="hintitem", elem_id="tts_infer_input_text", key="tts_infer_input_text"
                 )
             with gr.Column():
@@ -442,12 +638,12 @@ def render_tts():
         tts_model.change(
             fn=toggle_ui_elements,
             inputs=[tts_model],
-            outputs=[tts_language, emotion_dropdown, speaker_list]
+            outputs=[tts_language, emotion_dropdown, speaker_list, dia_prompt_text, input_text]
         )
         
-        # Regular TTS model event handlers - only handle language change if model isn't Zonos
+        # Regular TTS model event handlers - only handle language change if model isn't a special model
         tts_language.change(
-            fn=lambda lang, model: update_tts_model(lang) if model != "Zonos" else gr.update(),
+            fn=lambda lang, model: update_tts_model(lang) if model not in ["Zonos", "DIA"] else gr.update(),
             inputs=[tts_language, tts_model],
             outputs=[tts_model]
         )
@@ -462,7 +658,7 @@ def render_tts():
         # Generation button
         start_tts.click(
             fn=generate_tts,
-            inputs=[tts_model, input_text, tts_language, emotion_dropdown, speaker_wav, speaker_list, speed_slider],
+            inputs=[tts_model, input_text, tts_language, emotion_dropdown, speaker_wav, dia_prompt_text, speaker_list, speed_slider],
             outputs=[OUTPUT_AUDIO]
         )
 
@@ -859,15 +1055,16 @@ def register_api_endpoints(api):
 def register_descriptions(arg_handler: ArgHandler):
     descriptions = {
         "infer_language": "Select the language for text-to-speech synthesis.",
-        "infer_model": "Choose the TTS model to use for generating speech. Zonos is an advanced emotional TTS model.",
+        "infer_model": "Choose the TTS model to use for generating speech. DIA is for realistic dialogues, Zonos for emotional synthesis.",
         "infer_speaker": "Select a speaker from the available voices for the chosen model. Not all models have multiple speakers.",
         "infer_speed": "Adjust the speed of speech output. 1.0 is normal speed.",
-        "infer_input_text": "Enter the text to be converted to speech. Supports multiple lines. For Zonos, you can include [Emotion] tags like [Happy], [Sad], [Angry], etc.",
-        "infer_speaker_wav": "Upload an audio file to provide a reference speaker voice. Should be 5-15s. Required for Zonos, optional for other models.",
+        "infer_input_text": "Enter the text to be converted to speech. For DIA, use [S1]/[S2] tags to indicate different speakers and parentheses for non-verbal sounds like (laughs).",
+        "infer_speaker_wav": "Upload an audio file to provide a reference speaker voice. Should be 5-15s. Enables voice cloning for DIA and Zonos.",
         "infer_start_button": "Click to generate speech from the input text using the selected model and speaker.",
         "infer_send_to_process": "Send the generated speech output for further processing.",
         "infer_output_audio": "The synthesized speech output will be displayed here as an audio file.",
-        "infer_emotion": "Select an overall emotion for Zonos TTS or choose Normal (default) which lets text brackets control emotion."
+        "infer_emotion": "Select an overall emotion for Zonos TTS or choose Normal (default) which lets text brackets control emotion.",
+        "infer_dia_prompt": "For DIA voice cloning, enter the transcript that matches your reference audio. Use [S1]/[S2] tags as in the main input."
     }
     for elem_id, description in descriptions.items():
         arg_handler.register_description("tts", elem_id, description)
