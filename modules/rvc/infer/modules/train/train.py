@@ -107,7 +107,12 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     if rank == 0:
         logger.info(hps)
 
-    dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
+    # Only do this if torch is compiled with libuv
+    if hasattr(torch, 'distributed') and torch.distributed.is_initialized():
+        dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
+    else:
+        logger.warning("torch.distributed is not initialized. Skipping distributed setup.")
+
     torch.manual_seed(hps.train.seed)
 
     if hps.if_f0 == 1:
