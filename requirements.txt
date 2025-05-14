@@ -1,31 +1,35 @@
 ./wheels/audiosr-0.0.9-py3-none-any.whl
 ./wheels/dctorch-0.1.2-py3-none-any.whl
 ./wheels/coqui_tts-0.26.0-py3-none-any.whl
-./wheels/fairseq-0.12.3-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
+./wheels/fairseq-0.12.3-cp310-cp310-win_amd64.whl; sys_platform == "win32"
 ./wheels/laion_clap-1.1.5-py3-none-any.whl
 ./wheels/openvoice_cli-0.0.6-py3-none-any.whl
 ./wheels/stable_audio_tools-0.0.20-py3-none-any.whl
 accelerate>=0.34.2
 causal_conv1d==1.5.0.post8; sys_platform != "win32"
 chardet
+click
 cn2an
 cog
+cutlet
 dataset
+datasets>=3.4.1
 demucs>=4.0.1
 descript-audio-codec==1.0.0
 descript-audiotools==0.7.2
 diffusers>=0.32.2
 einops>=0.8.0
-fairseq==0.2.2; sys_platform != "win32"
-faiss-cpu>=1.11.0; sys_platform == "win32"
-faiss-gpu>=1.7.2; sys_platform != "win32"
+fairseq>=0.12.2; sys_platform != "win32"
+faiss-cpu>=1.11.0
 ffmpeg
 ffmpeg-python
 ffmpeg_progress_yield
 flash_attn==2.7.4.post1; sys_platform != "win32"
 ftfy>=6.3.1
+fugashi[unidic-lite]
 git+https://github.com/Deathdadev/Orpheus-Speech-PyPi
 gradio>=5.29.0
+hangul-romanize>=0.1.0
 hf_xet
 https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
 https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
@@ -44,6 +48,7 @@ ml_collections
 muq>=0.1.0
 mutagen>=1.47.0
 ninja
+num2words>=0.5.14
 numpy==2.0.2
 omegaconf
 onnx
@@ -57,8 +62,10 @@ progressbar
 protobuf
 psola
 py3langid
+py3langid>=0.3.0
 pydub>=0.25.1
 pyloudnorm>=0.1.1
+pypinyin>=0.53.0
 pyworld
 pyyaml
 reathon

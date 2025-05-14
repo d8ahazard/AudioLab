@@ -175,4 +175,3 @@ if (-not (Test-Path '.\espeak-ng.msi')) {
 }
 
 Write-Success "All dependencies installed successfully!"
-Read-Host -Prompt "Press Enter to exit"
