@@ -4,7 +4,9 @@ import os
 import time
 
 import torch
+
 from TTS.api import TTS
+from TTS.utils.manage import ModelManager
 
 from handlers.config import output_path, model_path
 
@@ -16,7 +18,8 @@ class TTSHandler:
         self.language = language
         # Get device
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_dict = TTS().list_models().models_dict
+        self.model_manager = ModelManager(models_file=TTS.get_models_file_path(), progress_bar=False)
+        self.model_dict = self.model_manager.models_dict
         self.tts_models = self.model_dict.get("tts_models", {})
         self.tts_languages = [key for key in self.tts_models.keys() if key != "multilingual"]
         self.selected_model = None
