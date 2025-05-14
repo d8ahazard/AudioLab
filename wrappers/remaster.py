@@ -5,6 +5,8 @@ import matchering as mg
 
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
+from pydub import AudioSegment
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,16 @@ class Remaster(BaseWrapper):
         )
     }
 
+    def convert_to_wav(self, input_file: str) -> str:
+        """Convert an audio file to a WAV file."""
+        with open(input_file, "rb") as f:
+            audio_data = f.read()
+        # Convert to WAV using pydub
+        audio = AudioSegment.from_file(input_file)
+        output_file = os.path.splitext(input_file)[0] + ".wav"
+        audio.export(output_file, format="wav")
+        return output_file
+
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, Any]) -> List[ProjectFiles]:
         reference_file = kwargs.get("reference_track")
         use_source_track_as_reference = kwargs.get("use_source_track_as_reference")
@@ -47,6 +59,9 @@ class Remaster(BaseWrapper):
                 for input_file in input_files:
                     logger.info(f"Remastering {input_file}")
                     callback(callback_step, f"Remastering {input_file}", len(inputs))
+                    # Ensure the input file is a WAV file, if not, convert it
+                    if not input_file.endswith(".wav"):
+                        input_file = self.convert_to_wav(input_file)
                     inputs_name, inputs_ext = os.path.splitext(os.path.basename(input_file))
                     output_file = os.path.join(output_folder, f"{inputs_name}(Remastered){inputs_ext}")
                     mg.process(

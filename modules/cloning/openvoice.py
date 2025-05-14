@@ -10,6 +10,7 @@ import gc
 import logging
 import shutil
 import torch
+import traceback
 from typing import Optional
 from openvoice_cli.api import ToneColorConverter
 import openvoice_cli.se_extractor as se_extractor
@@ -52,6 +53,7 @@ def initialize_openvoice():
     
     except Exception as e:
         logger.error(f"Failed to initialize OpenVoice: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 
@@ -105,6 +107,7 @@ def clone_voice(target_speaker_path: str, source_speaker_path: str, output_path:
         
     except Exception as e:
         logger.error(f"Error in OpenVoice cloning: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
     finally:
         # Clean up memory
