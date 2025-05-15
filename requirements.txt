@@ -40,6 +40,7 @@ https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash
 huggingface_hub>=0.27.1
 kanjize
 librosa>=0.11.0
+loguru==0.7.3
 mamba_ssm==2.2.4; sys_platform != "win32"
 matchering>=2.0.6
 matplotlib>=3.10.0
@@ -66,6 +67,7 @@ py3langid>=0.3.0
 pydub>=0.25.1
 pyloudnorm>=0.1.1
 pypinyin>=0.53.0
+pytorch_lightning==2.5.1
 pyworld
 pyyaml
 reathon
@@ -79,6 +81,7 @@ sudachipy>=0.6.10
 tensorboardX
 thinc>=8.3.6
 timm>=0.9.7
+torchao
 torchcrepe
 torchdiffeq>=0.2.5
 torchlibrosa>=0.1.0

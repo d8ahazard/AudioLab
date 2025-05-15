@@ -19,6 +19,7 @@ from layouts.rvc_train import register_api_endpoints as register_rvc_endpoints
 from layouts.stable_audio import register_api_endpoints as register_stable_audio_endpoints
 from layouts.transcribe import register_api_endpoints as register_transcribe_endpoints
 from layouts.tts import register_api_endpoints as register_tts_endpoints
+from modules.acestep.api import register_api_endpoints as register_acestep_endpoints
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
@@ -42,7 +43,7 @@ app = FastAPI(
 
     - **Audio Processing**: Separation, cloning, enhancement, and format conversion
     - **Voice Synthesis**: Multiple TTS engines including Orpheus for emotional synthesis
-    - **Music Generation**: Complete song generation with YuE, DiffRhythm, and Stable Audio
+    - **Music Generation**: Complete song generation with YuE, DiffRhythm, ACE-Step, and Stable Audio
     - **Training**: Custom voice models with RVC and DiffRhythm
     - **Utilities**: Transcription, project management, and multi-processing
 
@@ -95,6 +96,15 @@ app = FastAPI(
             - High-quality synthesis
             - Style control
             """
+        },
+        {
+            "name": "ACE-Step",
+            "description": """
+            ACE-Step music generation:
+            - Fast high-quality music generation
+            - Lyrics support with vocal singing
+            - LoRA-based specialized models
+            """
         }
     ]
 )
@@ -121,6 +131,7 @@ register_rvc_endpoints(app)
 register_stable_audio_endpoints(app)
 register_tts_endpoints(app)
 register_transcribe_endpoints(app)
+register_acestep_endpoints(app)
 
 def create_pydantic_model_from_wrapper(wrapper: BaseWrapper) -> BaseModel:
     """Create a Pydantic model from a wrapper's allowed_kwargs"""
