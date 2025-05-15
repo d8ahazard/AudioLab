@@ -505,27 +505,27 @@ def render(arg_handler: ArgHandler):
                     )
                 else:
                     # Run standard generation process
-                output_path, message = process(
-                    prompt=prompt,
-                    lyrics=lyrics if lyrics else "",
-                    audio_duration=duration,
-                        model_name=base_model,
-                    seed=seed if seed is not None else None,
-                    device_id=device_id,
-                    bf16=bf16,
-                    torch_compile=torch_compile,
-                    cpu_offload=cpu_offload,
-                    overlapped_decode=overlapped_decode,
-                    infer_step=infer_step,
-                    guidance_scale=guidance_scale,
-                    scheduler_type=scheduler_type,
-                    cfg_type=cfg_type,
-                    omega_scale=omega_scale,
-                        audio2audio_enable=audio2audio_enable,
-                        ref_audio_strength=ref_audio_strength,
-                        ref_audio_input=ref_audio_input,
-                    progress_callback=progress
-                )
+                    output_path, message = process(
+                        prompt=prompt,
+                        lyrics=lyrics if lyrics else "",
+                        audio_duration=duration,
+                            model_name=base_model,
+                        seed=seed if seed is not None else None,
+                        device_id=device_id,
+                        bf16=bf16,
+                        torch_compile=torch_compile,
+                        cpu_offload=cpu_offload,
+                        overlapped_decode=overlapped_decode,
+                        infer_step=infer_step,
+                        guidance_scale=guidance_scale,
+                        scheduler_type=scheduler_type,
+                        cfg_type=cfg_type,
+                        omega_scale=omega_scale,
+                            audio2audio_enable=audio2audio_enable,
+                            ref_audio_strength=ref_audio_strength,
+                            ref_audio_input=ref_audio_input,
+                        progress_callback=progress
+                    )
                 
                 return output_path, message
 
@@ -683,7 +683,7 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem"
                     )
                     
-                        with gr.Row():
+                    with gr.Row():
                         retake_send_to_process_btn = gr.Button(
                             "Send to Process",
                             elem_id="acestep_retake_send_to_process",
@@ -795,7 +795,7 @@ def render(arg_handler: ArgHandler):
                 "This is useful for fixing or improving particular parts of a song."
                             )
 
-                        with gr.Row():
+            with gr.Row():
                 # Left Column - Source & Settings
                 with gr.Column():
                     gr.Markdown("### 🔍 Source Audio")
@@ -828,7 +828,7 @@ def render(arg_handler: ArgHandler):
                     
                     gr.Markdown("### ⏱️ Selection Range")
                     
-                        with gr.Row():
+                    with gr.Row():
                         repaint_start_time = gr.Slider(
                             minimum=0,
                             maximum=60,
@@ -851,7 +851,7 @@ def render(arg_handler: ArgHandler):
                             
                     gr.Markdown("### 🎛️ Repaint Settings")
                     
-                        with gr.Row():
+                    with gr.Row():
                         repaint_strength = gr.Slider(
                             minimum=0.1,
                             maximum=1.0,
@@ -896,7 +896,7 @@ def render(arg_handler: ArgHandler):
                                 elem_classes="hintitem"
                             )
                             
-                        with gr.Row():
+                    with gr.Row():
                         repaint_send_to_process_btn = gr.Button(
                             "Send to Process",
                             elem_id="acestep_repaint_send_to_process",
