@@ -1,13 +1,8 @@
 import os
 import logging
-from pathlib import Path
-import tempfile
-import torch
 
 import gradio as gr
-from torch import Tensor
 from huggingface_hub import hf_hub_download
-import torchaudio
 
 from handlers.args import ArgHandler
 from handlers.tts import TTSHandler
