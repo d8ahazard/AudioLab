@@ -24,8 +24,8 @@ OUTPUT_AUDIO = None
 
 def fetch_model(model_name):
     model_dir = os.path.join(model_path, "whisperx", model_name)
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir, exist_ok=True)
+    is_model_dir_empty = os.path.exists(model_dir) and not os.listdir(model_dir)
+    if not os.path.exists(model_dir) or is_model_dir_empty:
         model_url = f"openai/whisper-{model_name}"
         logger.info(f"Downloading model {model_name} from {model_url} to {model_dir}")
         return snapshot_download(model_url, local_dir=model_dir)
