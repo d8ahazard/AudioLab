@@ -130,7 +130,7 @@ def process_transcription(
                 # 3. Assign speaker labels if requested
                 if assign_speakers:
                     progress(current_step/total_steps, f"Assigning speakers for {file_name}")
-                    dia_model_path = fetch_model("pyannote/speaker-diarization-3.1")
+                    dia_model_path = fetch_model("fatymatariq/speaker-diarization-3.1")
                     # Fix: Use the correct import path for DiarizationPipeline
                     diarize_model = whisperx.diarize.DiarizationPipeline(model_name=dia_model_path, device=device)
                     
