@@ -23,14 +23,21 @@ OUTPUT_TRANSCRIPTION = None
 OUTPUT_AUDIO = None
 
 def fetch_model(model_name):
+    """
+    Download the model if needed and return the path to the local model directory.
+    """
+    # Create the directory where models will be stored
     model_dir = os.path.join(model_path, "whisperx", model_name)
     is_model_dir_empty = os.path.exists(model_dir) and not os.listdir(model_dir)
+    
+    # Download the model if it doesn't exist or the directory is empty
     if not os.path.exists(model_dir) or is_model_dir_empty:
         model_url = f"openai/whisper-{model_name}"
         logger.info(f"Downloading model {model_name} from {model_url} to {model_dir}")
-        return snapshot_download(model_url, local_dir=model_dir)
-    else:
-        return model_dir
+        snapshot_download(model_url, local_dir=model_dir)
+    
+    # Return the local model directory path
+    return model_dir
 
 def process_transcription(
     audio_files,
@@ -70,9 +77,16 @@ def process_transcription(
         os.makedirs(output_folder, exist_ok=True)
         
         progress(0, "Loading transcription model...")
+        # Get the local model directory path
         model_dir = fetch_model("large-v3")
         logger.info(f"Model directory: {model_dir}")
-        model = whisperx.load_model(model_dir, device, compute_type=compute_type)
+        
+        # Load the model directly from the local path
+        model = whisperx.load_model(
+            model_dir,
+            device, 
+            compute_type=compute_type
+        )
         
         # Process each audio file
         for audio_idx, audio_file in enumerate(audio_files):
