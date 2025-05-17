@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import shutil
 
 import gradio as gr
 from huggingface_hub import snapshot_download
@@ -452,61 +453,118 @@ def render(arg_handler: ArgHandler):
                 
             # If the selected file is a text file, show its content
             if selected_file.endswith(".txt"):
-                with open(selected_file, "r") as f:
-                    content = f.read()
-                return content, gr.update(visible=False)
+                try:
+                    with open(selected_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    return content, gr.update(visible=False)
+                except Exception as e:
+                    return f"Error loading text file: {str(e)}", gr.update(visible=False)
                 
             # If it's a JSON file, format its content
             elif selected_file.endswith(".json"):
-                with open(selected_file, "r") as f:
-                    data = json.load(f)
-                
-                # Format the JSON content for display
-                content = "# Transcription Results\n\n"
-                for segment in data.get("segments", []):
-                    speaker = segment.get("speaker", "")
-                    text = segment.get("text", "")
-                    start = segment.get("start", 0)
-                    end = segment.get("end", 0)
+                try:
+                    with open(selected_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
                     
-                    if speaker:
-                        content += f"[{speaker}] ({start:.2f}s - {end:.2f}s): {text}\n"
+                    # Format the JSON content for display
+                    content = "# Transcription Results\n\n"
+                    
+                    # Handle missing or empty segments
+                    segments = data.get("segments", [])
+                    if not segments and isinstance(data, list):
+                        # Some JSON files might have segments as the root array
+                        segments = data
+                    
+                    if not segments:
+                        content += "No segments found in the transcription.\n"
                     else:
-                        content += f"({start:.2f}s - {end:.2f}s): {text}\n"
-                        
-                return content, gr.update(visible=False)
+                        for segment in segments:
+                            speaker = segment.get("speaker", "")
+                            text = segment.get("text", "")
+                            start = segment.get("start", 0)
+                            end = segment.get("end", 0)
+                            
+                            if speaker:
+                                content += f"[{speaker}] ({start:.2f}s - {end:.2f}s): {text}\n"
+                            else:
+                                content += f"({start:.2f}s - {end:.2f}s): {text}\n"
+                    
+                    return content, gr.update(visible=False)
+                except json.JSONDecodeError:
+                    return "Error: Invalid JSON format in the file.", gr.update(visible=False)
+                except Exception as e:
+                    return f"Error loading JSON file: {str(e)}", gr.update(visible=False)
                 
             # If it's an SRT or VTT file, show its content
             elif selected_file.endswith((".srt", ".vtt")):
-                with open(selected_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                return content, gr.update(visible=False)
+                try:
+                    with open(selected_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    return content, gr.update(visible=False)
+                except Exception as e:
+                    return f"Error loading subtitle file: {str(e)}", gr.update(visible=False)
                 
             # If it's an LRC file, format it nicely
             elif selected_file.endswith(".lrc"):
-                with open(selected_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                return content, gr.update(visible=False)
+                try:
+                    with open(selected_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    return content, gr.update(visible=False)
+                except Exception as e:
+                    return f"Error loading LRC file: {str(e)}", gr.update(visible=False)
                 
             # If it's an audio file, show the audio player
             elif selected_file.endswith((".wav", ".mp3", ".flac")):
-                return "", gr.update(visible=True, value=selected_file)
+                if os.path.exists(selected_file):
+                    return "", gr.update(visible=True, value=selected_file)
+                else:
+                    return "Error: Audio file not found.", gr.update(visible=False)
                 
-            return "", gr.update(visible=False)
+            return f"Unsupported file type: {os.path.basename(selected_file)}", gr.update(visible=False)
 
         # Function to populate file dropdown when transcription files are available
         def populate_file_dropdown(file_list):
             if not file_list:
                 return gr.update(choices=[], value=None, visible=False)
             
+            # Create a more descriptive display for each file
+            choices = []
+            for file_path in file_list:
+                if not os.path.exists(file_path):
+                    continue
+                
+                filename = os.path.basename(file_path)
+                ext = os.path.splitext(filename)[1].lower()
+                
+                # Create a more informative display name based on file type
+                if ext == ".txt":
+                    display_name = f"{filename} (Plain Text)"
+                elif ext == ".json":
+                    display_name = f"{filename} (JSON Data)"
+                elif ext == ".srt":
+                    display_name = f"{filename} (SubRip Subtitles)"
+                elif ext == ".vtt":
+                    display_name = f"{filename} (WebVTT Subtitles)"
+                elif ext == ".lrc":
+                    display_name = f"{filename} (LRC Lyrics)"
+                elif ext in [".wav", ".mp3", ".flac"]:
+                    display_name = f"{filename} (Audio)"
+                else:
+                    display_name = filename
+                
+                choices.append((display_name, file_path))
+            
+            if not choices:
+                return gr.update(choices=[], value=None, visible=False)
+            
             # Find .txt files in the list - we'll prioritize these
-            txt_files = [f for f in file_list if f.endswith(".txt")]
+            txt_files = [path for _, path in choices if path.endswith(".txt")]
             if txt_files:
                 default_file = txt_files[0]  # Select the first txt file by default
             else:
-                default_file = file_list[0]
+                default_file = choices[0][1]  # Select the first file
                 
-            return gr.update(choices=file_list, value=default_file, visible=True)
+            return gr.update(choices=choices, value=default_file, visible=True)
             
         # Event handler for the transcribe button
         transcribe_button.click(
@@ -628,6 +686,21 @@ def register_api_endpoints(api):
         temperature: float = Field(
             0.0, description="Sampling temperature", ge=0.0, le=1.0
         )
+        align_output: bool = Field(
+            True, description="Whether to align the transcription with the audio for precise timestamps"
+        )
+        assign_speakers: bool = Field(
+            False, description="Whether to detect and assign different speakers in the audio"
+        )
+        min_speakers: Optional[int] = Field(
+            None, description="Minimum number of speakers to detect (optional)"
+        )
+        max_speakers: Optional[int] = Field(
+            None, description="Maximum number of speakers to detect (optional)"
+        )
+        return_char_alignments: bool = Field(
+            False, description="Whether to generate character-level timestamps"
+        )
         timestamp_granularities: Optional[List[str]] = Field(
             None, description="Timestamp granularity levels"
         )
@@ -737,7 +810,7 @@ def register_api_endpoints(api):
         """
         Transcribe audio to text
         
-        This endpoint transcribes the uploaded audio file to text using the Whisper model.
+        This endpoint transcribes the uploaded audio file to text using the WhisperX model.
         """
         try:
             # Check file size limit (25MB)
@@ -766,133 +839,256 @@ def register_api_endpoints(api):
             timestamp = int(time.time())
             
             # Create output directory if it doesn't exist
-            transcription_dir = os.path.join(output_path, "transcriptions")
-            os.makedirs(transcription_dir, exist_ok=True)
+            output_folder = os.path.join(output_path, "transcriptions", f"api_{transcription_id}")
+            os.makedirs(output_folder, exist_ok=True)
             
-            # Initialize transcription engine
-            transcriber = WhisperTranscriber()
-            
-            # Perform transcription
-            result = transcriber.transcribe(
-                audio_file=temp_audio_path,
-                model=request.model,
-                language=request.language,
-                prompt=request.prompt,
-                response_format=request.response_format,
-                temperature=request.temperature,
-                timestamp_granularities=request.timestamp_granularities
-            )
-            
-            # Clean up temporary file
-            if os.path.exists(temp_audio_path):
-                os.remove(temp_audio_path)
-            
-            if not result.get("success", False):
-                raise HTTPException(status_code=500, detail=result.get("error", "Failed to transcribe audio"))
-            
-            # Get transcription data
-            transcription_data = result.get("transcription")
-            if not transcription_data:
-                raise HTTPException(status_code=500, detail="No transcription data generated")
-            
-            # Save transcription results based on format
-            if request.response_format == "json":
-                output_filename = f"transcription_{transcription_id}.json"
-                output_filepath = os.path.join(transcription_dir, output_filename)
-                with open(output_filepath, "w", encoding="utf-8") as f:
-                    json.dump(transcription_data, f, indent=2, ensure_ascii=False)
-            
-            elif request.response_format == "verbose_json":
-                output_filename = f"transcription_{transcription_id}.json"
-                output_filepath = os.path.join(transcription_dir, output_filename)
-                with open(output_filepath, "w", encoding="utf-8") as f:
-                    json.dump(transcription_data, f, indent=2, ensure_ascii=False)
-            
-            elif request.response_format in ["text", "srt", "vtt"]:
-                output_filename = f"transcription_{transcription_id}.{request.response_format}"
-                output_filepath = os.path.join(transcription_dir, output_filename)
-                with open(output_filepath, "w", encoding="utf-8") as f:
-                    f.write(transcription_data)
-            
-            # Create download URL
-            download_url = f"/api/v1/audio/transcription/download/{output_filename}"
-            
-            # Get file size
-            file_size = os.path.getsize(output_filepath)
-            
-            # Save metadata
-            metadata_filename = f"transcription_{transcription_id}_metadata.json"
-            metadata_filepath = os.path.join(transcription_dir, metadata_filename)
-            
-            metadata = {
-                "id": transcription_id,
-                "timestamp": timestamp,
-                "original_filename": temp_audio_filename,
-                "model": request.model,
-                "language": request.language,
-                "prompt": request.prompt,
-                "response_format": request.response_format,
-                "temperature": request.temperature,
-                "timestamp_granularities": request.timestamp_granularities,
-                "output_file": {
-                    "filename": output_filename,
-                    "format": request.response_format,
-                    "download_url": download_url,
-                    "file_size_bytes": file_size
-                }
-            }
-            
-            with open(metadata_filepath, "w") as f:
-                json.dump(metadata, f, indent=2)
-            
-            # Schedule file deletions after 24 hours
-            if background_tasks:
-                background_tasks.add_task(
-                    lambda p: os.remove(p) if os.path.exists(p) else None,
-                    output_filepath,
-                    delay=86400  # 24 hours
+            # Process using WhisperX
+            try:
+                # Determine language
+                language = request.language if request.language else "auto"
+                
+                # Set other parameters
+                align_output = True  # Always align for better accuracy
+                assign_speakers = True if request.timestamp_granularities and "speaker" in request.timestamp_granularities else False
+                return_char_alignments = True if request.timestamp_granularities and "character" in request.timestamp_granularities else False
+                min_speakers = None
+                max_speakers = None
+                batch_size = 16
+                compute_type = "float16"
+                
+                # Get the local model directory path for WhisperX
+                model_dir = fetch_model("Systran/faster-whisper-large-v3")
+                logger.info(f"Model directory: {model_dir}")
+                
+                # Load the model directly from the local path
+                device = "cuda"
+                model = whisperx.load_model(
+                    model_dir,
+                    device, 
+                    compute_type=compute_type
                 )
                 
-                background_tasks.add_task(
-                    lambda p: os.remove(p) if os.path.exists(p) else None,
-                    metadata_filepath,
-                    delay=86400  # 24 hours
+                # Transcribe
+                audio = whisperx.load_audio(temp_audio_path)
+                
+                # Determine language if set to auto
+                detect_language = language == "auto"
+                result = model.transcribe(
+                    audio, 
+                    batch_size=batch_size,
+                    language=None if detect_language else language
                 )
-            
-            # Prepare response
-            # For text format, include the text content directly
-            transcription_content = None
-            if request.response_format == "text":
-                transcription_content = transcription_data
-            elif request.response_format in ["json", "verbose_json"]:
-                transcription_content = transcription_data
-            
-            response_data = {
-                "success": True,
-                "transcription_id": transcription_id,
-                "output_file": {
-                    "filename": output_filename,
-                    "format": request.response_format,
-                    "download_url": download_url,
-                    "file_size_bytes": file_size
-                },
-                "metadata": {
-                    "original_filename": temp_audio_filename,
-                    "model": request.model,
-                    "language": request.language,
-                    "prompt": request.prompt,
-                    "response_format": request.response_format,
-                    "temperature": request.temperature,
-                    "timestamp_granularities": request.timestamp_granularities,
-                    "timestamp": timestamp
+                
+                # Align if needed
+                if align_output:
+                    model_a, metadata = whisperx.load_align_model(
+                        language_code=result["language"], 
+                        device=device
+                    )
+                    result = whisperx.align(
+                        result["segments"], 
+                        model_a, 
+                        metadata, 
+                        audio, 
+                        device,
+                        return_char_alignments=return_char_alignments
+                    )
+                    # Clean up alignment model to save memory
+                    del model_a
+                    gc.collect()
+                
+                # Assign speaker labels if requested
+                if assign_speakers:
+                    dia_model_path = fetch_model("fatymatariq/speaker-diarization-3.1")
+                    dia_model_path = os.path.join(dia_model_path, "config.yaml")
+                    diarize_model = whisperx.diarize.DiarizationPipeline(model_name=dia_model_path, device=device)
+                    
+                    diarize_segments = diarize_model(audio)
+                    result = whisperx.assign_word_speakers(diarize_segments, result)
+                    
+                    # Clean up diarization model
+                    del diarize_model
+                    gc.collect()
+                
+                # Generate output in all formats
+                output_files = {}
+                
+                # JSON output
+                output_json = os.path.join(output_folder, f"transcript.json")
+                with open(output_json, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=4, ensure_ascii=False)
+                output_files["json"] = output_json
+                
+                # Plain text output
+                output_txt = os.path.join(output_folder, f"transcript.txt")
+                with open(output_txt, 'w', encoding='utf-8') as f:
+                    if assign_speakers and "speaker" in result["segments"][0]:
+                        for segment in result["segments"]:
+                            speaker = segment.get("speaker", "UNKNOWN")
+                            text = segment["text"]
+                            start = segment["start"]
+                            end = segment["end"]
+                            f.write(f"[{speaker}] ({start:.2f}s - {end:.2f}s): {text}\n")
+                    else:
+                        for segment in result["segments"]:
+                            text = segment["text"]
+                            start = segment["start"]
+                            end = segment["end"]
+                            f.write(f"({start:.2f}s - {end:.2f}s): {text}\n")
+                output_files["text"] = output_txt
+                
+                # SRT output
+                output_srt = os.path.join(output_folder, f"transcript.srt")
+                with open(output_srt, 'w', encoding='utf-8') as f:
+                    for i, segment in enumerate(result["segments"]):
+                        # SubRip index (starts at 1)
+                        f.write(f"{i+1}\n")
+                        
+                        # Format timestamps as HH:MM:SS,mmm --> HH:MM:SS,mmm
+                        start_time = segment["start"]
+                        end_time = segment["end"]
+                        
+                        start_hrs = int(start_time // 3600)
+                        start_mins = int((start_time % 3600) // 60)
+                        start_secs = int(start_time % 60)
+                        start_ms = int((start_time % 1) * 1000)
+                        
+                        end_hrs = int(end_time // 3600)
+                        end_mins = int((end_time % 3600) // 60)
+                        end_secs = int(end_time % 60)
+                        end_ms = int((end_time % 1) * 1000)
+                        
+                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d},{start_ms:03d} --> "
+                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d},{end_ms:03d}"
+                        f.write(f"{timestamp_line}\n")
+                        
+                        # Text content, with speaker if available
+                        text = segment["text"].strip()
+                        if assign_speakers and "speaker" in segment:
+                            text = f"[{segment['speaker']}] {text}"
+                        f.write(f"{text}\n\n")
+                output_files["srt"] = output_srt
+                
+                # VTT output
+                output_vtt = os.path.join(output_folder, f"transcript.vtt")
+                with open(output_vtt, 'w', encoding='utf-8') as f:
+                    # Write VTT header
+                    f.write("WEBVTT\n\n")
+                    
+                    for i, segment in enumerate(result["segments"]):
+                        # Format timestamps as HH:MM:SS.mmm --> HH:MM:SS.mmm (note: VTT uses . instead of , for milliseconds)
+                        start_time = segment["start"]
+                        end_time = segment["end"]
+                        
+                        start_hrs = int(start_time // 3600)
+                        start_mins = int((start_time % 3600) // 60)
+                        start_secs = int(start_time % 60)
+                        start_ms = int((start_time % 1) * 1000)
+                        
+                        end_hrs = int(end_time // 3600)
+                        end_mins = int((end_time % 3600) // 60)
+                        end_secs = int(end_time % 60)
+                        end_ms = int((end_time % 1) * 1000)
+                        
+                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d}.{start_ms:03d} --> "
+                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d}.{end_ms:03d}"
+                        
+                        # Optionally add cue identifier
+                        cue_id = f"cue-{i+1}"
+                        f.write(f"{cue_id}\n")
+                        f.write(f"{timestamp_line}\n")
+                        
+                        # Text content, with speaker if available
+                        text = segment["text"].strip()
+                        if assign_speakers and "speaker" in segment:
+                            text = f"[{segment['speaker']}] {text}"
+                        f.write(f"{text}\n\n")
+                output_files["vtt"] = output_vtt
+                
+                # LRC output
+                output_lrc = os.path.join(output_folder, f"transcript.lrc")
+                with open(output_lrc, 'w', encoding='utf-8') as f:
+                    for segment in result["segments"]:
+                        # Convert seconds to MM:SS.xx format
+                        start_time = segment["start"]
+                        minutes = int(start_time // 60)
+                        seconds = start_time % 60
+                        timestamp = f"[{minutes:02d}:{seconds:05.2f}]"
+                        
+                        # Add speaker label if available
+                        text = segment["text"].strip()
+                        if assign_speakers and "speaker" in segment:
+                            text = f"[{segment['speaker']}] {text}"
+                        
+                        f.write(f"{timestamp}{text}\n")
+                output_files["lrc"] = output_lrc
+                
+                # Clean up the main model
+                del model
+                gc.collect()
+                
+                # Return the output based on the requested format
+                output_format = request.response_format.lower()
+                response_content = None
+                
+                if output_format == "json":
+                    with open(output_json, 'r', encoding='utf-8') as f:
+                        response_content = json.load(f)
+                elif output_format == "text":
+                    with open(output_txt, 'r', encoding='utf-8') as f:
+                        response_content = f.read()
+                elif output_format == "srt":
+                    with open(output_srt, 'r', encoding='utf-8') as f:
+                        response_content = f.read()
+                elif output_format == "vtt":
+                    with open(output_vtt, 'r', encoding='utf-8') as f:
+                        response_content = f.read()
+                
+                # Prepare download URLs for all formats
+                download_urls = {}
+                for format_name, file_path in output_files.items():
+                    filename = os.path.basename(file_path)
+                    download_urls[format_name] = f"/api/v1/audio/transcription/download/{transcription_id}/{format_name}"
+                
+                # Create response data
+                response_data = {
+                    "success": True,
+                    "transcription_id": transcription_id,
+                    "language": result.get("language", language),
+                    "output_formats": download_urls,
+                    "metadata": {
+                        "original_filename": temp_audio_filename,
+                        "model": request.model,
+                        "align_output": align_output,
+                        "assign_speakers": assign_speakers,
+                        "return_char_alignments": return_char_alignments,
+                        "timestamp": timestamp
+                    }
                 }
-            }
-            
-            # Include transcription content in the response
-            if transcription_content:
-                response_data["transcription"] = transcription_content
-            
-            return JSONResponse(content=jsonable_encoder(response_data))
+                
+                # Add the transcription content to the response if applicable
+                if response_content:
+                    response_data["transcription"] = response_content
+                
+                # Clean up temporary audio file
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
+                
+                # Schedule cleanup after 24 hours
+                if background_tasks:
+                    background_tasks.add_task(
+                        lambda p: shutil.rmtree(p) if os.path.exists(p) else None,
+                        output_folder,
+                        delay=86400  # 24 hours
+                    )
+                
+                return JSONResponse(content=jsonable_encoder(response_data))
+                
+            except Exception as e:
+                logger.exception(f"WhisperX transcription error: {e}")
+                import traceback
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=f"WhisperX transcription error: {str(e)}")
             
         except ValueError as e:
             # Handle validation errors
@@ -1076,45 +1272,51 @@ def register_api_endpoints(api):
             logger.exception(f"API translation error: {e}\n{traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @api.get("/api/v1/audio/transcription/download/{filename}", tags=["Audio Transcription"])
-    async def api_download_transcription(filename: str):
+    @api.get("/api/v1/audio/transcription/download/{transcription_id}/{format_name}", tags=["Audio Transcription"])
+    async def api_download_transcription(transcription_id: str, format_name: str):
         """
         Download a transcription file
         
         Parameters:
-        - filename: The name of the transcription file to download
+        - transcription_id: The ID of the transcription
+        - format_name: The format of the transcription file to download (json, text, srt, vtt, lrc)
         
         Returns:
         - The transcription file
         """
         try:
-            # Validate filename format (prevent path traversal)
-            valid_pattern = r'^transcription_[a-f0-9-]+\.(json|text|srt|vtt)$'
-            if not re.match(valid_pattern, filename):
-                raise HTTPException(status_code=400, detail="Invalid filename format")
+            # Validate transcription ID format
+            valid_id_pattern = r'^[a-f0-9-]+$'
+            if not re.match(valid_id_pattern, transcription_id):
+                raise HTTPException(status_code=400, detail="Invalid transcription ID format")
+            
+            # Validate format name
+            valid_formats = ["json", "text", "srt", "vtt", "lrc"]
+            if format_name not in valid_formats:
+                raise HTTPException(status_code=400, detail=f"Invalid format name. Must be one of: {', '.join(valid_formats)}")
             
             # Build the file path
-            file_path = os.path.join(output_path, "transcriptions", filename)
+            file_path = os.path.join(output_path, "transcriptions", f"api_{transcription_id}", f"transcript.{format_name}")
             
             # Check if file exists
             if not os.path.exists(file_path):
-                raise HTTPException(status_code=404, detail="Transcription file not found")
+                raise HTTPException(status_code=404, detail=f"Transcription file in {format_name} format not found")
             
-            # Determine content type based on file extension
-            file_ext = filename.split(".")[-1].lower()
+            # Determine content type based on format
             content_type_map = {
                 "json": "application/json",
                 "text": "text/plain",
                 "srt": "application/x-subrip",
-                "vtt": "text/vtt"
+                "vtt": "text/vtt",
+                "lrc": "text/plain"
             }
             
-            content_type = content_type_map.get(file_ext, "application/octet-stream")
+            content_type = content_type_map.get(format_name, "application/octet-stream")
             
             # Return the file
             return FileResponse(
                 path=file_path,
-                filename=filename,
+                filename=f"transcript.{format_name}",
                 media_type=content_type
             )
             
@@ -1181,6 +1383,35 @@ def register_api_endpoints(api):
         """
         models = [
             {
+                "id": "whisper-large-v3",
+                "name": "WhisperX (large-v3)",
+                "description": "Fast automatic speech recognition with word-level timestamps and speaker diarization",
+                "supported_languages": [
+                    {"code": "en", "name": "English"},
+                    {"code": "zh", "name": "Chinese"},
+                    {"code": "de", "name": "German"},
+                    {"code": "es", "name": "Spanish"},
+                    {"code": "ru", "name": "Russian"},
+                    {"code": "ko", "name": "Korean"},
+                    {"code": "fr", "name": "French"},
+                    {"code": "ja", "name": "Japanese"},
+                    {"code": "pt", "name": "Portuguese"},
+                    {"code": "tr", "name": "Turkish"},
+                    {"code": "pl", "name": "Polish"},
+                    {"code": "ca", "name": "Catalan"},
+                    {"code": "nl", "name": "Dutch"},
+                    {"code": "ar", "name": "Arabic"},
+                    {"code": "sv", "name": "Swedish"},
+                    {"code": "it", "name": "Italian"},
+                    {"code": "id", "name": "Indonesian"},
+                    {"code": "hi", "name": "Hindi"},
+                    {"code": "fi", "name": "Finnish"},
+                    {"code": "vi", "name": "Vietnamese"}
+                ],
+                "features": ["word-level-timestamps", "speaker-diarization", "character-level-timestamps"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc"]
+            },
+            {
                 "id": "whisper-1",
                 "name": "Whisper v1",
                 "description": "General-purpose speech recognition model supporting transcription in multiple languages",
@@ -1206,6 +1437,7 @@ def register_api_endpoints(api):
                     {"code": "fi", "name": "Finnish"},
                     {"code": "vi", "name": "Vietnamese"}
                 ],
+                "features": ["utterance-level-timestamps"],
                 "supported_formats": ["json", "text", "srt", "vtt", "verbose_json"]
             }
         ]
@@ -1222,14 +1454,14 @@ def register_api_endpoints(api):
             {
                 "id": "json",
                 "name": "JSON",
-                "description": "Simple JSON containing the transcription text (default)",
+                "description": "Simple JSON containing the transcription text with segments and timestamps (default)",
                 "mime_type": "application/json",
                 "extension": ".json"
             },
             {
                 "id": "text",
                 "name": "Text",
-                "description": "Plain text transcription",
+                "description": "Plain text transcription with timestamps",
                 "mime_type": "text/plain",
                 "extension": ".text"
             },
@@ -1246,6 +1478,13 @@ def register_api_endpoints(api):
                 "description": "WebVTT subtitle format with timestamps",
                 "mime_type": "text/vtt",
                 "extension": ".vtt"
+            },
+            {
+                "id": "lrc",
+                "name": "LRC",
+                "description": "Lyrics format with timestamps, compatible with media players",
+                "mime_type": "text/plain",
+                "extension": ".lrc"
             },
             {
                 "id": "verbose_json",
