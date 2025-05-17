@@ -170,20 +170,21 @@ if __name__ == '__main__':
                 with gr.Tabs(selected="process"):
                     with gr.Tab(label='Process', id="process"):
                         render_process(arg_handler)
-                    with gr.Tab(label="Train", id="train"):
+                    with gr.Tab(label="Train RVC", id="train"):
                         rvc_render()
                     with gr.Tab(label="Music", id="music"):
-                        render_music(arg_handler)
+                        with gr.Tab(label='ACE-Step', id="acestep"):
+                            render_acestep(arg_handler)                    
+                        with gr.Tab(label='DiffRhythm', id="diffrythm"):
+                            render_diffrythm(arg_handler)                    
+                        with gr.Tab(label='Stable-Audio', id="soundforge"):
+                            render_stable_audio(arg_handler)                    
+                        with gr.Tab(Label="YuE", id="yue"):                            
+                            render_music(arg_handler)                        
                     with gr.Tab(label='TTS', id="tts"):
                         render_tts()
-                    with gr.Tab(label='Sound Forge', id="soundforge"):
-                        render_stable_audio(arg_handler)
                     with gr.Tab(label='Orpheus', id="orpheus"):
                         render_orpheus(arg_handler)
-                    with gr.Tab(label='DiffRhythm', id="diffrythm"):
-                        render_diffrythm(arg_handler)
-                    with gr.Tab(label='ACE-Step', id="acestep"):
-                        render_acestep(arg_handler)
                     with gr.Tab(label='Transcribe', id="transcribe"):
                         render_transcribe(arg_handler)
                     with gr.Tab(label='WaveTransfer', id="wavetransfer"):
