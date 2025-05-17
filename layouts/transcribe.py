@@ -10,6 +10,8 @@ from huggingface_hub import snapshot_download
 import whisperx
 import tempfile
 import base64
+import torch
+import whisper
 
 from handlers.args import ArgHandler
 from handlers.config import output_path, model_path
@@ -23,27 +25,58 @@ SEND_TO_PROCESS_BUTTON = None
 OUTPUT_TRANSCRIPTION = None
 OUTPUT_AUDIO = None
 
-def fetch_model(tgt_model):
+def fetch_model(model_name, is_whisper=False):
     """
     Download the model if needed and return the path to the local model directory.
     
-    For HuggingFace models, this downloads the model to the local cache.
-    For OpenAI Whisper models, it returns the model name as is since they're handled differently.
+    For WhisperX models (is_whisper=False), downloads HuggingFace models to the local cache.
+    For OpenAI Whisper models (is_whisper=True), downloads from OpenAI's model URLs.
     """
-    # OpenAI Whisper models are handled differently - just return the model name
-    if tgt_model in ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo"]:
-        return tgt_model
+    if is_whisper:
+        # Handle OpenAI Whisper models
+        if model_name not in whisper._MODELS:
+            raise ValueError(f"Unknown Whisper model: {model_name}. Available models: {list(whisper._MODELS.keys())}")
+        
+        # Create whisper model directory
+        whisper_model_dir = os.path.join(model_path, "whisper")
+        os.makedirs(whisper_model_dir, exist_ok=True)
+        
+        # Check if model file exists
+        model_filename = f"{model_name}.pt"
+        model_path_local = os.path.join(whisper_model_dir, model_filename)
+        
+        if not os.path.exists(model_path_local):
+            # Model doesn't exist, download it
+            import urllib.request
+            model_url = whisper._MODELS[model_name]
+            logger.info(f"Downloading Whisper model {model_name} from {model_url} to {model_path_local}")
+            
+            # Create a temporary file for downloading
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as temp_file:
+                try:
+                    # Download the model
+                    urllib.request.urlretrieve(model_url, temp_file.name)
+                    # Move it to the final location
+                    shutil.move(temp_file.name, model_path_local)
+                except Exception as e:
+                    # Clean up the temp file if download fails
+                    if os.path.exists(temp_file.name):
+                        os.remove(temp_file.name)
+                    raise e
+        
+        # Return the model name as it will be loaded by whisper.load_model()
+        return model_name
     
-    # For HuggingFace models, download and return the path
-    model_name = tgt_model.split("/")[-1]
+    # Handle WhisperX models (HuggingFace models)
+    model_name_short = model_name.split("/")[-1]
     # Create the directory where models will be stored
-    model_dir = os.path.join(model_path, "whisperx", model_name)
+    model_dir = os.path.join(model_path, "whisperx", model_name_short)
     is_model_dir_empty = os.path.exists(model_dir) and not os.listdir(model_dir)
     
     # Download the model if it doesn't exist or the directory is empty
     if not os.path.exists(model_dir) or is_model_dir_empty:
-        logger.info(f"Downloading model {model_name} from {tgt_model} to {model_dir}")
-        snapshot_download(tgt_model, local_dir=model_dir)
+        logger.info(f"Downloading WhisperX model {model_name_short} from {model_name} to {model_dir}")
+        snapshot_download(model_name, local_dir=model_dir)
     
     # Return the local model directory path
     return model_dir
@@ -51,6 +84,7 @@ def fetch_model(tgt_model):
 def process_transcription(
     audio_files,
     engine="whisperx",
+    model_size="large-v3",
     language="auto",
     align_output=True,
     assign_speakers=True,
@@ -67,6 +101,7 @@ def process_transcription(
         if engine == "whisperx":
             return process_transcription_whisperx(
                 audio_files,
+                model_size=model_size,
                 language=language,
                 align_output=align_output,
                 assign_speakers=assign_speakers,
@@ -80,6 +115,7 @@ def process_transcription(
         elif engine == "whisper":
             return process_transcription_whisper(
                 audio_files,
+                model_size=model_size,
                 language=language,
                 assign_speakers=assign_speakers,
                 min_speakers=min_speakers,
@@ -97,6 +133,7 @@ def process_transcription(
 
 def process_transcription_whisperx(
     audio_files,
+    model_size="large-v3",
     language="auto",
     align_output=True,
     assign_speakers=True,
@@ -124,7 +161,7 @@ def process_transcription_whisperx(
         else:
             max_speakers = None
             
-        device = "cuda"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         results = []
         output_files = []
         
@@ -210,13 +247,13 @@ def process_transcription_whisperx(
                     gc.collect()
                 
                 # Generate output files
-                output_json, output_txt, output_lrc, output_srt, output_vtt = generate_output_files(
+                file_outputs = generate_output_files(
                     result, output_folder, base_name, assign_speakers
                 )
                 
                 # Store results and output files
                 results.append(result)
-                output_files.extend([output_json, output_txt, output_lrc, output_srt, output_vtt])
+                output_files.extend(file_outputs)
                 
             except Exception as e:
                 logger.exception(f"Error processing file {audio_file}: {e}")
@@ -236,6 +273,7 @@ def process_transcription_whisperx(
 
 def process_transcription_whisper(
     audio_files,
+    model_size="large-v3",
     language="auto",
     assign_speakers=True,
     min_speakers=None,
@@ -246,10 +284,6 @@ def process_transcription_whisper(
 ):
     """Transcribe audio files using OpenAI's Whisper with word-level timestamps and optional speaker diarization."""
     try:
-        # Import whisper
-        import whisper
-        import torch
-        
         # Initialize counters for progress tracking
         total_steps = len(audio_files) * (1 + (1 if assign_speakers else 0))
         current_step = 0
@@ -277,11 +311,11 @@ def process_transcription_whisper(
         os.makedirs(output_folder, exist_ok=True)
         
         progress(0, "Loading transcription model...")
-        # Use the model size based on compute_type
-        model_size = "large-v3"  # Default to large-v3 for best results
+        # Download the model
+        model_name = fetch_model(model_size, is_whisper=True)
         
         # Load the model
-        model = whisper.load_model(model_size, device=device)
+        model = whisper.load_model(model_name, device=device)
         logger.info(f"Loaded whisper {model_size} model on {device}")
         
         # Process each audio file
@@ -370,13 +404,13 @@ def process_transcription_whisper(
                     current_step += 1
                 
                 # Generate output files
-                output_json, output_txt, output_lrc, output_srt, output_vtt = generate_output_files(
+                file_outputs = generate_output_files(
                     result, output_folder, base_name, assign_speakers
                 )
                 
                 # Store results and output files
                 results.append(result)
-                output_files.extend([output_json, output_txt, output_lrc, output_srt, output_vtt])
+                output_files.extend(file_outputs)
                 
             except Exception as e:
                 logger.exception(f"Error processing file {audio_file}: {e}")
@@ -396,11 +430,14 @@ def process_transcription_whisper(
 
 def generate_output_files(result, output_folder, base_name, assign_speakers=False):
     """Generate output files in various formats from the transcription result."""
-    # Save results to files
+    output_files = []
+    
+    # Save results to JSON file
     output_json = os.path.join(output_folder, f"{base_name}.json")
     with open(output_json, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4, ensure_ascii=False)
-        
+    output_files.append(output_json)
+    
     # Generate text file with transcript
     output_txt = os.path.join(output_folder, f"{base_name}.txt")
     with open(output_txt, 'w', encoding='utf-8') as f:
@@ -418,6 +455,7 @@ def generate_output_files(result, output_folder, base_name, assign_speakers=Fals
                 start = segment["start"]
                 end = segment["end"]
                 f.write(f"({start:.2f}s - {end:.2f}s): {text}\n")
+    output_files.append(output_txt)
 
     # Generate LRC format file
     output_lrc = os.path.join(output_folder, f"{base_name}.lrc")
@@ -435,6 +473,7 @@ def generate_output_files(result, output_folder, base_name, assign_speakers=Fals
                 text = f"[{segment['speaker']}] {text}"
             
             f.write(f"{timestamp}{text}\n")
+    output_files.append(output_lrc)
     
     # Generate SRT (SubRip) format file
     output_srt = os.path.join(output_folder, f"{base_name}.srt")
@@ -466,6 +505,7 @@ def generate_output_files(result, output_folder, base_name, assign_speakers=Fals
             if assign_speakers and "speaker" in segment:
                 text = f"[{segment['speaker']}] {text}"
             f.write(f"{text}\n\n")
+    output_files.append(output_srt)
     
     # Generate VTT (WebVTT) format file
     output_vtt = os.path.join(output_folder, f"{base_name}.vtt")
@@ -501,8 +541,9 @@ def generate_output_files(result, output_folder, base_name, assign_speakers=Fals
             if assign_speakers and "speaker" in segment:
                 text = f"[{segment['speaker']}] {text}"
             f.write(f"{text}\n\n")
-            
-    return output_json, output_txt, output_lrc, output_srt, output_vtt
+    output_files.append(output_vtt)
+    
+    return output_files
 
 
 def render(arg_handler: ArgHandler):
@@ -527,6 +568,23 @@ def render(arg_handler: ArgHandler):
                     elem_classes="hintitem",
                     elem_id="transcribe_engine",
                     key="transcribe_engine"
+                )
+                
+                # Model selection dropdown - dynamically updated based on engine selection
+                model_size = gr.Dropdown(
+                    label="Model Size",
+                    choices=[
+                        ("large-v3 (Best quality)", "large-v3"),
+                        ("medium (Balanced)", "medium"),
+                        ("small (Faster)", "small"),
+                        ("base (Fast, less accurate)", "base"),
+                        ("tiny (Fastest, least accurate)", "tiny")
+                    ],
+                    value="large-v3",
+                    elem_classes="hintitem",
+                    elem_id="transcribe_model_size",
+                    key="transcribe_model_size",
+                    visible=False
                 )
                 
                 language = gr.Dropdown(
@@ -608,16 +666,37 @@ def render(arg_handler: ArgHandler):
                     char_align_visibility = engine_choice == "whisperx"
                     batch_visibility = engine_choice == "whisperx"
                     
+                    # Update model choices based on engine
+                    if engine_choice == "whisperx":
+                        model_choices = [
+                            ("large-v3 (Best quality)", "large-v3"),
+                            ("medium (Balanced)", "medium"),
+                            ("small (Faster)", "small"),
+                            ("base (Fast, less accurate)", "base")
+                        ]
+                    else:  # whisper
+                        model_choices = [
+                            ("large-v3 (Best quality)", "large-v3"),
+                            ("large-v2", "large-v2"),
+                            ("large", "large"),
+                            ("medium", "medium"),
+                            ("small", "small"),
+                            ("base", "base"),
+                            ("tiny", "tiny"),
+                            ("turbo (Fast & high quality)", "turbo")
+                        ]
+                    
                     return [
                         gr.update(visible=align_visibility),
                         gr.update(visible=char_align_visibility),
-                        gr.update(visible=batch_visibility)
+                        gr.update(visible=batch_visibility),
+                        gr.update(choices=model_choices)
                     ]
                 
                 engine.change(
                     fn=update_engine_options,
                     inputs=[engine],
-                    outputs=[align_output, return_char_alignments, batch_size]
+                    outputs=[align_output, return_char_alignments, batch_size, model_size]
                 )
             
             # Middle Column - Input
@@ -778,12 +857,44 @@ def render(arg_handler: ArgHandler):
                 
             return f"Unsupported file type: {os.path.basename(selected_file)}", gr.update(visible=False)
 
+        # Update file selector when transcription files are generated
+        def update_file_selector(output_files):
+            if not output_files:
+                return gr.update(choices=[], visible=False)
+            
+            # Get file choices with descriptive labels
+            file_choices = []
+            for file_path in output_files:
+                base_name = os.path.basename(file_path)
+                ext = os.path.splitext(base_name)[1].lower()
+                
+                if ext == ".json":
+                    label = f"{base_name} (JSON - raw data)"
+                elif ext == ".txt":
+                    label = f"{base_name} (Text - readable transcript)"
+                elif ext == ".srt":
+                    label = f"{base_name} (SRT - subtitle format)"
+                elif ext == ".vtt":
+                    label = f"{base_name} (VTT - web subtitle format)"
+                elif ext == ".lrc":
+                    label = f"{base_name} (LRC - lyrics format)"
+                else:
+                    label = base_name
+                
+                file_choices.append((label, file_path))
+            
+            # Select the txt file by default if it exists
+            default_value = next((path for label, path in file_choices if path.endswith(".txt")), None)
+            
+            return gr.update(choices=file_choices, value=default_value, visible=True)
+
         # Event handler for the transcribe button
         transcribe_button.click(
             fn=process_transcription,
             inputs=[
                 input_audio,
                 engine,
+                model_size,
                 language,
                 align_output,
                 assign_speakers,
@@ -794,6 +905,20 @@ def render(arg_handler: ArgHandler):
                 return_char_alignments
             ],
             outputs=[status_display, OUTPUT_TRANSCRIPTION]
+        )
+        
+        # Update file selector when transcription files are available
+        OUTPUT_TRANSCRIPTION.change(
+            fn=update_file_selector,
+            inputs=[OUTPUT_TRANSCRIPTION],
+            outputs=[file_selector]
+        )
+        
+        # Update preview when a file is selected
+        file_selector.change(
+            fn=update_preview,
+            inputs=[file_selector],
+            outputs=[output_text, OUTPUT_AUDIO]
         )
 
 
@@ -824,6 +949,7 @@ def register_descriptions(arg_handler: ArgHandler):
     """Register descriptions for UI elements"""
     descriptions = {
         "engine": "Select the transcription engine to use. WhisperX is faster and supports more features, while original Whisper might be better for some languages.",
+        "model_size": "Select the size/version of the model to use. Larger models are more accurate but require more resources and time.",
         "language": "Select the language of the audio for better transcription accuracy, or choose 'auto' for automatic detection.",
         "align_output": "Enable to align the transcription with the audio for precise timestamps (WhisperX only).",
         "assign_speakers": "Enable to detect and assign different speakers in the audio.",
@@ -915,7 +1041,11 @@ def register_api_endpoints(api):
         
         @validator('model')
         def validate_model(cls, v):
-            valid_models = ["whisper-1", "whisper-large-v3"]
+            valid_models = [
+                "whisper-1", "whisper-large-v3", "whisper-large-v2", "whisper-large", 
+                "whisper-medium", "whisper-small", "whisper-base", "whisper-tiny",
+                "whisper-turbo"
+            ]
             if v not in valid_models:
                 raise ValueError(f"Model must be one of: {', '.join(valid_models)}")
             return v
@@ -1045,12 +1175,19 @@ def register_api_endpoints(api):
             # Generate a unique ID for this transcription
             transcription_id = str(uuid.uuid4())
             
+            # Extract model information - use large-v3 as default
+            model_size = "large-v3"
+            if request.model.startswith("whisper-"):
+                # Convert whisper-large-v3 to large-v3
+                model_size = request.model.split("whisper-", 1)[1]
+            
             # Process using the selected transcription engine
             try:
                 # Use the common process_transcription function
                 summary, output_files = process_transcription(
                     audio_files=[temp_audio_path],
                     engine=request.engine,
+                    model_size=model_size,
                     language=request.language if request.language else "auto",
                     align_output=request.align_output,
                     assign_speakers=request.assign_speakers,
@@ -1446,6 +1583,7 @@ def register_api_endpoints(api):
                 "id": "whisperx-large-v3",
                 "name": "WhisperX (large-v3)",
                 "engine": "whisperx",
+                "model_size": "large-v3",
                 "description": "Fast automatic speech recognition with word-level timestamps and speaker diarization",
                 "supported_languages": [
                     {"code": "en", "name": "English"},
@@ -1472,12 +1610,40 @@ def register_api_endpoints(api):
                 "features": ["word-level-timestamps", "speaker-diarization", "character-level-timestamps"],
                 "supported_formats": ["json", "text", "srt", "vtt", "lrc"]
             },
+            {
+                "id": "whisperx-medium",
+                "name": "WhisperX (medium)",
+                "engine": "whisperx",
+                "model_size": "medium",
+                "description": "Balanced automatic speech recognition with word-level timestamps and speaker diarization",
+                "features": ["word-level-timestamps", "speaker-diarization", "character-level-timestamps"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc"]
+            },
+            {
+                "id": "whisperx-small",
+                "name": "WhisperX (small)",
+                "engine": "whisperx",
+                "model_size": "small",
+                "description": "Faster automatic speech recognition with word-level timestamps and speaker diarization",
+                "features": ["word-level-timestamps", "speaker-diarization", "character-level-timestamps"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc"]
+            },
+            {
+                "id": "whisperx-base",
+                "name": "WhisperX (base)",
+                "engine": "whisperx",
+                "model_size": "base",
+                "description": "Fast, lighter-weight automatic speech recognition with word-level timestamps and speaker diarization",
+                "features": ["word-level-timestamps", "speaker-diarization", "character-level-timestamps"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc"]
+            },
             
             # OpenAI Whisper models
             {
                 "id": "whisper-large-v3",
                 "name": "OpenAI Whisper (large-v3)",
                 "engine": "whisper",
+                "model_size": "large-v3",
                 "description": "Original OpenAI Whisper model with word-level timestamps and speaker diarization",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1487,6 +1653,7 @@ def register_api_endpoints(api):
                 "id": "whisper-large-v2",
                 "name": "OpenAI Whisper (large-v2)",
                 "engine": "whisper",
+                "model_size": "large-v2",
                 "description": "Original OpenAI Whisper model with word-level timestamps and speaker diarization",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1496,6 +1663,7 @@ def register_api_endpoints(api):
                 "id": "whisper-large",
                 "name": "OpenAI Whisper (large)",
                 "engine": "whisper",
+                "model_size": "large",
                 "description": "Original OpenAI Whisper model with word-level timestamps and speaker diarization",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1505,6 +1673,7 @@ def register_api_endpoints(api):
                 "id": "whisper-medium",
                 "name": "OpenAI Whisper (medium)",
                 "engine": "whisper",
+                "model_size": "medium",
                 "description": "Medium-sized OpenAI Whisper model with word-level timestamps",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1514,6 +1683,7 @@ def register_api_endpoints(api):
                 "id": "whisper-small",
                 "name": "OpenAI Whisper (small)",
                 "engine": "whisper",
+                "model_size": "small",
                 "description": "Small-sized OpenAI Whisper model",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1523,6 +1693,7 @@ def register_api_endpoints(api):
                 "id": "whisper-base",
                 "name": "OpenAI Whisper (base)",
                 "engine": "whisper",
+                "model_size": "base",
                 "description": "Base-sized OpenAI Whisper model",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1532,6 +1703,7 @@ def register_api_endpoints(api):
                 "id": "whisper-tiny",
                 "name": "OpenAI Whisper (tiny)",
                 "engine": "whisper",
+                "model_size": "tiny",
                 "description": "Tiny-sized OpenAI Whisper model, fastest but less accurate",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
@@ -1541,6 +1713,7 @@ def register_api_endpoints(api):
                 "id": "whisper-turbo",
                 "name": "OpenAI Whisper (turbo)",
                 "engine": "whisper",
+                "model_size": "turbo",
                 "description": "Optimized OpenAI Whisper model for faster transcription",
                 "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
                 "features": ["word-level-timestamps", "speaker-diarization"],
