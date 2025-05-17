@@ -4,16 +4,14 @@ ACE-Step UI Layout for AudioLab.
 
 import logging
 import os
-import random
-import uuid
+import traceback
+                    
 import torch
-import shutil
 import time
 import zipfile
 import gradio as gr
-from typing import List, Optional
-from fastapi import Body, HTTPException
-from pydantic import BaseModel, Field
+import time
+                
 
 from handlers.args import ArgHandler
 from handlers.config import output_path, model_path
@@ -23,11 +21,8 @@ from modules.acestep.process import (
     process_retake,
     process_repaint,
     process_edit,
-    check_acestep_installed,
-    download_acestep_model,
     DEFAULT_MODEL
 )
-from layouts.transcribe import process_transcription
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -36,7 +31,7 @@ logger = logging.getLogger("ADLB.ACEStep")
 
 # Available models and settings
 AVAILABLE_MODELS = ["ACE-Step/ACE-Step-v1-3.5B"]
-DEFAULT_SCHEDULERS = ["flow_match_euler", "euler", "dpm++"]
+DEFAULT_SCHEDULERS = ["flow_match_euler", "euler", "heun", "pingpong"]
 DEFAULT_CFG_TYPES = ["apg", "cfg"]
 AVAILABLE_LORAS = ["ACE-Step/ACE-Step-v1-chinese-rap-LoRA"]
 
@@ -267,7 +262,8 @@ def render(arg_handler: ArgHandler):
                                 step=0.1,
                                 label="Reference Audio Strength",
                                 elem_id="acestep_ref_audio_strength",
-                                elem_classes="hintitem"
+                                elem_classes="hintitem",
+                                visible=False
                             )
                         
                         ref_audio_input = gr.Audio(
@@ -275,10 +271,25 @@ def render(arg_handler: ArgHandler):
                             type="filepath",
                             elem_id="acestep_ref_audio_input",
                             elem_classes="hintitem",
-                            show_download_button=True
+                            show_download_button=True,
+                            visible=False
                         )
                         
                         gr.Markdown("*Higher strength values will make the generated music more similar to the reference audio.*")
+
+                    # Function to toggle reference audio visibility
+                    def toggle_ref_audio_visibility(is_checked):
+                        return [
+                            gr.update(visible=is_checked),  # ref_audio_input
+                            gr.update(visible=is_checked)   # ref_audio_strength
+                        ]
+                    
+                    # Connect the toggle function
+                    audio2audio_enable.change(
+                        fn=toggle_ref_audio_visibility,
+                        inputs=[audio2audio_enable],
+                        outputs=[ref_audio_input, ref_audio_strength]
+                    )
 
                 # Middle Column - Prompt & Lyrics
                 with gr.Column():
@@ -740,7 +751,6 @@ def render(arg_handler: ArgHandler):
                     
                 except Exception as e:
                     logger.error(f"Error generating variations: {e}")
-                    import traceback
                     traceback.print_exc()
                     return None, None, None, f"Error: {str(e)}"
             
@@ -952,7 +962,6 @@ def render(arg_handler: ArgHandler):
                     
                 except Exception as e:
                     logger.error(f"Error repainting audio: {e}")
-                    import traceback
                     traceback.print_exc()
                     return None, f"Error: {str(e)}"
             
@@ -1195,7 +1204,6 @@ def render(arg_handler: ArgHandler):
                     
                 except Exception as e:
                     logger.error(f"Error editing lyrics: {e}")
-                    import traceback
                     traceback.print_exc()
                     return None, f"Error: {str(e)}"
             
@@ -1493,7 +1501,6 @@ def render(arg_handler: ArgHandler):
                 device_id = int(device.split(":")[0])
                 
                 # Placeholder for actual training implementation
-                import time
                 log = "Starting training with the following parameters:\n"
                 log += f"Base Model: {base_model}\n"
                 log += f"Output Model Name: {output_name}\n"
@@ -1627,7 +1634,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "acestep_low_vram_mode": "Enable optimizations for systems with limited VRAM (8GB or less). Automatically enables torch_compile, cpu_offload, and overlapped_decode.",
         "acestep_infer_step": "Number of inference steps. More steps = higher quality but slower generation.",
         "acestep_guidance_scale": "Controls how closely the generation follows the prompt. Higher values = stronger adherence to the prompt.",
-        "acestep_scheduler": "The diffusion scheduler algorithm. 'flow_match_euler' is recommended for most cases.",
+        "acestep_scheduler": "The diffusion scheduler algorithm. 'flow_match_euler' is recommended for most cases. Other options include 'euler' (fast), 'heun' (higher quality but slower), and 'pingpong' (uses SDE).",
         "acestep_cfg_type": "Type of classifier-free guidance. 'apg' (Attention Predictive Guidance) is recommended.",
         "acestep_omega_scale": "Controls the noise schedule during diffusion. Higher values can produce more varied results.",
         "acestep_audio2audio_enable": "Enable Audio2Audio mode to use a reference audio file to guide generation.",
@@ -1656,7 +1663,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "acestep_lora_low_vram_mode": "Enable optimizations for systems with limited VRAM (8GB or less). Automatically enables torch_compile and cpu_offload.",
         "acestep_lora_infer_step": "Number of inference steps. More steps = higher quality but slower generation.",
         "acestep_lora_guidance_scale": "Controls how closely the generation follows the prompt.",
-        "acestep_lora_scheduler": "The diffusion scheduler algorithm.",
+        "acestep_lora_scheduler": "The diffusion scheduler algorithm. 'flow_match_euler' is recommended for most cases. Other options include 'euler' (fast), 'heun' (higher quality but slower), and 'pingpong' (uses SDE).",
         "acestep_lora_cfg_type": "Type of classifier-free guidance.",
         "acestep_lora_omega_scale": "Controls the noise schedule during diffusion.",
         "acestep_lora_prompt": "Describe the music you want to generate. For RapMachine, focus on rap style and characteristics.",
