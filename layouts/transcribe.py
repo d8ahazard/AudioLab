@@ -49,7 +49,6 @@ def process_transcription(
     batch_size=16,
     compute_type="float16",
     return_char_alignments=False,
-    word_timestamps=False,
     progress=gr.Progress(track_tqdm=True)
 ):
     """Transcribe audio files using WhisperX with alignment and speaker diarization."""
@@ -116,14 +115,15 @@ def process_transcription(
                         language_code=result["language"], 
                         device=device
                     )
+                    # Note: WhisperX automatically generates word-level timestamps during alignment
+                    # The return_char_alignments parameter can be used for more detailed character-level timing
                     result = whisperx.align(
                         result["segments"], 
                         model_a, 
                         metadata, 
                         audio, 
                         device,
-                        return_char_alignments=return_char_alignments,
-                        word_timestamps=word_timestamps
+                        return_char_alignments=return_char_alignments
                     )
                     current_step += 1
                     # Clean up alignment model to save memory
@@ -325,14 +325,6 @@ def render(arg_handler: ArgHandler):
                         elem_id="transcribe_return_char_alignments",
                         key="transcribe_return_char_alignments"
                     )
-                    
-                    word_timestamps = gr.Checkbox(
-                        label="Word Timestamps",
-                        value=True,
-                        elem_classes="hintitem",
-                        elem_id="transcribe_word_timestamps",
-                        key="transcribe_word_timestamps"
-                    )
                 
                 with gr.Row():
                     min_speakers = gr.Textbox(
@@ -528,8 +520,7 @@ def render(arg_handler: ArgHandler):
                 max_speakers,
                 batch_size,
                 compute_type,
-                return_char_alignments,
-                word_timestamps
+                return_char_alignments
             ],
             outputs=[status_display, OUTPUT_TRANSCRIPTION]
         )
@@ -581,7 +572,6 @@ def register_descriptions(arg_handler: ArgHandler):
         "align_output": "Enable to align the transcription with the audio for precise timestamps.",
         "assign_speakers": "Enable to detect and assign different speakers in the audio.",
         "return_char_alignments": "Enable to generate character-level timestamps (more detailed but increases processing time).",
-        "word_timestamps": "Enable to generate word-level timestamps (provides precise timing for each word).",
         "min_speakers": "Minimum number of speakers to detect (leave empty for automatic detection).",
         "max_speakers": "Maximum number of speakers to detect (leave empty for automatic detection).",
         "batch_size": "Batch size for transcription processing. Higher values use more memory but can be faster.",
