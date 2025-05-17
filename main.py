@@ -179,7 +179,7 @@ if __name__ == '__main__':
                             render_diffrythm(arg_handler)                    
                         with gr.Tab(label='Stable-Audio', id="soundforge"):
                             render_stable_audio(arg_handler)                    
-                        with gr.Tab(Label="YuE", id="yue"):                            
+                        with gr.Tab(label="YuE", id="yue"):                            
                             render_music(arg_handler)                        
                     with gr.Tab(label='TTS', id="tts"):
                         render_tts()
