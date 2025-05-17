@@ -27,7 +27,8 @@ def fetch_model(model_name):
     if not os.path.exists(model_dir):
         os.makedirs(model_dir, exist_ok=True)
         model_url = f"openai/whisper-{model_name}"
-        return snapshot_download(model_name, local_dir=model_dir)
+        logger.info(f"Downloading model {model_name} from {model_url} to {model_dir}")
+        return snapshot_download(model_url, local_dir=model_dir)
     else:
         return model_dir
 
@@ -70,6 +71,7 @@ def process_transcription(
         
         progress(0, "Loading transcription model...")
         model_dir = fetch_model("large-v3")
+        logger.info(f"Model directory: {model_dir}")
         model = whisperx.load_model(model_dir, device, compute_type=compute_type)
         
         # Process each audio file
