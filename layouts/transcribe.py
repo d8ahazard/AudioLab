@@ -22,19 +22,19 @@ SEND_TO_PROCESS_BUTTON = None
 OUTPUT_TRANSCRIPTION = None
 OUTPUT_AUDIO = None
 
-def fetch_model(model_name):
+def fetch_model(tgt_model):
     """
     Download the model if needed and return the path to the local model directory.
     """
+    model_name = tgt_model.split("/")[-1]
     # Create the directory where models will be stored
     model_dir = os.path.join(model_path, "whisperx", model_name)
     is_model_dir_empty = os.path.exists(model_dir) and not os.listdir(model_dir)
     
     # Download the model if it doesn't exist or the directory is empty
     if not os.path.exists(model_dir) or is_model_dir_empty:
-        model_url = f"Systran/faster-whisper-{model_name}"
-        logger.info(f"Downloading model {model_name} from {model_url} to {model_dir}")
-        snapshot_download(model_url, local_dir=model_dir)
+        logger.info(f"Downloading model {model_name} from {tgt_model} to {model_dir}")
+        snapshot_download(tgt_model, local_dir=model_dir)
     
     # Return the local model directory path
     return model_dir
@@ -78,7 +78,7 @@ def process_transcription(
         
         progress(0, "Loading transcription model...")
         # Get the local model directory path
-        model_dir = fetch_model("large-v3")
+        model_dir = fetch_model("Systran/faster-whisper-large-v3")
         logger.info(f"Model directory: {model_dir}")
         
         # Load the model directly from the local path
@@ -130,10 +130,9 @@ def process_transcription(
                 # 3. Assign speaker labels if requested
                 if assign_speakers:
                     progress(current_step/total_steps, f"Assigning speakers for {file_name}")
-                    diarize_model = whisperx.DiarizationPipeline(
-                        model_name="tensorlake/speaker-diarization-3.1",
-                        device=device
-                    )
+                    dia_model_path = fetch_model("pyannote/speaker-diarization-3.1")
+                    # Fix: Use the correct import path for DiarizationPipeline
+                    diarize_model = whisperx.diarize.DiarizationPipeline(model_name=dia_model_path, device=device)
                     
                     # Add min/max number of speakers if specified
                     diarize_kwargs = {}
