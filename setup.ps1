@@ -2,9 +2,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Set to $true to enable verbose debug output for requirements.txt condition matching
+$DEBUG_REQUIREMENTS = $false 
+
 function Write-Info    { param($m) Write-Host "[INFO]  $m"     -ForegroundColor Cyan }
 function Write-Success { param($m) Write-Host "[OK]    $m"     -ForegroundColor Green }
 function Write-ErrorLog{ param($m) Write-Host "[ERROR] $m"     -ForegroundColor Red }
+function Write-Debug   { param($m) if ($DEBUG_REQUIREMENTS) { Write-Host "[DEBUG] $m" -ForegroundColor Magenta } }
 
 # Detect platform and python version
 $isWindows = $env:OS -eq 'Windows_NT'
@@ -97,21 +101,48 @@ if (Test-Path '.\requirements.txt') {
             $condText  = $parts[1].Trim()
             $conditions= $condText -split '\s+and\s+'
             $ok = $true
+            
+            Write-Debug "Processing conditions for $pkgSpec"
+            Write-Debug "Found $($conditions.Count) condition(s): $condText"
+            
             foreach ($c in $conditions) {
-                if ($c -match 'sys_platform\s*==\s*"win32"') {
-                    if (-not $isWindows) { $ok = $false; break }
-                } elseif ($c -match 'sys_platform\s*!=\s*"win32"') {
-                    if ($isWindows) { $ok = $false; break }
-                } elseif ($c -match 'python_version\s*==\s*"([^"]+)"') {
-                    if ($pyVersion -ne $Matches[1]) { $ok = $false; break }
-                } elseif ($c -match 'python_version\s*!=\s*"([^"]+)"') {
-                    if ($pyVersion -eq $Matches[1]) { $ok = $false; break }
+                $c = $c.Trim()
+                Write-Debug "  Checking condition: '$c'"
+                
+                if ($c -match 'sys_platform\s*==\s*[''"]win32[''"]') {
+                    Write-Debug "    - sys_platform == win32 match"
+                    if (-not $isWindows) { 
+                        Write-Debug "    - SKIP: Not on Windows"
+                        $ok = $false; break 
+                    }
+                } elseif ($c -match 'sys_platform\s*!=\s*[''"]win32[''"]') {
+                    Write-Debug "    - sys_platform != win32 match"
+                    if ($isWindows) { 
+                        Write-Debug "    - SKIP: On Windows"
+                        $ok = $false; break 
+                    }
+                } elseif ($c -match 'python_version\s*==\s*[''"]([0-9\.]+)[''"]') {
+                    $requiredVersion = $Matches[1]
+                    Write-Debug "    - python_version == $requiredVersion match"
+                    if ($pyVersion -ne $requiredVersion) { 
+                        Write-Debug "    - SKIP: Python $pyVersion != $requiredVersion"
+                        $ok = $false; break 
+                    }
+                } elseif ($c -match 'python_version\s*!=\s*[''"]([0-9\.]+)[''"]') {
+                    $excludedVersion = $Matches[1]
+                    Write-Debug "    - python_version != $excludedVersion match"
+                    if ($pyVersion -eq $excludedVersion) { 
+                        Write-Debug "    - SKIP: Python $pyVersion == $excludedVersion"
+                        $ok = $false; break 
+                    }
                 } else {
                     Write-Warning "Unrecognized condition '$c'; skipping $pkgSpec"
                     $ok = $false; break
                 }
             }
+            
             if ($ok) {
+                Write-Debug "  All conditions passed, installing $pkgSpec"
                 Install-Packages -packages @($pkgSpec) -context "conditional package"
             } else {
                 Write-Info "Skipping $pkgSpec (condition: $condText)"

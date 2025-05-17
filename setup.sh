@@ -2,6 +2,9 @@
 # Requires bash shell
 set -e # Exit on error
 
+# Set to true to enable verbose debug output for requirements.txt condition matching
+DEBUG_REQUIREMENTS=false
+
 # Define color output functions
 function write_info() {
     echo -e "\e[36m[INFO]  $1\e[0m"  # Cyan color
@@ -17,6 +20,12 @@ function write_error() {
 
 function write_warning() {
     echo -e "\e[33m[WARN]  $1\e[0m"  # Yellow color
+}
+
+function write_debug() {
+    if [ "$DEBUG_REQUIREMENTS" = true ]; then
+        echo -e "\e[35m[DEBUG] $1\e[0m"  # Magenta color
+    fi
 }
 
 # Detect python version
@@ -116,17 +125,42 @@ if [ -f "./requirements.txt" ]; then
             # Process conditions
             ok=true
             IFS='and' read -ra conditions <<< "$cond_text"
+            
+            write_debug "Processing conditions for $pkg_spec"
+            write_debug "Found ${#conditions[@]} condition(s): $cond_text"
+            
             for c in "${conditions[@]}"; do
                 c=$(echo "$c" | xargs)
-                if [[ "$c" =~ sys_platform\ *==\ *\"win32\" ]]; then
-                    # Skip Windows-only packages
-                    ok=false; break
-                elif [[ "$c" =~ python_version\ *==\ *\"([^\"]+)\" ]]; then
+                write_debug "  Checking condition: '$c'"
+                
+                if [[ "$c" =~ sys_platform[[:space:]]*==[[:space:]]*[\'\"]win32[\'\"] ]]; then
+                    write_debug "    - sys_platform == win32 match"
+                    # Skip Windows-only packages on non-Windows
+                    if [ "$(uname)" != "MINGW"* ] && [ "$(uname)" != "CYGWIN"* ] && [ "$(uname)" != "MSYS"* ]; then
+                        write_debug "    - SKIP: Not on Windows"
+                        ok=false; break
+                    fi
+                elif [[ "$c" =~ sys_platform[[:space:]]*!=[[:space:]]*[\'\"]win32[\'\"] ]]; then
+                    write_debug "    - sys_platform != win32 match"
+                    # Skip non-Windows packages on Windows
+                    if [[ "$(uname)" == "MINGW"* || "$(uname)" == "CYGWIN"* || "$(uname)" == "MSYS"* ]]; then
+                        write_debug "    - SKIP: On Windows"
+                        ok=false; break
+                    fi
+                elif [[ "$c" =~ python_version[[:space:]]*==[[:space:]]*[\'\"]([0-9\.]+)[\'\"] ]]; then
                     py_req="${BASH_REMATCH[1]}"
-                    if [ "$PY_VERSION" != "$py_req" ]; then ok=false; break; fi
-                elif [[ "$c" =~ python_version\ *!=\ *\"([^\"]+)\" ]]; then
+                    write_debug "    - python_version == $py_req match"
+                    if [ "$PY_VERSION" != "$py_req" ]; then 
+                        write_debug "    - SKIP: Python $PY_VERSION != $py_req"
+                        ok=false; break; 
+                    fi
+                elif [[ "$c" =~ python_version[[:space:]]*!=[[:space:]]*[\'\"]([0-9\.]+)[\'\"] ]]; then
                     py_req="${BASH_REMATCH[1]}"
-                    if [ "$PY_VERSION" = "$py_req" ]; then ok=false; break; fi
+                    write_debug "    - python_version != $py_req match"
+                    if [ "$PY_VERSION" = "$py_req" ]; then 
+                        write_debug "    - SKIP: Python $PY_VERSION == $py_req"
+                        ok=false; break; 
+                    fi
                 else
                     write_warning "Unrecognized condition '$c'; skipping $pkg_spec"
                     ok=false
@@ -135,6 +169,7 @@ if [ -f "./requirements.txt" ]; then
             done
             
             if [ "$ok" = true ]; then
+                write_debug "  All conditions passed, installing $pkg_spec"
                 install_packages "$pkg_spec"
             else
                 write_info "Skipping $pkg_spec (condition: $cond_text)"

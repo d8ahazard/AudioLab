@@ -2,6 +2,7 @@
 ./wheels/dctorch-0.1.2-py3-none-any.whl
 ./wheels/coqui_tts-0.26.0-py3-none-any.whl
 ./wheels/fairseq-0.12.3-cp310-cp310-win_amd64.whl; sys_platform == "win32"
+./wheels/fairseq-0.12.3-cp310-cp310-linux_x86_64.whl; sys_platform != "win32"
 ./wheels/laion_clap-1.1.5-py3-none-any.whl
 ./wheels/openvoice_cli-0.0.6-py3-none-any.whl
 ./wheels/stable_audio_tools-0.0.20-py3-none-any.whl
@@ -33,15 +34,19 @@ hangul-romanize>=0.1.0
 hf_xet
 https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
 https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
+https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl; sys_platform != "win32" and python_version == "3.10"
+https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl; sys_platform != "win32" and python_version == "3.11"
+https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl; sys_platform != "win32" and python_version == "3.12"
+https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.6cxx11abiFALSE-cp313-cp313-linux_x86_64.whl; sys_platform != "win32" and python_version == "3.13"
 https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
 https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl; sys_platform == "win32" and python_version == "3.11"
 https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp312-cp312-win_amd64.whl; sys_platform == "win32" and python_version == "3.12"
 https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp313-cp313-win_amd64.whl; sys_platform == "win32" and python_version == "3.13"
 huggingface_hub>=0.27.1
+jieba
 kanjize
 librosa>=0.11.0
 loguru==0.7.3
-mamba_ssm==2.2.4; sys_platform != "win32"
 matchering>=2.0.6
 matplotlib>=3.10.0
 metrics
