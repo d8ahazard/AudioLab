@@ -32,7 +32,7 @@ def fetch_model(model_name):
     
     # Download the model if it doesn't exist or the directory is empty
     if not os.path.exists(model_dir) or is_model_dir_empty:
-        model_url = f"openai/whisper-{model_name}"
+        model_url = f"Systran/faster-whisper-{model_name}"
         logger.info(f"Downloading model {model_name} from {model_url} to {model_dir}")
         snapshot_download(model_url, local_dir=model_dir)
     
