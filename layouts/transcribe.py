@@ -48,6 +48,8 @@ def process_transcription(
     max_speakers=None,
     batch_size=16,
     compute_type="float16",
+    return_char_alignments=False,
+    word_timestamps=False,
     progress=gr.Progress(track_tqdm=True)
 ):
     """Transcribe audio files using WhisperX with alignment and speaker diarization."""
@@ -120,7 +122,8 @@ def process_transcription(
                         metadata, 
                         audio, 
                         device,
-                        return_char_alignments=False
+                        return_char_alignments=return_char_alignments,
+                        word_timestamps=word_timestamps
                     )
                     current_step += 1
                     # Clean up alignment model to save memory
@@ -190,9 +193,75 @@ def process_transcription(
                         
                         f.write(f"{timestamp}{text}\n")
                 
+                # Generate SRT (SubRip) format file
+                output_srt = os.path.join(output_folder, f"{base_name}.srt")
+                with open(output_srt, 'w', encoding='utf-8') as f:
+                    for i, segment in enumerate(result["segments"]):
+                        # SubRip index (starts at 1)
+                        f.write(f"{i+1}\n")
+                        
+                        # Format timestamps as HH:MM:SS,mmm --> HH:MM:SS,mmm
+                        start_time = segment["start"]
+                        end_time = segment["end"]
+                        
+                        start_hrs = int(start_time // 3600)
+                        start_mins = int((start_time % 3600) // 60)
+                        start_secs = int(start_time % 60)
+                        start_ms = int((start_time % 1) * 1000)
+                        
+                        end_hrs = int(end_time // 3600)
+                        end_mins = int((end_time % 3600) // 60)
+                        end_secs = int(end_time % 60)
+                        end_ms = int((end_time % 1) * 1000)
+                        
+                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d},{start_ms:03d} --> "
+                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d},{end_ms:03d}"
+                        f.write(f"{timestamp_line}\n")
+                        
+                        # Text content, with speaker if available
+                        text = segment["text"].strip()
+                        if assign_speakers and "speaker" in segment:
+                            text = f"[{segment['speaker']}] {text}"
+                        f.write(f"{text}\n\n")
+                
+                # Generate VTT (WebVTT) format file
+                output_vtt = os.path.join(output_folder, f"{base_name}.vtt")
+                with open(output_vtt, 'w', encoding='utf-8') as f:
+                    # Write VTT header
+                    f.write("WEBVTT\n\n")
+                    
+                    for i, segment in enumerate(result["segments"]):
+                        # Format timestamps as HH:MM:SS.mmm --> HH:MM:SS.mmm (note: VTT uses . instead of , for milliseconds)
+                        start_time = segment["start"]
+                        end_time = segment["end"]
+                        
+                        start_hrs = int(start_time // 3600)
+                        start_mins = int((start_time % 3600) // 60)
+                        start_secs = int(start_time % 60)
+                        start_ms = int((start_time % 1) * 1000)
+                        
+                        end_hrs = int(end_time // 3600)
+                        end_mins = int((end_time % 3600) // 60)
+                        end_secs = int(end_time % 60)
+                        end_ms = int((end_time % 1) * 1000)
+                        
+                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d}.{start_ms:03d} --> "
+                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d}.{end_ms:03d}"
+                        
+                        # Optionally add cue identifier
+                        cue_id = f"cue-{i+1}"
+                        f.write(f"{cue_id}\n")
+                        f.write(f"{timestamp_line}\n")
+                        
+                        # Text content, with speaker if available
+                        text = segment["text"].strip()
+                        if assign_speakers and "speaker" in segment:
+                            text = f"[{segment['speaker']}] {text}"
+                        f.write(f"{text}\n\n")
+                
                 # Store results and output files
                 results.append(result)
-                output_files.extend([output_json, output_txt, output_lrc])
+                output_files.extend([output_json, output_txt, output_lrc, output_srt, output_vtt])
                 
             except Exception as e:
                 logger.exception(f"Error processing file {audio_file}: {e}")
@@ -246,6 +315,23 @@ def render(arg_handler: ArgHandler):
                         elem_classes="hintitem",
                         elem_id="transcribe_assign_speakers",
                         key="transcribe_assign_speakers"
+                    )
+                
+                with gr.Row():
+                    return_char_alignments = gr.Checkbox(
+                        label="Character Alignments",
+                        value=False,
+                        elem_classes="hintitem",
+                        elem_id="transcribe_return_char_alignments",
+                        key="transcribe_return_char_alignments"
+                    )
+                    
+                    word_timestamps = gr.Checkbox(
+                        label="Word Timestamps",
+                        value=True,
+                        elem_classes="hintitem",
+                        elem_id="transcribe_word_timestamps",
+                        key="transcribe_word_timestamps"
                     )
                 
                 with gr.Row():
@@ -347,6 +433,16 @@ def render(arg_handler: ArgHandler):
                     key="transcribe_output_files"
                 )
                 
+                # Add file selector dropdown
+                file_selector = gr.Dropdown(
+                    label="Select Output File",
+                    choices=[],
+                    visible=False,
+                    elem_classes="hintitem",
+                    elem_id="transcribe_file_selector",
+                    key="transcribe_file_selector"
+                )
+                
                 output_text = gr.Textbox(
                     label="Preview",
                     placeholder="Transcription will appear here",
@@ -388,6 +484,18 @@ def render(arg_handler: ArgHandler):
                         
                 return content, gr.update(visible=False)
                 
+            # If it's an SRT or VTT file, show its content
+            elif selected_file.endswith((".srt", ".vtt")):
+                with open(selected_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return content, gr.update(visible=False)
+                
+            # If it's an LRC file, format it nicely
+            elif selected_file.endswith(".lrc"):
+                with open(selected_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return content, gr.update(visible=False)
+                
             # If it's an audio file, show the audio player
             elif selected_file.endswith((".wav", ".mp3", ".flac")):
                 return "", gr.update(visible=True, value=selected_file)
@@ -398,7 +506,15 @@ def render(arg_handler: ArgHandler):
         def populate_file_dropdown(file_list):
             if not file_list:
                 return gr.update(choices=[], value=None, visible=False)
-            return gr.update(choices=file_list, value=file_list[0] if file_list else None, visible=True)
+            
+            # Find .txt files in the list - we'll prioritize these
+            txt_files = [f for f in file_list if f.endswith(".txt")]
+            if txt_files:
+                default_file = txt_files[0]  # Select the first txt file by default
+            else:
+                default_file = file_list[0]
+                
+            return gr.update(choices=file_list, value=default_file, visible=True)
             
         # Event handler for the transcribe button
         transcribe_button.click(
@@ -411,19 +527,11 @@ def render(arg_handler: ArgHandler):
                 min_speakers,
                 max_speakers,
                 batch_size,
-                compute_type
+                compute_type,
+                return_char_alignments,
+                word_timestamps
             ],
             outputs=[status_display, OUTPUT_TRANSCRIPTION]
-        )
-        
-        # Add file selector dropdown
-        file_selector = gr.Dropdown(
-            label="Select Output File",
-            choices=[],
-            visible=False,
-            elem_classes="hintitem",
-            elem_id="transcribe_file_selector",
-            key="transcribe_file_selector"
         )
         
         # Update file selector when transcription files are available
@@ -472,6 +580,8 @@ def register_descriptions(arg_handler: ArgHandler):
         "language": "Select the language of the audio for better transcription accuracy, or choose 'auto' for automatic detection.",
         "align_output": "Enable to align the transcription with the audio for precise timestamps.",
         "assign_speakers": "Enable to detect and assign different speakers in the audio.",
+        "return_char_alignments": "Enable to generate character-level timestamps (more detailed but increases processing time).",
+        "word_timestamps": "Enable to generate word-level timestamps (provides precise timing for each word).",
         "min_speakers": "Minimum number of speakers to detect (leave empty for automatic detection).",
         "max_speakers": "Maximum number of speakers to detect (leave empty for automatic detection).",
         "batch_size": "Batch size for transcription processing. Higher values use more memory but can be faster.",
@@ -482,6 +592,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "send_to_process": "Send the selected audio file to the Process tab for further processing.",
         "status": "Current status of the transcription process.",
         "output_files": "Transcription files generated by the process.",
+        "file_selector": "Select a transcription file to preview.",
         "output_text": "Preview of the selected transcription file content."
     }
     
