@@ -3,26 +3,16 @@ import json
 import logging
 import os
 import time
-from typing import List, Optional
 
 import gradio as gr
+from huggingface_hub import snapshot_download
 import whisperx
-from fastapi import UploadFile, File, Form, HTTPException, Body
-from fastapi.responses import FileResponse, JSONResponse
 import tempfile
-from pathlib import Path
 import base64
-from pydantic import BaseModel, Field
 
 from handlers.args import ArgHandler
-from handlers.config import output_path
-from util.data_classes import ProjectFiles
-from fastapi import UploadFile, File, Form, HTTPException, Body
-from fastapi.responses import JSONResponse
-from typing import Optional, List
-from pydantic import BaseModel, Field
+from handlers.config import output_path, model_path
 import base64
-import shutil
 
 logger = logging.getLogger(__name__)
 arg_handler = ArgHandler()
@@ -31,6 +21,15 @@ arg_handler = ArgHandler()
 SEND_TO_PROCESS_BUTTON = None
 OUTPUT_TRANSCRIPTION = None
 OUTPUT_AUDIO = None
+
+def fetch_model(model_name):
+    model_dir = os.path.join(model_path, "whisperx", model_name)
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir, exist_ok=True)
+        model_url = f"openai/whisper-{model_name}"
+        return snapshot_download(model_name, local_dir=model_dir)
+    else:
+        return model_dir
 
 def process_transcription(
     audio_files,
@@ -70,7 +69,8 @@ def process_transcription(
         os.makedirs(output_folder, exist_ok=True)
         
         progress(0, "Loading transcription model...")
-        model = whisperx.load_model("large-v3", device, compute_type=compute_type)
+        model_dir = fetch_model("large-v3")
+        model = whisperx.load_model(model_dir, device, compute_type=compute_type)
         
         # Process each audio file
         for audio_idx, audio_file in enumerate(audio_files):
