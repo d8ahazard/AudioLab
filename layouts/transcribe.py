@@ -26,7 +26,15 @@ OUTPUT_AUDIO = None
 def fetch_model(tgt_model):
     """
     Download the model if needed and return the path to the local model directory.
+    
+    For HuggingFace models, this downloads the model to the local cache.
+    For OpenAI Whisper models, it returns the model name as is since they're handled differently.
     """
+    # OpenAI Whisper models are handled differently - just return the model name
+    if tgt_model in ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo"]:
+        return tgt_model
+    
+    # For HuggingFace models, download and return the path
     model_name = tgt_model.split("/")[-1]
     # Create the directory where models will be stored
     model_dir = os.path.join(model_path, "whisperx", model_name)
@@ -41,6 +49,53 @@ def fetch_model(tgt_model):
     return model_dir
 
 def process_transcription(
+    audio_files,
+    engine="whisperx",
+    language="auto",
+    align_output=True,
+    assign_speakers=True,
+    min_speakers=None,
+    max_speakers=None,
+    batch_size=16,
+    compute_type="float16",
+    return_char_alignments=False,
+    progress=gr.Progress(track_tqdm=True)
+):
+    """Main transcription function that selects the appropriate engine."""
+    try:
+        # Select the appropriate transcription engine
+        if engine == "whisperx":
+            return process_transcription_whisperx(
+                audio_files,
+                language=language,
+                align_output=align_output,
+                assign_speakers=assign_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                batch_size=batch_size,
+                compute_type=compute_type,
+                return_char_alignments=return_char_alignments,
+                progress=progress
+            )
+        elif engine == "whisper":
+            return process_transcription_whisper(
+                audio_files,
+                language=language,
+                assign_speakers=assign_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                compute_type=compute_type,
+                word_timestamps=True, # Original whisper supports word timestamps
+                progress=progress
+            )
+        else:
+            raise ValueError(f"Unknown transcription engine: {engine}")
+    except Exception as e:
+        logger.exception(f"Transcription error: {e}")
+        return f"Error: {str(e)}", []
+
+
+def process_transcription_whisperx(
     audio_files,
     language="auto",
     align_output=True,
@@ -154,111 +209,10 @@ def process_transcription(
                     del diarize_model
                     gc.collect()
                 
-                # Save results to files
-                output_json = os.path.join(output_folder, f"{base_name}.json")
-                with open(output_json, 'w') as f:
-                    json.dump(result, f, indent=4)
-                    
-                # Generate text file with transcript
-                output_txt = os.path.join(output_folder, f"{base_name}.txt")
-                with open(output_txt, 'w') as f:
-                    # If speaker diarization was performed, include speaker information
-                    if assign_speakers and "speaker" in result["segments"][0]:
-                        for segment in result["segments"]:
-                            speaker = segment.get("speaker", "UNKNOWN")
-                            text = segment["text"]
-                            start = segment["start"]
-                            end = segment["end"]
-                            f.write(f"[{speaker}] ({start:.2f}s - {end:.2f}s): {text}\n")
-                    else:
-                        for segment in result["segments"]:
-                            text = segment["text"]
-                            start = segment["start"]
-                            end = segment["end"]
-                            f.write(f"({start:.2f}s - {end:.2f}s): {text}\n")
-
-                # Generate LRC format file
-                output_lrc = os.path.join(output_folder, f"{base_name}.lrc")
-                with open(output_lrc, 'w', encoding='utf-8') as f:
-                    for segment in result["segments"]:
-                        # Convert seconds to MM:SS.xx format
-                        start_time = segment["start"]
-                        minutes = int(start_time // 60)
-                        seconds = start_time % 60
-                        timestamp = f"[{minutes:02d}:{seconds:05.2f}]"
-                        
-                        # Add speaker label if available
-                        text = segment["text"].strip()
-                        if assign_speakers and "speaker" in segment:
-                            text = f"[{segment['speaker']}] {text}"
-                        
-                        f.write(f"{timestamp}{text}\n")
-                
-                # Generate SRT (SubRip) format file
-                output_srt = os.path.join(output_folder, f"{base_name}.srt")
-                with open(output_srt, 'w', encoding='utf-8') as f:
-                    for i, segment in enumerate(result["segments"]):
-                        # SubRip index (starts at 1)
-                        f.write(f"{i+1}\n")
-                        
-                        # Format timestamps as HH:MM:SS,mmm --> HH:MM:SS,mmm
-                        start_time = segment["start"]
-                        end_time = segment["end"]
-                        
-                        start_hrs = int(start_time // 3600)
-                        start_mins = int((start_time % 3600) // 60)
-                        start_secs = int(start_time % 60)
-                        start_ms = int((start_time % 1) * 1000)
-                        
-                        end_hrs = int(end_time // 3600)
-                        end_mins = int((end_time % 3600) // 60)
-                        end_secs = int(end_time % 60)
-                        end_ms = int((end_time % 1) * 1000)
-                        
-                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d},{start_ms:03d} --> "
-                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d},{end_ms:03d}"
-                        f.write(f"{timestamp_line}\n")
-                        
-                        # Text content, with speaker if available
-                        text = segment["text"].strip()
-                        if assign_speakers and "speaker" in segment:
-                            text = f"[{segment['speaker']}] {text}"
-                        f.write(f"{text}\n\n")
-                
-                # Generate VTT (WebVTT) format file
-                output_vtt = os.path.join(output_folder, f"{base_name}.vtt")
-                with open(output_vtt, 'w', encoding='utf-8') as f:
-                    # Write VTT header
-                    f.write("WEBVTT\n\n")
-                    
-                    for i, segment in enumerate(result["segments"]):
-                        # Format timestamps as HH:MM:SS.mmm --> HH:MM:SS.mmm (note: VTT uses . instead of , for milliseconds)
-                        start_time = segment["start"]
-                        end_time = segment["end"]
-                        
-                        start_hrs = int(start_time // 3600)
-                        start_mins = int((start_time % 3600) // 60)
-                        start_secs = int(start_time % 60)
-                        start_ms = int((start_time % 1) * 1000)
-                        
-                        end_hrs = int(end_time // 3600)
-                        end_mins = int((end_time % 3600) // 60)
-                        end_secs = int(end_time % 60)
-                        end_ms = int((end_time % 1) * 1000)
-                        
-                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d}.{start_ms:03d} --> "
-                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d}.{end_ms:03d}"
-                        
-                        # Optionally add cue identifier
-                        cue_id = f"cue-{i+1}"
-                        f.write(f"{cue_id}\n")
-                        f.write(f"{timestamp_line}\n")
-                        
-                        # Text content, with speaker if available
-                        text = segment["text"].strip()
-                        if assign_speakers and "speaker" in segment:
-                            text = f"[{segment['speaker']}] {text}"
-                        f.write(f"{text}\n\n")
+                # Generate output files
+                output_json, output_txt, output_lrc, output_srt, output_vtt = generate_output_files(
+                    result, output_folder, base_name, assign_speakers
+                )
                 
                 # Store results and output files
                 results.append(result)
@@ -276,8 +230,279 @@ def process_transcription(
         return summary, output_files
         
     except Exception as e:
-        logger.exception(f"Transcription error: {e}")
+        logger.exception(f"WhisperX transcription error: {e}")
         return f"Error: {str(e)}", []
+
+
+def process_transcription_whisper(
+    audio_files,
+    language="auto",
+    assign_speakers=True,
+    min_speakers=None,
+    max_speakers=None,
+    compute_type="float16",
+    word_timestamps=True,
+    progress=gr.Progress(track_tqdm=True)
+):
+    """Transcribe audio files using OpenAI's Whisper with word-level timestamps and optional speaker diarization."""
+    try:
+        # Import whisper
+        import whisper
+        import torch
+        
+        # Initialize counters for progress tracking
+        total_steps = len(audio_files) * (1 + (1 if assign_speakers else 0))
+        current_step = 0
+        
+        # Convert min/max speakers to integers if provided
+        if min_speakers and min_speakers.strip():
+            min_speakers = int(min_speakers)
+        else:
+            min_speakers = None
+            
+        if max_speakers and max_speakers.strip():
+            max_speakers = int(max_speakers)
+        else:
+            max_speakers = None
+            
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        fp16 = True if compute_type == "float16" and device == "cuda" else False
+        
+        results = []
+        output_files = []
+        
+        # Create output directory
+        timestamp = int(time.time())
+        output_folder = os.path.join(output_path, "transcriptions", f"transcribe_{timestamp}")
+        os.makedirs(output_folder, exist_ok=True)
+        
+        progress(0, "Loading transcription model...")
+        # Use the model size based on compute_type
+        model_size = "large-v3"  # Default to large-v3 for best results
+        
+        # Load the model
+        model = whisper.load_model(model_size, device=device)
+        logger.info(f"Loaded whisper {model_size} model on {device}")
+        
+        # Process each audio file
+        for audio_idx, audio_file in enumerate(audio_files):
+            try:
+                file_name = os.path.basename(audio_file)
+                base_name, _ = os.path.splitext(file_name)
+                
+                # 1. Transcribe with whisper
+                progress(current_step/total_steps, f"Transcribing {file_name}")
+                
+                # Set up transcription options
+                whisper_options = {
+                    "verbose": False,
+                    "word_timestamps": word_timestamps,
+                    "condition_on_previous_text": False,  # More accurate for shorter clips
+                }
+                
+                # Set language if specified
+                if language != "auto":
+                    whisper_options["language"] = language
+                
+                # Transcribe
+                result = model.transcribe(audio_file, **whisper_options)
+                current_step += 1
+                
+                # 2. Assign speaker labels if requested
+                if assign_speakers:
+                    progress(current_step/total_steps, f"Assigning speakers for {file_name}")
+                    
+                    # Load audio
+                    audio = whisper.load_audio(audio_file)
+                    
+                    # Import pyannote only when needed
+                    try:
+                        from pyannote.audio import Pipeline
+                    except ImportError:
+                        raise ImportError("Speaker diarization requires pyannote.audio. Install it with: pip install pyannote.audio")
+                    
+                    dia_model_path = fetch_model("fatymatariq/speaker-diarization-3.1")
+                    dia_model_path = os.path.join(dia_model_path, "config.yaml")
+                    
+                    # Initialize diarization pipeline
+                    pipeline = Pipeline.from_pretrained(dia_model_path)
+                    
+                    # Process diarization
+                    diarization_options = {}
+                    if min_speakers is not None:
+                        diarization_options["min_speakers"] = min_speakers
+                    if max_speakers is not None:
+                        diarization_options["max_speakers"] = max_speakers
+                    
+                    diarization = pipeline(audio_file, **diarization_options)
+                    
+                    # Map diarization results to segments
+                    # This is a simplification - detailed speaker assignment would require more complex logic
+                    for segment in result["segments"]:
+                        segment_start = segment["start"]
+                        segment_end = segment["end"]
+                        segment_mid = (segment_start + segment_end) / 2
+                        
+                        # Find the speaker at the middle of the segment
+                        speaker = None
+                        for turn, _, speaker_id in diarization.itertracks(yield_label=True):
+                            if turn.start <= segment_mid <= turn.end:
+                                speaker = f"SPEAKER_{speaker_id}"
+                                break
+                        
+                        if speaker:
+                            segment["speaker"] = speaker
+                        
+                        # If word timestamps are available, assign speakers to words
+                        if "words" in segment:
+                            for word in segment["words"]:
+                                word_mid = (word["start"] + word["end"]) / 2
+                                word_speaker = None
+                                
+                                for turn, _, speaker_id in diarization.itertracks(yield_label=True):
+                                    if turn.start <= word_mid <= turn.end:
+                                        word_speaker = f"SPEAKER_{speaker_id}"
+                                        break
+                                
+                                if word_speaker:
+                                    word["speaker"] = word_speaker
+                    
+                    current_step += 1
+                
+                # Generate output files
+                output_json, output_txt, output_lrc, output_srt, output_vtt = generate_output_files(
+                    result, output_folder, base_name, assign_speakers
+                )
+                
+                # Store results and output files
+                results.append(result)
+                output_files.extend([output_json, output_txt, output_lrc, output_srt, output_vtt])
+                
+            except Exception as e:
+                logger.exception(f"Error processing file {audio_file}: {e}")
+                
+        # Clean up main model
+        del model
+        gc.collect()
+            
+        # Return summary and output files
+        summary = f"Transcribed {len(results)} files to {output_folder}"
+        return summary, output_files
+        
+    except Exception as e:
+        logger.exception(f"Whisper transcription error: {e}")
+        return f"Error: {str(e)}", []
+
+
+def generate_output_files(result, output_folder, base_name, assign_speakers=False):
+    """Generate output files in various formats from the transcription result."""
+    # Save results to files
+    output_json = os.path.join(output_folder, f"{base_name}.json")
+    with open(output_json, 'w', encoding='utf-8') as f:
+        json.dump(result, f, indent=4, ensure_ascii=False)
+        
+    # Generate text file with transcript
+    output_txt = os.path.join(output_folder, f"{base_name}.txt")
+    with open(output_txt, 'w', encoding='utf-8') as f:
+        # If speaker diarization was performed, include speaker information
+        if assign_speakers and "segments" in result and len(result["segments"]) > 0 and "speaker" in result["segments"][0]:
+            for segment in result["segments"]:
+                speaker = segment.get("speaker", "UNKNOWN")
+                text = segment["text"]
+                start = segment["start"]
+                end = segment["end"]
+                f.write(f"[{speaker}] ({start:.2f}s - {end:.2f}s): {text}\n")
+        else:
+            for segment in result.get("segments", []):
+                text = segment["text"]
+                start = segment["start"]
+                end = segment["end"]
+                f.write(f"({start:.2f}s - {end:.2f}s): {text}\n")
+
+    # Generate LRC format file
+    output_lrc = os.path.join(output_folder, f"{base_name}.lrc")
+    with open(output_lrc, 'w', encoding='utf-8') as f:
+        for segment in result.get("segments", []):
+            # Convert seconds to MM:SS.xx format
+            start_time = segment["start"]
+            minutes = int(start_time // 60)
+            seconds = start_time % 60
+            timestamp = f"[{minutes:02d}:{seconds:05.2f}]"
+            
+            # Add speaker label if available
+            text = segment["text"].strip()
+            if assign_speakers and "speaker" in segment:
+                text = f"[{segment['speaker']}] {text}"
+            
+            f.write(f"{timestamp}{text}\n")
+    
+    # Generate SRT (SubRip) format file
+    output_srt = os.path.join(output_folder, f"{base_name}.srt")
+    with open(output_srt, 'w', encoding='utf-8') as f:
+        for i, segment in enumerate(result.get("segments", [])):
+            # SubRip index (starts at 1)
+            f.write(f"{i+1}\n")
+            
+            # Format timestamps as HH:MM:SS,mmm --> HH:MM:SS,mmm
+            start_time = segment["start"]
+            end_time = segment["end"]
+            
+            start_hrs = int(start_time // 3600)
+            start_mins = int((start_time % 3600) // 60)
+            start_secs = int(start_time % 60)
+            start_ms = int((start_time % 1) * 1000)
+            
+            end_hrs = int(end_time // 3600)
+            end_mins = int((end_time % 3600) // 60)
+            end_secs = int(end_time % 60)
+            end_ms = int((end_time % 1) * 1000)
+            
+            timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d},{start_ms:03d} --> "
+            timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d},{end_ms:03d}"
+            f.write(f"{timestamp_line}\n")
+            
+            # Text content, with speaker if available
+            text = segment["text"].strip()
+            if assign_speakers and "speaker" in segment:
+                text = f"[{segment['speaker']}] {text}"
+            f.write(f"{text}\n\n")
+    
+    # Generate VTT (WebVTT) format file
+    output_vtt = os.path.join(output_folder, f"{base_name}.vtt")
+    with open(output_vtt, 'w', encoding='utf-8') as f:
+        # Write VTT header
+        f.write("WEBVTT\n\n")
+        
+        for i, segment in enumerate(result.get("segments", [])):
+            # Format timestamps as HH:MM:SS.mmm --> HH:MM:SS.mmm (note: VTT uses . instead of , for milliseconds)
+            start_time = segment["start"]
+            end_time = segment["end"]
+            
+            start_hrs = int(start_time // 3600)
+            start_mins = int((start_time % 3600) // 60)
+            start_secs = int(start_time % 60)
+            start_ms = int((start_time % 1) * 1000)
+            
+            end_hrs = int(end_time // 3600)
+            end_mins = int((end_time % 3600) // 60)
+            end_secs = int(end_time % 60)
+            end_ms = int((end_time % 1) * 1000)
+            
+            timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d}.{start_ms:03d} --> "
+            timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d}.{end_ms:03d}"
+            
+            # Optionally add cue identifier
+            cue_id = f"cue-{i+1}"
+            f.write(f"{cue_id}\n")
+            f.write(f"{timestamp_line}\n")
+            
+            # Text content, with speaker if available
+            text = segment["text"].strip()
+            if assign_speakers and "speaker" in segment:
+                text = f"[{segment['speaker']}] {text}"
+            f.write(f"{text}\n\n")
+            
+    return output_json, output_txt, output_lrc, output_srt, output_vtt
 
 
 def render(arg_handler: ArgHandler):
@@ -285,12 +510,24 @@ def render(arg_handler: ArgHandler):
     
     with gr.Blocks() as transcribe:
         gr.Markdown("# 🎙️ Audio Transcription")
-        gr.Markdown("Transcribe audio files with high accuracy using WhisperX. Supports multi-speaker diarization and precision timestamps.")
+        gr.Markdown("Transcribe audio files with high accuracy using WhisperX or OpenAI Whisper. Supports multi-speaker diarization and precision timestamps.")
         
         with gr.Row():
             # Left Column - Settings
             with gr.Column():
                 gr.Markdown("### 🔧 Settings")
+                
+                engine = gr.Dropdown(
+                    label="Transcription Engine",
+                    choices=[
+                        ("WhisperX (Recommended, faster)", "whisperx"),
+                        ("OpenAI Whisper (Original)", "whisper")
+                    ],
+                    value="whisperx",
+                    elem_classes="hintitem",
+                    elem_id="transcribe_engine",
+                    key="transcribe_engine"
+                )
                 
                 language = gr.Dropdown(
                     label="Language",
@@ -362,6 +599,25 @@ def render(arg_handler: ArgHandler):
                     elem_classes="hintitem",
                     elem_id="transcribe_compute_type",
                     key="transcribe_compute_type"
+                )
+                
+                # Show/hide options based on selected engine
+                def update_engine_options(engine_choice):
+                    # WhisperX specific options
+                    align_visibility = engine_choice == "whisperx"
+                    char_align_visibility = engine_choice == "whisperx"
+                    batch_visibility = engine_choice == "whisperx"
+                    
+                    return [
+                        gr.update(visible=align_visibility),
+                        gr.update(visible=char_align_visibility),
+                        gr.update(visible=batch_visibility)
+                    ]
+                
+                engine.change(
+                    fn=update_engine_options,
+                    inputs=[engine],
+                    outputs=[align_output, return_char_alignments, batch_size]
                 )
             
             # Middle Column - Input
@@ -522,55 +778,12 @@ def render(arg_handler: ArgHandler):
                 
             return f"Unsupported file type: {os.path.basename(selected_file)}", gr.update(visible=False)
 
-        # Function to populate file dropdown when transcription files are available
-        def populate_file_dropdown(file_list):
-            if not file_list:
-                return gr.update(choices=[], value=None, visible=False)
-            
-            # Create a more descriptive display for each file
-            choices = []
-            for file_path in file_list:
-                if not os.path.exists(file_path):
-                    continue
-                
-                filename = os.path.basename(file_path)
-                ext = os.path.splitext(filename)[1].lower()
-                
-                # Create a more informative display name based on file type
-                if ext == ".txt":
-                    display_name = f"{filename} (Plain Text)"
-                elif ext == ".json":
-                    display_name = f"{filename} (JSON Data)"
-                elif ext == ".srt":
-                    display_name = f"{filename} (SubRip Subtitles)"
-                elif ext == ".vtt":
-                    display_name = f"{filename} (WebVTT Subtitles)"
-                elif ext == ".lrc":
-                    display_name = f"{filename} (LRC Lyrics)"
-                elif ext in [".wav", ".mp3", ".flac"]:
-                    display_name = f"{filename} (Audio)"
-                else:
-                    display_name = filename
-                
-                choices.append((display_name, file_path))
-            
-            if not choices:
-                return gr.update(choices=[], value=None, visible=False)
-            
-            # Find .txt files in the list - we'll prioritize these
-            txt_files = [path for _, path in choices if path.endswith(".txt")]
-            if txt_files:
-                default_file = txt_files[0]  # Select the first txt file by default
-            else:
-                default_file = choices[0][1]  # Select the first file
-                
-            return gr.update(choices=choices, value=default_file, visible=True)
-            
         # Event handler for the transcribe button
         transcribe_button.click(
             fn=process_transcription,
             inputs=[
                 input_audio,
+                engine,
                 language,
                 align_output,
                 assign_speakers,
@@ -582,22 +795,6 @@ def render(arg_handler: ArgHandler):
             ],
             outputs=[status_display, OUTPUT_TRANSCRIPTION]
         )
-        
-        # Update file selector when transcription files are available
-        OUTPUT_TRANSCRIPTION.change(
-            fn=populate_file_dropdown,
-            inputs=[OUTPUT_TRANSCRIPTION],
-            outputs=[file_selector]
-        )
-        
-        # Event handler for file selection
-        file_selector.change(
-            fn=update_preview,
-            inputs=[file_selector],
-            outputs=[output_text, OUTPUT_AUDIO]
-        )
-    
-    return transcribe
 
 
 def send_to_process(file_to_send, existing_inputs):
@@ -626,13 +823,14 @@ def listen():
 def register_descriptions(arg_handler: ArgHandler):
     """Register descriptions for UI elements"""
     descriptions = {
+        "engine": "Select the transcription engine to use. WhisperX is faster and supports more features, while original Whisper might be better for some languages.",
         "language": "Select the language of the audio for better transcription accuracy, or choose 'auto' for automatic detection.",
-        "align_output": "Enable to align the transcription with the audio for precise timestamps.",
+        "align_output": "Enable to align the transcription with the audio for precise timestamps (WhisperX only).",
         "assign_speakers": "Enable to detect and assign different speakers in the audio.",
-        "return_char_alignments": "Enable to generate character-level timestamps (more detailed but increases processing time).",
+        "return_char_alignments": "Enable to generate character-level timestamps (more detailed but increases processing time, WhisperX only).",
         "min_speakers": "Minimum number of speakers to detect (leave empty for automatic detection).",
         "max_speakers": "Maximum number of speakers to detect (leave empty for automatic detection).",
-        "batch_size": "Batch size for transcription processing. Higher values use more memory but can be faster.",
+        "batch_size": "Batch size for transcription processing. Higher values use more memory but can be faster (WhisperX only).",
         "compute_type": "Precision level for computation. Lower precision uses less memory but may be less accurate.",
         "input_audio": "Upload one or more audio files to transcribe.",
         "output_audio": "Preview of the selected audio file.",
@@ -671,6 +869,9 @@ def register_api_endpoints(api):
     class TranscriptionOptions(BaseModel):
         """Request model for audio transcription"""
         audio_file: str = Field(..., description="Base64 encoded audio file to transcribe")
+        engine: str = Field(
+            "whisperx", description="The transcription engine to use: 'whisperx' or 'whisper'"
+        )
         model: str = Field(
             "whisper-1", description="The model to use for audio transcription"
         )
@@ -705,9 +906,16 @@ def register_api_endpoints(api):
             None, description="Timestamp granularity levels"
         )
         
+        @validator('engine')
+        def validate_engine(cls, v):
+            valid_engines = ["whisperx", "whisper"]
+            if v not in valid_engines:
+                raise ValueError(f"Engine must be one of: {', '.join(valid_engines)}")
+            return v
+        
         @validator('model')
         def validate_model(cls, v):
-            valid_models = ["whisper-1"]
+            valid_models = ["whisper-1", "whisper-large-v3"]
             if v not in valid_models:
                 raise ValueError(f"Model must be one of: {', '.join(valid_models)}")
             return v
@@ -810,7 +1018,7 @@ def register_api_endpoints(api):
         """
         Transcribe audio to text
         
-        This endpoint transcribes the uploaded audio file to text using the WhisperX model.
+        This endpoint transcribes the uploaded audio file to text using the selected transcription engine.
         """
         try:
             # Check file size limit (25MB)
@@ -836,233 +1044,77 @@ def register_api_endpoints(api):
             
             # Generate a unique ID for this transcription
             transcription_id = str(uuid.uuid4())
-            timestamp = int(time.time())
             
-            # Create output directory if it doesn't exist
-            output_folder = os.path.join(output_path, "transcriptions", f"api_{transcription_id}")
-            os.makedirs(output_folder, exist_ok=True)
-            
-            # Process using WhisperX
+            # Process using the selected transcription engine
             try:
-                # Determine language
-                language = request.language if request.language else "auto"
-                
-                # Set other parameters
-                align_output = True  # Always align for better accuracy
-                assign_speakers = True if request.timestamp_granularities and "speaker" in request.timestamp_granularities else False
-                return_char_alignments = True if request.timestamp_granularities and "character" in request.timestamp_granularities else False
-                min_speakers = None
-                max_speakers = None
-                batch_size = 16
-                compute_type = "float16"
-                
-                # Get the local model directory path for WhisperX
-                model_dir = fetch_model("Systran/faster-whisper-large-v3")
-                logger.info(f"Model directory: {model_dir}")
-                
-                # Load the model directly from the local path
-                device = "cuda"
-                model = whisperx.load_model(
-                    model_dir,
-                    device, 
-                    compute_type=compute_type
+                # Use the common process_transcription function
+                summary, output_files = process_transcription(
+                    audio_files=[temp_audio_path],
+                    engine=request.engine,
+                    language=request.language if request.language else "auto",
+                    align_output=request.align_output,
+                    assign_speakers=request.assign_speakers,
+                    min_speakers=str(request.min_speakers) if request.min_speakers is not None else None,
+                    max_speakers=str(request.max_speakers) if request.max_speakers is not None else None,
+                    batch_size=16,
+                    compute_type="float16",
+                    return_char_alignments=request.return_char_alignments,
+                    progress=None
                 )
                 
-                # Transcribe
-                audio = whisperx.load_audio(temp_audio_path)
+                if not output_files:
+                    raise HTTPException(status_code=500, detail="Failed to transcribe audio: No output files generated")
                 
-                # Determine language if set to auto
-                detect_language = language == "auto"
-                result = model.transcribe(
-                    audio, 
-                    batch_size=batch_size,
-                    language=None if detect_language else language
-                )
-                
-                # Align if needed
-                if align_output:
-                    model_a, metadata = whisperx.load_align_model(
-                        language_code=result["language"], 
-                        device=device
-                    )
-                    result = whisperx.align(
-                        result["segments"], 
-                        model_a, 
-                        metadata, 
-                        audio, 
-                        device,
-                        return_char_alignments=return_char_alignments
-                    )
-                    # Clean up alignment model to save memory
-                    del model_a
-                    gc.collect()
-                
-                # Assign speaker labels if requested
-                if assign_speakers:
-                    dia_model_path = fetch_model("fatymatariq/speaker-diarization-3.1")
-                    dia_model_path = os.path.join(dia_model_path, "config.yaml")
-                    diarize_model = whisperx.diarize.DiarizationPipeline(model_name=dia_model_path, device=device)
-                    
-                    diarize_segments = diarize_model(audio)
-                    result = whisperx.assign_word_speakers(diarize_segments, result)
-                    
-                    # Clean up diarization model
-                    del diarize_model
-                    gc.collect()
-                
-                # Generate output in all formats
-                output_files = {}
-                
-                # JSON output
-                output_json = os.path.join(output_folder, f"transcript.json")
-                with open(output_json, 'w', encoding='utf-8') as f:
-                    json.dump(result, f, indent=4, ensure_ascii=False)
-                output_files["json"] = output_json
-                
-                # Plain text output
-                output_txt = os.path.join(output_folder, f"transcript.txt")
-                with open(output_txt, 'w', encoding='utf-8') as f:
-                    if assign_speakers and "speaker" in result["segments"][0]:
-                        for segment in result["segments"]:
-                            speaker = segment.get("speaker", "UNKNOWN")
-                            text = segment["text"]
-                            start = segment["start"]
-                            end = segment["end"]
-                            f.write(f"[{speaker}] ({start:.2f}s - {end:.2f}s): {text}\n")
-                    else:
-                        for segment in result["segments"]:
-                            text = segment["text"]
-                            start = segment["start"]
-                            end = segment["end"]
-                            f.write(f"({start:.2f}s - {end:.2f}s): {text}\n")
-                output_files["text"] = output_txt
-                
-                # SRT output
-                output_srt = os.path.join(output_folder, f"transcript.srt")
-                with open(output_srt, 'w', encoding='utf-8') as f:
-                    for i, segment in enumerate(result["segments"]):
-                        # SubRip index (starts at 1)
-                        f.write(f"{i+1}\n")
-                        
-                        # Format timestamps as HH:MM:SS,mmm --> HH:MM:SS,mmm
-                        start_time = segment["start"]
-                        end_time = segment["end"]
-                        
-                        start_hrs = int(start_time // 3600)
-                        start_mins = int((start_time % 3600) // 60)
-                        start_secs = int(start_time % 60)
-                        start_ms = int((start_time % 1) * 1000)
-                        
-                        end_hrs = int(end_time // 3600)
-                        end_mins = int((end_time % 3600) // 60)
-                        end_secs = int(end_time % 60)
-                        end_ms = int((end_time % 1) * 1000)
-                        
-                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d},{start_ms:03d} --> "
-                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d},{end_ms:03d}"
-                        f.write(f"{timestamp_line}\n")
-                        
-                        # Text content, with speaker if available
-                        text = segment["text"].strip()
-                        if assign_speakers and "speaker" in segment:
-                            text = f"[{segment['speaker']}] {text}"
-                        f.write(f"{text}\n\n")
-                output_files["srt"] = output_srt
-                
-                # VTT output
-                output_vtt = os.path.join(output_folder, f"transcript.vtt")
-                with open(output_vtt, 'w', encoding='utf-8') as f:
-                    # Write VTT header
-                    f.write("WEBVTT\n\n")
-                    
-                    for i, segment in enumerate(result["segments"]):
-                        # Format timestamps as HH:MM:SS.mmm --> HH:MM:SS.mmm (note: VTT uses . instead of , for milliseconds)
-                        start_time = segment["start"]
-                        end_time = segment["end"]
-                        
-                        start_hrs = int(start_time // 3600)
-                        start_mins = int((start_time % 3600) // 60)
-                        start_secs = int(start_time % 60)
-                        start_ms = int((start_time % 1) * 1000)
-                        
-                        end_hrs = int(end_time // 3600)
-                        end_mins = int((end_time % 3600) // 60)
-                        end_secs = int(end_time % 60)
-                        end_ms = int((end_time % 1) * 1000)
-                        
-                        timestamp_line = f"{start_hrs:02d}:{start_mins:02d}:{start_secs:02d}.{start_ms:03d} --> "
-                        timestamp_line += f"{end_hrs:02d}:{end_mins:02d}:{end_secs:02d}.{end_ms:03d}"
-                        
-                        # Optionally add cue identifier
-                        cue_id = f"cue-{i+1}"
-                        f.write(f"{cue_id}\n")
-                        f.write(f"{timestamp_line}\n")
-                        
-                        # Text content, with speaker if available
-                        text = segment["text"].strip()
-                        if assign_speakers and "speaker" in segment:
-                            text = f"[{segment['speaker']}] {text}"
-                        f.write(f"{text}\n\n")
-                output_files["vtt"] = output_vtt
-                
-                # LRC output
-                output_lrc = os.path.join(output_folder, f"transcript.lrc")
-                with open(output_lrc, 'w', encoding='utf-8') as f:
-                    for segment in result["segments"]:
-                        # Convert seconds to MM:SS.xx format
-                        start_time = segment["start"]
-                        minutes = int(start_time // 60)
-                        seconds = start_time % 60
-                        timestamp = f"[{minutes:02d}:{seconds:05.2f}]"
-                        
-                        # Add speaker label if available
-                        text = segment["text"].strip()
-                        if assign_speakers and "speaker" in segment:
-                            text = f"[{segment['speaker']}] {text}"
-                        
-                        f.write(f"{timestamp}{text}\n")
-                output_files["lrc"] = output_lrc
-                
-                # Clean up the main model
-                del model
-                gc.collect()
-                
-                # Return the output based on the requested format
+                # Get the output format
                 output_format = request.response_format.lower()
-                response_content = None
                 
-                if output_format == "json":
-                    with open(output_json, 'r', encoding='utf-8') as f:
+                # Get corresponding output file
+                output_file_path = None
+                for file_path in output_files:
+                    if file_path.endswith(f".{output_format}"):
+                        output_file_path = file_path
+                        break
+                    elif output_format == "text" and file_path.endswith(".txt"):
+                        output_file_path = file_path
+                        break
+                    elif output_format == "verbose_json" and file_path.endswith(".json"):
+                        output_file_path = file_path
+                        break
+                
+                if not output_file_path:
+                    raise HTTPException(status_code=500, detail=f"Failed to find output file with format {output_format}")
+                
+                # Read the output file content
+                with open(output_file_path, "r", encoding="utf-8") as f:
+                    if output_format in ["json", "verbose_json"]:
                         response_content = json.load(f)
-                elif output_format == "text":
-                    with open(output_txt, 'r', encoding='utf-8') as f:
-                        response_content = f.read()
-                elif output_format == "srt":
-                    with open(output_srt, 'r', encoding='utf-8') as f:
-                        response_content = f.read()
-                elif output_format == "vtt":
-                    with open(output_vtt, 'r', encoding='utf-8') as f:
+                    else:
                         response_content = f.read()
                 
-                # Prepare download URLs for all formats
+                # Get output directory path
+                output_dir = os.path.dirname(output_file_path)
+                
+                # Create download URLs for all formats
                 download_urls = {}
-                for format_name, file_path in output_files.items():
-                    filename = os.path.basename(file_path)
-                    download_urls[format_name] = f"/api/v1/audio/transcription/download/{transcription_id}/{format_name}"
+                for file_path in output_files:
+                    file_ext = os.path.splitext(file_path)[1][1:]  # Get extension without the dot
+                    download_urls[file_ext] = f"/api/v1/audio/transcription/download/{transcription_id}/{file_ext}"
                 
                 # Create response data
                 response_data = {
                     "success": True,
                     "transcription_id": transcription_id,
-                    "language": result.get("language", language),
+                    "engine": request.engine,
+                    "language": request.language,
                     "output_formats": download_urls,
                     "metadata": {
                         "original_filename": temp_audio_filename,
+                        "engine": request.engine,
                         "model": request.model,
-                        "align_output": align_output,
-                        "assign_speakers": assign_speakers,
-                        "return_char_alignments": return_char_alignments,
-                        "timestamp": timestamp
+                        "align_output": request.align_output,
+                        "assign_speakers": request.assign_speakers,
+                        "return_char_alignments": request.return_char_alignments,
+                        "timestamp": int(time.time())
                     }
                 }
                 
@@ -1074,21 +1126,28 @@ def register_api_endpoints(api):
                 if os.path.exists(temp_audio_path):
                     os.remove(temp_audio_path)
                 
+                # Store the output directory for download
+                # Create a symlink in a standard location
+                api_output_dir = os.path.join(output_path, "transcriptions", f"api_{transcription_id}")
+                if os.path.exists(api_output_dir):
+                    shutil.rmtree(api_output_dir)
+                os.symlink(output_dir, api_output_dir)
+                
                 # Schedule cleanup after 24 hours
                 if background_tasks:
                     background_tasks.add_task(
                         lambda p: shutil.rmtree(p) if os.path.exists(p) else None,
-                        output_folder,
+                        api_output_dir,
                         delay=86400  # 24 hours
                     )
                 
                 return JSONResponse(content=jsonable_encoder(response_data))
                 
             except Exception as e:
-                logger.exception(f"WhisperX transcription error: {e}")
+                logger.exception(f"Transcription error: {e}")
                 import traceback
                 traceback.print_exc()
-                raise HTTPException(status_code=500, detail=f"WhisperX transcription error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
             
         except ValueError as e:
             # Handle validation errors
@@ -1382,9 +1441,11 @@ def register_api_endpoints(api):
         Returns information about available models for audio transcription.
         """
         models = [
+            # WhisperX models
             {
-                "id": "whisper-large-v3",
+                "id": "whisperx-large-v3",
                 "name": "WhisperX (large-v3)",
+                "engine": "whisperx",
                 "description": "Fast automatic speech recognition with word-level timestamps and speaker diarization",
                 "supported_languages": [
                     {"code": "en", "name": "English"},
@@ -1411,34 +1472,79 @@ def register_api_endpoints(api):
                 "features": ["word-level-timestamps", "speaker-diarization", "character-level-timestamps"],
                 "supported_formats": ["json", "text", "srt", "vtt", "lrc"]
             },
+            
+            # OpenAI Whisper models
             {
-                "id": "whisper-1",
-                "name": "Whisper v1",
-                "description": "General-purpose speech recognition model supporting transcription in multiple languages",
-                "supported_languages": [
-                    {"code": "en", "name": "English"},
-                    {"code": "zh", "name": "Chinese"},
-                    {"code": "de", "name": "German"},
-                    {"code": "es", "name": "Spanish"},
-                    {"code": "ru", "name": "Russian"},
-                    {"code": "ko", "name": "Korean"},
-                    {"code": "fr", "name": "French"},
-                    {"code": "ja", "name": "Japanese"},
-                    {"code": "pt", "name": "Portuguese"},
-                    {"code": "tr", "name": "Turkish"},
-                    {"code": "pl", "name": "Polish"},
-                    {"code": "ca", "name": "Catalan"},
-                    {"code": "nl", "name": "Dutch"},
-                    {"code": "ar", "name": "Arabic"},
-                    {"code": "sv", "name": "Swedish"},
-                    {"code": "it", "name": "Italian"},
-                    {"code": "id", "name": "Indonesian"},
-                    {"code": "hi", "name": "Hindi"},
-                    {"code": "fi", "name": "Finnish"},
-                    {"code": "vi", "name": "Vietnamese"}
-                ],
-                "features": ["utterance-level-timestamps"],
-                "supported_formats": ["json", "text", "srt", "vtt", "verbose_json"]
+                "id": "whisper-large-v3",
+                "name": "OpenAI Whisper (large-v3)",
+                "engine": "whisper",
+                "description": "Original OpenAI Whisper model with word-level timestamps and speaker diarization",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-large-v2",
+                "name": "OpenAI Whisper (large-v2)",
+                "engine": "whisper",
+                "description": "Original OpenAI Whisper model with word-level timestamps and speaker diarization",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-large",
+                "name": "OpenAI Whisper (large)",
+                "engine": "whisper",
+                "description": "Original OpenAI Whisper model with word-level timestamps and speaker diarization",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-medium",
+                "name": "OpenAI Whisper (medium)",
+                "engine": "whisper",
+                "description": "Medium-sized OpenAI Whisper model with word-level timestamps",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-small",
+                "name": "OpenAI Whisper (small)",
+                "engine": "whisper",
+                "description": "Small-sized OpenAI Whisper model",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-base",
+                "name": "OpenAI Whisper (base)",
+                "engine": "whisper",
+                "description": "Base-sized OpenAI Whisper model",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-tiny",
+                "name": "OpenAI Whisper (tiny)",
+                "engine": "whisper",
+                "description": "Tiny-sized OpenAI Whisper model, fastest but less accurate",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
+            },
+            {
+                "id": "whisper-turbo",
+                "name": "OpenAI Whisper (turbo)",
+                "engine": "whisper",
+                "description": "Optimized OpenAI Whisper model for faster transcription",
+                "supported_languages": ["en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi"],
+                "features": ["word-level-timestamps", "speaker-diarization"],
+                "supported_formats": ["json", "text", "srt", "vtt", "lrc", "verbose_json"]
             }
         ]
         return {"models": models}
