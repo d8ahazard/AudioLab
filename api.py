@@ -1,16 +1,13 @@
-import base64
 import importlib
 import inspect
 import logging
-import tempfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, create_model
 
-from layouts.diffrythm import register_api_endpoints as register_diffrythm_endpoints
 from layouts.music import register_api_endpoints as register_music_endpoints
 # Import register_api_endpoints functions from layout modules
 from layouts.orpheus import register_api_endpoints as register_orpheus_endpoints
@@ -20,7 +17,6 @@ from layouts.stable_audio import register_api_endpoints as register_stable_audio
 from layouts.transcribe import register_api_endpoints as register_transcribe_endpoints
 from layouts.tts import register_api_endpoints as register_tts_endpoints
 from modules.acestep.api import register_api_endpoints as register_acestep_endpoints
-from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
 # Initialize logger
@@ -124,7 +120,6 @@ TEMP_DIR.mkdir(exist_ok=True)
 
 # Register API endpoints from layout modules
 register_orpheus_endpoints(app)
-register_diffrythm_endpoints(app)
 register_music_endpoints(app)
 register_process_endpoints(app)
 register_rvc_endpoints(app)
