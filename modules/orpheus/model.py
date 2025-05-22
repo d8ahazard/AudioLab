@@ -11,8 +11,14 @@ from typing import Optional, List, Generator, Union
 
 import torch
 import numpy as np
-from orpheus_tts import OrpheusModel as OrpheusTTSModel
 
+# Try to import OrpheusTTSModel, but provide a fallback if not installed
+try:
+    from orpheus_tts import OrpheusModel as OrpheusTTSModel
+    ORPHEUS_TTS_AVAILABLE = True
+except ImportError:
+    ORPHEUS_TTS_AVAILABLE = False
+    
 from handlers.config import output_path
 
 logger = logging.getLogger("ADLB.Orpheus.Model")
@@ -35,16 +41,18 @@ class OrpheusModel:
     Wrapper for the Orpheus TTS model.
     """
     
-    def __init__(self, model_name: str = "canopylabs/orpheus-tts-0.1-finetune-prod", max_model_len: int = 2048):
+    def __init__(self, model_name: str = "canopylabs/orpheus-tts-0.1-finetune-prod"):
         """
         Initialize the Orpheus TTS model.
         
         Args:
             model_name: The name or path of the model to use
-            max_model_len: Maximum model context length
         """
+        if not ORPHEUS_TTS_AVAILABLE:
+            logger.error("orpheus_tts package is not installed. Please install it with 'pip install orpheus-tts'")
+            raise ImportError("orpheus_tts package is not installed. Please install it with 'pip install orpheus-tts'")
+            
         self.model_name = model_name
-        self.max_model_len = max_model_len
         self.model = None
         self.output_dir = os.path.join(output_path, "orpheus")
         os.makedirs(self.output_dir, exist_ok=True)
@@ -57,8 +65,7 @@ class OrpheusModel:
             logger.info(f"Loading Orpheus TTS model: {self.model_name}")
             try:
                 self.model = OrpheusTTSModel(
-                    model_name=self.model_name,
-                    max_model_len=self.max_model_len
+                    model_name=self.model_name
                 )
                 logger.info("Orpheus TTS model loaded successfully")
             except Exception as e:
@@ -72,8 +79,7 @@ class OrpheusModel:
         emotion: str = "",
         temperature: float = 0.7,
         top_p: float = 0.9,
-        repetition_penalty: float = 1.1,
-        max_new_tokens: int = 1024
+        repetition_penalty: float = 1.1
     ) -> Generator[bytes, None, None]:
         """
         Generate speech from text, returning audio chunks.
@@ -85,7 +91,6 @@ class OrpheusModel:
             temperature: Sampling temperature
             top_p: Top-p sampling parameter
             repetition_penalty: Repetition penalty parameter
-            max_new_tokens: Maximum number of new tokens to generate
             
         Returns:
             Generator yielding audio chunks
@@ -102,8 +107,7 @@ class OrpheusModel:
             voice=voice,
             temperature=temperature,
             top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            max_new_tokens=max_new_tokens
+            repetition_penalty=repetition_penalty
         )
     
     def generate_speech_to_file(
@@ -114,7 +118,6 @@ class OrpheusModel:
         temperature: float = 0.7,
         top_p: float = 0.9,
         repetition_penalty: float = 1.1,
-        max_new_tokens: int = 1024,
         output_file: Optional[str] = None
     ) -> str:
         """
@@ -127,7 +130,6 @@ class OrpheusModel:
             temperature: Sampling temperature
             top_p: Top-p sampling parameter
             repetition_penalty: Repetition penalty parameter
-            max_new_tokens: Maximum number of new tokens to generate
             output_file: Optional path to save the output file
             
         Returns:
@@ -150,8 +152,7 @@ class OrpheusModel:
             emotion=emotion,
             temperature=temperature,
             top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            max_new_tokens=max_new_tokens
+            repetition_penalty=repetition_penalty
         )
         
         # Save to WAV file

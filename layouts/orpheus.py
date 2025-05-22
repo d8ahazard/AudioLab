@@ -27,6 +27,7 @@ SEND_TO_PROCESS_BUTTON = None
 OUTPUT_AUDIO = None
 FINETUNE_OUTPUT = None
 orpheus_model = None
+finetune_handler = None
 logger = logging.getLogger("ADLB.Orpheus")
 
 # Convert emotion tags to a format for the UI dropdown
@@ -45,8 +46,13 @@ def load_model(model_name="canopylabs/orpheus-tts-0.1-finetune-prod"):
     """
     global orpheus_model
 
-    if orpheus_model is None:
-        orpheus_model = OrpheusModel(model_name)
+    try:
+        if orpheus_model is None:
+            orpheus_model = OrpheusModel(model_name)
+    except ImportError as e:
+        logger.error(f"Error loading Orpheus TTS model: {e}")
+        logger.error("Please install the orpheus-tts package with: pip install orpheus-tts")
+        raise
 
     return orpheus_model
 
