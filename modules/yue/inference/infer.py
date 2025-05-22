@@ -383,7 +383,7 @@ def generate_music(
 
     model_config = OmegaConf.load(basic_model_config)
     codec_model = SoundStream(**model_config.generator.config).to(device)
-    parameter_dict = torch.load(resume_path, map_location="cpu")
+    parameter_dict = torch.load(resume_path, map_location="cpu", weights_only=False)
     codec_model.load_state_dict(parameter_dict["codec_model"])
     codec_model.to(device)
     codec_model.eval()

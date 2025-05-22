@@ -14,7 +14,7 @@ from mutagen.mp3 import MP3
 import os
 import shutil
 import numpy as np
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from mutagen.mp3 import MP3
 from handlers.config import model_path, app_path
 
@@ -108,6 +108,18 @@ def check_download_model(repo_id):
             
         except Exception as e:
             raise ValueError(f"Failed to download model {repo_name}: {e}")
+        
+
+def fetch_model(repo_id):
+    base_model_dir = os.path.join(model_path, "diffrythm")
+    repo_name = repo_id.replace("/", "_")
+    model_dir = os.path.join(base_model_dir, repo_name)
+    
+    if os.path.exists(model_dir):
+        return model_dir
+    
+    model_dir = snapshot_download(repo_id, cache_dir=model_dir)
+    return model_dir
 
 
 def decode_audio(latents, vae_model, chunked=False, overlap=32, chunk_size=128):
@@ -215,12 +227,9 @@ def prepare_model(max_frames, device, repo_id="ASLP-lab/DiffRhythm-base"):
     # prepare tokenizer
     tokenizer = CNENTokenizer()
 
-    # Create the path for storing MuQ models using model_path
-    muq_model_dir = os.path.join(model_path, "diffrythm", "muq")
-    os.makedirs(muq_model_dir, exist_ok=True)
-    
+    muq_path = fetch_model("OpenMuQ/MuQ-MuLan-large")
     # prepare muq
-    muq = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large", cache_dir=muq_model_dir)
+    muq = MuQMuLan.from_pretrained(muq_path)
     muq = muq.to(device).eval()
 
     # prepare vae

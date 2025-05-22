@@ -17,7 +17,8 @@ from loguru import logger
 from tqdm import tqdm
 import json
 import math
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import snapshot_download
+from handlers.config import model_path
 
 # from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from modules.acestep.acestep.schedulers.scheduling_flow_match_euler_discrete import (
@@ -32,7 +33,7 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 from diffusers.utils.torch_utils import randn_tensor
 from transformers import UMT5EncoderModel, AutoTokenizer
 
-from modules.acestep.acestep.language_segmentation import LangSegment
+from modules.acestep.acestep.language_segmentation import LangSegment, language_filters
 from modules.acestep.acestep.music_dcae.music_dcae_pipeline import MusicDCAE
 from modules.acestep.acestep.models.ace_step_transformer import ACEStepTransformer2DModel
 from modules.acestep.acestep.models.lyrics_utils.lyric_tokenizer import VoiceBpeTokenizer
@@ -45,6 +46,8 @@ from modules.acestep.acestep.apg_guidance import (
 )
 import torchaudio
 import librosa
+
+from modules.acestep.acestep.schedulers.scheduling_flow_match_pingpong import FlowMatchPingPongScheduler
 from .cpu_offload import cpu_offload
 
 
@@ -85,6 +88,7 @@ def ensure_directory_exists(directory):
 
 
 REPO_ID = "ACE-Step/ACE-Step-v1-3.5B"
+REPO_ID_QUANT = REPO_ID + "-q4-K-M" # ??? update this i guess
 
 
 # class ACEStepPipeline(DiffusionPipeline):
@@ -103,17 +107,12 @@ class ACEStepPipeline:
         **kwargs,
     ):
         if not checkpoint_dir:
-            if persistent_storage_path is None:
-                checkpoint_dir = os.path.join(
-                    os.path.expanduser("~"), ".cache/ace-step/checkpoints"
-                )
-                os.makedirs(checkpoint_dir, exist_ok=True)
-            else:
-                checkpoint_dir = os.path.join(persistent_storage_path, "checkpoints")
+            checkpoint_dir = os.path.join(model_path, "acestep")
         ensure_directory_exists(checkpoint_dir)
 
         self.checkpoint_dir = checkpoint_dir
         self.lora_path = "none"
+        self.lora_weight = 1
         device = (
             torch.device(f"cuda:{device_id}")
             if torch.cuda.is_available()
@@ -126,6 +125,8 @@ class ACEStepPipeline:
             self.dtype = torch.float16
         if device.type == "mps":
             self.dtype = torch.float32
+        if 'ACE_PIPELINE_DTYPE' in os.environ and len(os.environ['ACE_PIPELINE_DTYPE']):
+            self.dtype = getattr(torch, os.environ['ACE_PIPELINE_DTYPE'])
         self.device = device
         self.loaded = False
         self.torch_compile = torch_compile
@@ -133,8 +134,22 @@ class ACEStepPipeline:
         self.quantized = quantized
         self.overlapped_decode = overlapped_decode
 
-    def load_checkpoint(self, checkpoint_dir=None, export_quantized_weights=False):
-        device = self.device
+    def cleanup_memory(self):
+        """Clean up GPU and CPU memory to prevent VRAM overflow during multiple generations."""
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+            # Log memory usage if in verbose mode
+            allocated = torch.cuda.memory_allocated() / (1024 ** 3)
+            reserved = torch.cuda.memory_reserved() / (1024 ** 3)
+            logger.info(f"GPU Memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
+        # Collect Python garbage
+        import gc
+        gc.collect()
+
+    def get_checkpoint_path(self, checkpoint_dir, repo):
         checkpoint_dir_models = None
         
         if checkpoint_dir is not None:
@@ -152,160 +167,64 @@ class ACEStepPipeline:
         
         if checkpoint_dir_models is None:
             if checkpoint_dir is None:
-                logger.info(f"Download models from Hugging Face: {REPO_ID}")
-                checkpoint_dir_models = snapshot_download(REPO_ID)
+                logger.info(f"Download models from Hugging Face: {repo}")
+                checkpoint_dir_models = snapshot_download(repo)
             else:
-                logger.info(f"Download models from Hugging Face: {REPO_ID}, cache to: {checkpoint_dir}")
-                checkpoint_dir_models = snapshot_download(REPO_ID, cache_dir=checkpoint_dir)
+                logger.info(f"Download models from Hugging Face: {repo}, cache to: {checkpoint_dir}")
+                checkpoint_dir_models = snapshot_download(repo, cache_dir=checkpoint_dir)
+        return checkpoint_dir_models
 
-        dcae_model_path = os.path.join(checkpoint_dir_models, "music_dcae_f8c8")
-        vocoder_model_path = os.path.join(checkpoint_dir_models, "music_vocoder")
-        ace_step_model_path = os.path.join(checkpoint_dir_models, "ace_step_transformer")
-        text_encoder_model_path = os.path.join(checkpoint_dir_models, "umt5-base")
-        
-        dcae_checkpoint_path = dcae_model_path
-        vocoder_checkpoint_path = vocoder_model_path
-        ace_step_checkpoint_path = ace_step_model_path
-        text_encoder_checkpoint_path = text_encoder_model_path
-
-        self.music_dcae = MusicDCAE(
-            dcae_checkpoint_path=dcae_checkpoint_path,
-            vocoder_checkpoint_path=vocoder_checkpoint_path,
-        )
-        # self.music_dcae.to(device).eval().to(self.dtype)
-        if self.cpu_offload:  # might be redundant
-            self.music_dcae = self.music_dcae.to("cpu").eval().to(self.dtype)
-        else:
-            self.music_dcae = self.music_dcae.to(device).eval().to(self.dtype)
+    def load_checkpoint(self, checkpoint_dir=None, export_quantized_weights=False):
+        checkpoint_dir = self.get_checkpoint_path(checkpoint_dir, REPO_ID)
+        dcae_checkpoint_path = os.path.join(checkpoint_dir, "music_dcae_f8c8")
+        vocoder_checkpoint_path = os.path.join(checkpoint_dir, "music_vocoder")
+        ace_step_checkpoint_path = os.path.join(checkpoint_dir, "ace_step_transformer")
+        text_encoder_checkpoint_path = os.path.join(checkpoint_dir, "umt5-base")
 
         self.ace_step_transformer = ACEStepTransformer2DModel.from_pretrained(
             ace_step_checkpoint_path, torch_dtype=self.dtype
         )
-        # self.ace_step_transformer.to(device).eval().to(self.dtype)
+        # self.ace_step_transformer.to(self.device).eval().to(self.dtype)
         if self.cpu_offload:
             self.ace_step_transformer = (
                 self.ace_step_transformer.to("cpu").eval().to(self.dtype)
             )
         else:
             self.ace_step_transformer = (
-                self.ace_step_transformer.to(device).eval().to(self.dtype)
+                self.ace_step_transformer.to(self.device).eval().to(self.dtype)
             )
+        if self.torch_compile:
+            self.ace_step_transformer = torch.compile(self.ace_step_transformer)
+
+        self.music_dcae = MusicDCAE(
+            dcae_checkpoint_path=dcae_checkpoint_path,
+            vocoder_checkpoint_path=vocoder_checkpoint_path,
+        )
+        # self.music_dcae.to(self.device).eval().to(self.dtype)
+        if self.cpu_offload:  # might be redundant
+            self.music_dcae = self.music_dcae.to("cpu").eval().to(self.dtype)
+        else:
+            self.music_dcae = self.music_dcae.to(self.device).eval().to(self.dtype)
+        if self.torch_compile:
+            self.music_dcae = torch.compile(self.music_dcae)
 
         lang_segment = LangSegment()
-
-        lang_segment.setfilters(
-            [
-                "af",
-                "am",
-                "an",
-                "ar",
-                "as",
-                "az",
-                "be",
-                "bg",
-                "bn",
-                "br",
-                "bs",
-                "ca",
-                "cs",
-                "cy",
-                "da",
-                "de",
-                "dz",
-                "el",
-                "en",
-                "eo",
-                "es",
-                "et",
-                "eu",
-                "fa",
-                "fi",
-                "fo",
-                "fr",
-                "ga",
-                "gl",
-                "gu",
-                "he",
-                "hi",
-                "hr",
-                "ht",
-                "hu",
-                "hy",
-                "id",
-                "is",
-                "it",
-                "ja",
-                "jv",
-                "ka",
-                "kk",
-                "km",
-                "kn",
-                "ko",
-                "ku",
-                "ky",
-                "la",
-                "lb",
-                "lo",
-                "lt",
-                "lv",
-                "mg",
-                "mk",
-                "ml",
-                "mn",
-                "mr",
-                "ms",
-                "mt",
-                "nb",
-                "ne",
-                "nl",
-                "nn",
-                "no",
-                "oc",
-                "or",
-                "pa",
-                "pl",
-                "ps",
-                "pt",
-                "qu",
-                "ro",
-                "ru",
-                "rw",
-                "se",
-                "si",
-                "sk",
-                "sl",
-                "sq",
-                "sr",
-                "sv",
-                "sw",
-                "ta",
-                "te",
-                "th",
-                "tl",
-                "tr",
-                "ug",
-                "uk",
-                "ur",
-                "vi",
-                "vo",
-                "wa",
-                "xh",
-                "zh",
-                "zu",
-            ]
-        )
+        lang_segment.setfilters(language_filters.default)
         self.lang_segment = lang_segment
         self.lyric_tokenizer = VoiceBpeTokenizer()
         text_encoder_model = UMT5EncoderModel.from_pretrained(
             text_encoder_checkpoint_path, torch_dtype=self.dtype
         ).eval()
-        # text_encoder_model = text_encoder_model.to(device).to(self.dtype)
+        # text_encoder_model = text_encoder_model.to(self.device).to(self.dtype)
         if self.cpu_offload:
             text_encoder_model = text_encoder_model.to("cpu").eval().to(self.dtype)
         else:
-            text_encoder_model = text_encoder_model.to(device).eval().to(self.dtype)
+            text_encoder_model = text_encoder_model.to(self.device).eval().to(self.dtype)
         text_encoder_model.requires_grad_(False)
         self.text_encoder_model = text_encoder_model
+        if self.torch_compile:
+            self.text_encoder_model = torch.compile(self.text_encoder_model)
+
         self.text_tokenizer = AutoTokenizer.from_pretrained(
             text_encoder_checkpoint_path
         )
@@ -313,10 +232,6 @@ class ACEStepPipeline:
 
         # compile
         if self.torch_compile:
-            self.music_dcae = torch.compile(self.music_dcae)
-            self.ace_step_transformer = torch.compile(self.ace_step_transformer)
-            self.text_encoder_model = torch.compile(self.text_encoder_model)
-
             if export_quantized_weights:
                 from torchao.quantization import (
                     quantize_,
@@ -338,38 +253,31 @@ class ACEStepPipeline:
                 torch.save(
                     self.ace_step_transformer.state_dict(),
                     os.path.join(
-                        ace_step_model_path, "diffusion_pytorch_model_int4wo.bin"
+                        ace_step_checkpoint_path, "diffusion_pytorch_model_int4wo.bin"
                     ),
                 )
                 print(
                     "Quantized Weights Saved to: ",
                     os.path.join(
-                        ace_step_model_path, "diffusion_pytorch_model_int4wo.bin"
+                        ace_step_checkpoint_path, "diffusion_pytorch_model_int4wo.bin"
                     ),
                 )
                 torch.save(
                     self.text_encoder_model.state_dict(),
-                    os.path.join(text_encoder_model_path, "pytorch_model_int4wo.bin"),
+                    os.path.join(text_encoder_checkpoint_path, "pytorch_model_int4wo.bin"),
                 )
                 print(
                     "Quantized Weights Saved to: ",
-                    os.path.join(text_encoder_model_path, "pytorch_model_int4wo.bin"),
+                    os.path.join(text_encoder_checkpoint_path, "pytorch_model_int4wo.bin"),
                 )
 
 
     def load_quantized_checkpoint(self, checkpoint_dir=None):
-        device = self.device
-
-        dcae_model_path = os.path.join(checkpoint_dir, "music_dcae_f8c8")
-        vocoder_model_path = os.path.join(checkpoint_dir, "music_vocoder")
-        ace_step_model_path = os.path.join(checkpoint_dir, "ace_step_transformer")
-        text_encoder_model_path = os.path.join(checkpoint_dir, "umt5-base")
- 
-
-        dcae_checkpoint_path = dcae_model_path
-        vocoder_checkpoint_path = vocoder_model_path
-        ace_step_checkpoint_path = ace_step_model_path
-        text_encoder_checkpoint_path = text_encoder_model_path
+        checkpoint_dir = self.get_checkpoint_path(checkpoint_dir, REPO_ID_QUANT)
+        dcae_checkpoint_path = os.path.join(checkpoint_dir, "music_dcae_f8c8")
+        vocoder_checkpoint_path = os.path.join(checkpoint_dir, "music_vocoder")
+        ace_step_checkpoint_path = os.path.join(checkpoint_dir, "ace_step_transformer")
+        text_encoder_checkpoint_path = os.path.join(checkpoint_dir, "umt5-base")
 
         self.music_dcae = MusicDCAE(
             dcae_checkpoint_path=dcae_checkpoint_path,
@@ -398,7 +306,7 @@ class ACEStepPipeline:
         self.text_encoder_model = torch.compile(self.text_encoder_model)
         self.text_encoder_model.load_state_dict(
             torch.load(
-                os.path.join(text_encoder_model_path, "pytorch_model_int4wo.bin"),
+                os.path.join(text_encoder_checkpoint_path, "pytorch_model_int4wo.bin"),
                 map_location=self.device,
             ),assign=True
         )
@@ -409,114 +317,14 @@ class ACEStepPipeline:
         )
 
         lang_segment = LangSegment()
-        lang_segment.setfilters(
-            [
-                "af",
-                "am",
-                "an",
-                "ar",
-                "as",
-                "az",
-                "be",
-                "bg",
-                "bn",
-                "br",
-                "bs",
-                "ca",
-                "cs",
-                "cy",
-                "da",
-                "de",
-                "dz",
-                "el",
-                "en",
-                "eo",
-                "es",
-                "et",
-                "eu",
-                "fa",
-                "fi",
-                "fo",
-                "fr",
-                "ga",
-                "gl",
-                "gu",
-                "he",
-                "hi",
-                "hr",
-                "ht",
-                "hu",
-                "hy",
-                "id",
-                "is",
-                "it",
-                "ja",
-                "jv",
-                "ka",
-                "kk",
-                "km",
-                "kn",
-                "ko",
-                "ku",
-                "ky",
-                "la",
-                "lb",
-                "lo",
-                "lt",
-                "lv",
-                "mg",
-                "mk",
-                "ml",
-                "mn",
-                "mr",
-                "ms",
-                "mt",
-                "nb",
-                "ne",
-                "nl",
-                "nn",
-                "no",
-                "oc",
-                "or",
-                "pa",
-                "pl",
-                "ps",
-                "pt",
-                "qu",
-                "ro",
-                "ru",
-                "rw",
-                "se",
-                "si",
-                "sk",
-                "sl",
-                "sq",
-                "sr",
-                "sv",
-                "sw",
-                "ta",
-                "te",
-                "th",
-                "tl",
-                "tr",
-                "ug",
-                "uk",
-                "ur",
-                "vi",
-                "vo",
-                "wa",
-                "xh",
-                "zh",
-                "zu",
-            ]
-        )
+        lang_segment.setfilters(language_filters.default)
         self.lang_segment = lang_segment
         self.lyric_tokenizer = VoiceBpeTokenizer()
 
         self.loaded = True
 
     @cpu_offload("text_encoder_model")
-    def get_text_embeddings(self, texts, device, text_max_length=256):
+    def get_text_embeddings(self, texts, text_max_length=256):
         inputs = self.text_tokenizer(
             texts,
             return_tensors="pt",
@@ -524,9 +332,9 @@ class ACEStepPipeline:
             truncation=True,
             max_length=text_max_length,
         )
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        if self.text_encoder_model.device != device:
-            self.text_encoder_model.to(device)
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+        if self.text_encoder_model.device != self.device:
+            self.text_encoder_model.to(self.device)
         with torch.no_grad():
             outputs = self.text_encoder_model(**inputs)
             last_hidden_states = outputs.last_hidden_state
@@ -535,7 +343,7 @@ class ACEStepPipeline:
 
     @cpu_offload("text_encoder_model")
     def get_text_embeddings_null(
-        self, texts, device, text_max_length=256, tau=0.01, l_min=8, l_max=10
+        self, texts, text_max_length=256, tau=0.01, l_min=8, l_max=10
     ):
         inputs = self.text_tokenizer(
             texts,
@@ -544,9 +352,9 @@ class ACEStepPipeline:
             truncation=True,
             max_length=text_max_length,
         )
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        if self.text_encoder_model.device != device:
-            self.text_encoder_model.to(device)
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+        if self.text_encoder_model.device != self.device:
+            self.text_encoder_model.to(self.device)
 
         def forward_with_temperature(inputs, tau=0.01, l_min=8, l_max=10):
             handlers = []
@@ -778,8 +586,6 @@ class ACEStepPipeline:
             do_classifier_free_guidance = False
 
         target_guidance_scale = guidance_scale
-        device = encoder_text_hidden_states.device
-        dtype = encoder_text_hidden_states.dtype
         bsz = encoder_text_hidden_states.shape[0]
 
         scheduler = FlowMatchEulerDiscreteScheduler(
@@ -789,10 +595,10 @@ class ACEStepPipeline:
 
         T_steps = infer_steps
         frame_length = src_latents.shape[-1]
-        attention_mask = torch.ones(bsz, frame_length, device=device, dtype=dtype)
+        attention_mask = torch.ones(bsz, frame_length, device=self.device, dtype=self.dtype)
 
         timesteps, T_steps = retrieve_timesteps(
-            scheduler, T_steps, device, timesteps=None
+            scheduler, T_steps, self.device, timesteps=None
         )
 
         if do_classifier_free_guidance:
@@ -857,7 +663,7 @@ class ACEStepPipeline:
             if i + 1 < len(timesteps):
                 t_im1 = (timesteps[i + 1]) / 1000
             else:
-                t_im1 = torch.zeros_like(t_i).to(t_i.device)
+                t_im1 = torch.zeros_like(t_i).to(self.device)
 
             if i < n_max:
                 # Calculate the average of the V predictions
@@ -866,8 +672,8 @@ class ACEStepPipeline:
                     fwd_noise = randn_tensor(
                         shape=x_src.shape,
                         generator=random_generators,
-                        device=device,
-                        dtype=dtype,
+                        device=self.device,
+                        dtype=self.dtype,
                     )
 
                     zt_src = (1 - t_i) * x_src + (t_i) * fwd_noise
@@ -894,16 +700,13 @@ class ACEStepPipeline:
                         attention_mask=attention_mask,
                         momentum_buffer=momentum_buffer,
                     )
-                    V_delta_avg += (1 / n_avg) * (
-                        Vt_tar - Vt_src
-                    )  # - (hfg-1)*( x_src))
+                    V_delta_avg += (1 / n_avg) * (Vt_tar - Vt_src) # - (hfg - 1) * (x_src)
 
-                zt_edit = zt_edit.to(torch.float32)
+                zt_edit = zt_edit.to(torch.float32) # arbitrary, should be settable for compatibility
                 if scheduler_type != "pingpong":
                     # propagate direct ODE
-                    zt_edit = zt_edit.to(torch.float32)
                     zt_edit = zt_edit + (t_im1 - t_i) * V_delta_avg
-                    zt_edit = zt_edit.to(V_delta_avg.dtype)
+                    zt_edit = zt_edit.to(self.dtype)
                 else:
                     # propagate pingpong SDE
                     zt_edit_denoised = zt_edit - t_i * V_delta_avg
@@ -915,8 +718,8 @@ class ACEStepPipeline:
                     fwd_noise = randn_tensor(
                         shape=x_src.shape,
                         generator=random_generators,
-                        device=device,
-                        dtype=dtype,
+                        device=self.device,
+                        dtype=self.dtype,
                     )
                     scheduler._init_step_index(t)
                     sigma = scheduler.sigmas[scheduler.step_index]
@@ -945,11 +748,10 @@ class ACEStepPipeline:
                     return_src_pred=False,
                 )
 
-                dtype = Vt_tar.dtype
                 xt_tar = xt_tar.to(torch.float32)
                 if scheduler_type != "pingpong":
                     prev_sample = xt_tar + (t_im1 - t_i) * Vt_tar
-                    prev_sample = prev_sample.to(dtype)
+                    prev_sample = prev_sample.to(self.dtype)
                     xt_tar = prev_sample
                 else:
                     prev_sample = xt_tar - t_i * Vt_tar
@@ -970,7 +772,6 @@ class ACEStepPipeline:
     ):
 
         bsz = gt_latents.shape[0]
-        device = gt_latents.device
         if scheduler_type == "euler":
             scheduler = FlowMatchEulerDiscreteScheduler(
                 num_train_timesteps=1000,
@@ -994,7 +795,7 @@ class ACEStepPipeline:
         timesteps, num_inference_steps = retrieve_timesteps(
             scheduler,
             num_inference_steps=infer_steps,
-            device=device,
+            device=self.device,
             timesteps=None,
         )
         noisy_image = gt_latents * (1 - scheduler.sigma_max) + noise * scheduler.sigma_max
@@ -1064,8 +865,6 @@ class ACEStepPipeline:
                 )
             )
 
-        device = encoder_text_hidden_states.device
-        dtype = encoder_text_hidden_states.dtype
         bsz = encoder_text_hidden_states.shape[0]
 
         if scheduler_type == "euler":
@@ -1097,10 +896,10 @@ class ACEStepPipeline:
             timesteps, num_inference_steps = retrieve_timesteps(
                 scheduler,
                 num_inference_steps=infer_steps,
-                device=device,
+                device=self.device,
                 timesteps=None,
             )
-            new_timesteps = torch.zeros(len(oss_steps), dtype=dtype, device=device)
+            new_timesteps = torch.zeros(len(oss_steps), dtype=self.dtype, device=self.device)
             for idx in range(len(oss_steps)):
                 new_timesteps[idx] = timesteps[oss_steps[idx] - 1]
             num_inference_steps = len(oss_steps)
@@ -1108,7 +907,7 @@ class ACEStepPipeline:
             timesteps, num_inference_steps = retrieve_timesteps(
                 scheduler,
                 num_inference_steps=num_inference_steps,
-                device=device,
+                device=self.device,
                 sigmas=sigmas,
             )
             logger.info(
@@ -1118,15 +917,15 @@ class ACEStepPipeline:
             timesteps, num_inference_steps = retrieve_timesteps(
                 scheduler,
                 num_inference_steps=infer_steps,
-                device=device,
+                device=self.device,
                 timesteps=None,
             )
 
         target_latents = randn_tensor(
             shape=(bsz, 8, 16, frame_length),
             generator=random_generators,
-            device=device,
-            dtype=dtype,
+            device=self.device,
+            dtype=self.dtype,
         )
 
         is_repaint = False
@@ -1135,13 +934,13 @@ class ACEStepPipeline:
         if add_retake_noise:
             n_min = int(infer_steps * (1 - retake_variance))
             retake_variance = (
-                torch.tensor(retake_variance * math.pi / 2).to(device).to(dtype)
+                torch.tensor(retake_variance * math.pi / 2).to(self.device).to(self.dtype)
             )
             retake_latents = randn_tensor(
                 shape=(bsz, 8, 16, frame_length),
                 generator=retake_random_generators,
-                device=device,
-                dtype=dtype,
+                device=self.device,
+                dtype=self.dtype,
             )
             repaint_start_frame = int(repaint_start * 44100 / 512 / 8)
             repaint_end_frame = int(repaint_end * 44100 / 512 / 8)
@@ -1163,7 +962,7 @@ class ACEStepPipeline:
             elif not is_extend:
                 # if repaint_end_frame
                 repaint_mask = torch.zeros(
-                    (bsz, 8, 16, frame_length), device=device, dtype=dtype
+                    (bsz, 8, 16, frame_length), device=self.device, dtype=self.dtype
                 )
                 repaint_mask[:, :, :, repaint_start_frame:repaint_end_frame] = 1.0
                 repaint_noise = (
@@ -1222,7 +1021,7 @@ class ACEStepPipeline:
                     gt_latents = extend_gt_latents
 
                 repaint_mask = torch.zeros(
-                    (bsz, 8, 16, frame_length), device=device, dtype=dtype
+                    (bsz, 8, 16, frame_length), device=self.device, dtype=self.dtype
                 )
                 if left_pad_frame_length > 0:
                     repaint_mask[:, :, :, :left_pad_frame_length] = 1.0
@@ -1261,7 +1060,7 @@ class ACEStepPipeline:
                 infer_steps=infer_steps,
             )
 
-        attention_mask = torch.ones(bsz, frame_length, device=device, dtype=dtype)
+        attention_mask = torch.ones(bsz, frame_length, device=self.device, dtype=self.dtype)
 
         # guidance interval
         start_idx = int(num_inference_steps * ((1 - guidance_interval) / 2))
@@ -1512,11 +1311,10 @@ class ACEStepPipeline:
                 if i + 1 < len(timesteps):
                     t_im1 = (timesteps[i + 1]) / 1000
                 else:
-                    t_im1 = torch.zeros_like(t_i).to(t_i.device)
-                dtype = noise_pred.dtype
+                    t_im1 = torch.zeros_like(t_i).to(self.device)
                 target_latents = target_latents.to(torch.float32)
                 prev_sample = target_latents + (t_im1 - t_i) * noise_pred
-                prev_sample = prev_sample.to(dtype)
+                prev_sample = prev_sample.to(self.dtype)
                 target_latents = prev_sample
                 zt_src = (1 - t_im1) * x0 + (t_im1) * z0
                 target_latents = torch.where(
@@ -1603,22 +1401,23 @@ class ACEStepPipeline:
             return None
         input_audio, sr = self.music_dcae.load_audio(input_audio_path)
         input_audio = input_audio.unsqueeze(0)
-        device, dtype = self.device, self.dtype
-        input_audio = input_audio.to(device=device, dtype=dtype)
+        input_audio = input_audio.to(device=self.device, dtype=self.dtype)
         latents, _ = self.music_dcae.encode(input_audio, sr=sr)
         return latents
-    
-    def load_lora(self, lora_name_or_path):
-        if lora_name_or_path != self.lora_path and lora_name_or_path != "none":
+
+    def load_lora(self, lora_name_or_path, lora_weight):
+        if (lora_name_or_path != self.lora_path or lora_weight != self.lora_weight) and lora_name_or_path != "none":
             if not os.path.exists(lora_name_or_path):
                 lora_download_path = snapshot_download(lora_name_or_path, cache_dir=self.checkpoint_dir)
             else:
                 lora_download_path = lora_name_or_path
             if self.lora_path != "none":
                 self.ace_step_transformer.unload_lora()
-            self.ace_step_transformer.load_lora_adapter(os.path.join(lora_download_path, "pytorch_lora_weights.safetensors"), adapter_name="zh_rap_lora", with_alpha=True)
-            logger.info(f"Loading lora weights from: {lora_name_or_path} download path is: {lora_download_path}")
+            self.ace_step_transformer.load_lora_adapter(os.path.join(lora_download_path, "pytorch_lora_weights.safetensors"), adapter_name="ace_step_lora", with_alpha=True, prefix=None)
+            logger.info(f"Loading lora weights from: {lora_name_or_path} download path is: {lora_download_path} weight: {lora_weight}")
+            set_weights_and_activate_adapters(self.ace_step_transformer,["ace_step_lora"], [lora_weight])
             self.lora_path = lora_name_or_path
+            self.lora_weight = lora_weight
         elif self.lora_path != "none" and lora_name_or_path == "none":
             logger.info("No lora weights to load.")
             self.ace_step_transformer.unload_lora()
@@ -1648,6 +1447,7 @@ class ACEStepPipeline:
         ref_audio_strength: float = 0.5,
         ref_audio_input: str = None,
         lora_name_or_path: str = "none",
+        lora_weight: float = 1.0,
         retake_seeds: list = None,
         retake_variance: float = 0.5,
         task: str = "text2music",
@@ -1675,8 +1475,8 @@ class ACEStepPipeline:
                 self.load_quantized_checkpoint(self.checkpoint_dir)
             else:
                 self.load_checkpoint(self.checkpoint_dir)
-        
-        self.load_lora(lora_name_or_path)
+
+        self.load_lora(lora_name_or_path, lora_weight)
         load_model_cost = time.time() - start_time
         logger.info(f"Model loaded in {load_model_cost:.2f} seconds.")
 
@@ -1693,20 +1493,14 @@ class ACEStepPipeline:
             oss_steps = []
 
         texts = [prompt]
-        encoder_text_hidden_states, text_attention_mask = self.get_text_embeddings(
-            texts, self.device
-        )
+        encoder_text_hidden_states, text_attention_mask = self.get_text_embeddings(texts)
         encoder_text_hidden_states = encoder_text_hidden_states.repeat(batch_size, 1, 1)
         text_attention_mask = text_attention_mask.repeat(batch_size, 1)
 
         encoder_text_hidden_states_null = None
         if use_erg_tag:
-            encoder_text_hidden_states_null = self.get_text_embeddings_null(
-                texts, self.device
-            )
-            encoder_text_hidden_states_null = encoder_text_hidden_states_null.repeat(
-                batch_size, 1, 1
-            )
+            encoder_text_hidden_states_null = self.get_text_embeddings_null(texts)
+            encoder_text_hidden_states_null = encoder_text_hidden_states_null.repeat(batch_size, 1, 1)
 
         # not support for released checkpoint
         speaker_embeds = torch.zeros(batch_size, 512).to(self.device).to(self.dtype)
@@ -1767,7 +1561,7 @@ class ACEStepPipeline:
         if task == "edit":
             texts = [edit_target_prompt]
             target_encoder_text_hidden_states, target_text_attention_mask = (
-                self.get_text_embeddings(texts, self.device)
+                self.get_text_embeddings(texts)
             )
             target_encoder_text_hidden_states = (
                 target_encoder_text_hidden_states.repeat(batch_size, 1, 1)
@@ -1867,6 +1661,9 @@ class ACEStepPipeline:
             format=format,
         )
 
+        # Clean up memory after generation
+        self.cleanup_memory()
+
         end_time = time.time()
         latent2audio_time_cost = end_time - start_time
         timecosts = {
@@ -1878,6 +1675,7 @@ class ACEStepPipeline:
         input_params_json = {
             "format": format,
             "lora_name_or_path": lora_name_or_path,
+            "lora_weight": lora_weight,
             "task": task,
             "prompt": prompt if task != "edit" else edit_target_prompt,
             "lyrics": lyrics if task != "edit" else edit_target_lyrics,

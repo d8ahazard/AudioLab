@@ -73,7 +73,9 @@ class OrpheusModel:
         
         try:
             with torch.cuda.device(0):
-                self.model = OrpheusTTS(model_name=model_path_or_name)
+                self.model = OrpheusTTS(
+                    model_name=model_path_or_name
+                )
             logger.info("Model loaded successfully")
             return self.model
         except Exception as e:
@@ -83,7 +85,7 @@ class OrpheusModel:
     
     def generate_speech(self, prompt: str, voice: str, emotion: str = "", 
                        temperature: float = 0.7, top_p: float = 0.9, 
-                       repetition_penalty: float = 1.1) -> Generator[bytes, None, None]:
+                       repetition_penalty: float = 1.1, max_tokens: int = 105936) -> Generator[bytes, None, None]:
         """
         Generate speech from text using the Orpheus TTS model.
         
@@ -94,6 +96,7 @@ class OrpheusModel:
             temperature: Sampling temperature (higher = more random)
             top_p: Top-p sampling parameter (higher = more diverse)
             repetition_penalty: Repetition penalty (higher = less repetition)
+            max_tokens: Maximum number of tokens to generate
             
         Returns:
             Generator yielding audio chunks as bytes
@@ -123,7 +126,8 @@ class OrpheusModel:
                 voice=voice,  # This is redundant since we already formatted the prompt, but keeping for clarity
                 temperature=temperature,
                 top_p=top_p,
-                repetition_penalty=repetition_penalty
+                repetition_penalty=repetition_penalty,
+                max_tokens=max_tokens
             ):
                 yield audio_chunk
         except Exception as e:
@@ -131,7 +135,7 @@ class OrpheusModel:
             raise
     
     def generate_speech_to_file(self, prompt: str, voice: str, emotion: str = "", 
-                              output_file: str = None, **kwargs) -> str:
+                              output_file: str = None, max_tokens: int = 105936, **kwargs) -> str:
         """
         Generate speech from text and save to a file.
         
@@ -140,6 +144,7 @@ class OrpheusModel:
             voice: The voice to use
             emotion: Optional emotion tag to apply
             output_file: Path to save the generated audio (if None, will create one)
+            max_tokens: Maximum number of tokens to generate
             **kwargs: Additional parameters for speech generation
             
         Returns:
