@@ -51,7 +51,6 @@ matchering>=2.0.6
 matplotlib>=3.10.0
 metrics
 ml_collections
-muq>=0.1.0
 mutagen>=1.47.0
 ninja
 num2words>=0.5.14

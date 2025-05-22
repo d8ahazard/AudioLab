@@ -150,20 +150,6 @@ Example prompts:
 - "An electronic beat with pulsing bass at 120 BPM"
 - "A sci-fi spaceship engine humming"
 
-### DiffRhythm: Full-Length Song Generation
-
-Create complete songs with vocals and instrumentals using state-of-the-art latent diffusion:
-
-- **🎵 Complete Songs:** Generate full-length songs up to 4m45s.
-- **🎤 Lyrics Support:** Add lyrics using LRC format with timestamps.
-- **🎹 Style Control:** Define the musical style using text prompts or reference audio.
-- **⚡ Blazingly Fast:** Efficient generation compared to other music models.
-- **💾 Memory Efficient:** Chunked decoding option for consumer GPUs.
-
-Example use cases:
-- Create original songs in any genre with your own lyrics
-- Generate background music for videos with specific moods
-- Experiment with unique musical styles and vocal characteristics
 
 ### WaveTransfer: Instrument Timbre Transfer
 

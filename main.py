@@ -31,8 +31,6 @@ from layouts.stable_audio import render as render_stable_audio, \
     listen as stable_audio_listen
 from layouts.orpheus import listen as orpheus_listen, render_orpheus, \
     register_descriptions as orpheus_register_descriptions
-from layouts.diffrythm import listen as diffrythm_listen, register_descriptions as diffrythm_register_descriptions, \
-    render as render_diffrythm
 from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
     render as render_transcribe
 from layouts.wavetransfer import listen as wavetransfer_listen, register_descriptions as wavetransfer_register_descriptions, \
@@ -151,7 +149,6 @@ if __name__ == '__main__':
             rvc_register_descriptions(arg_handler)
             stable_audio_register_descriptions(arg_handler)
             orpheus_register_descriptions(arg_handler)
-            diffrythm_register_descriptions(arg_handler)
             transcribe_register_descriptions(arg_handler)
             wavetransfer_register_descriptions(arg_handler)
             acestep_register_descriptions(arg_handler)
@@ -175,8 +172,6 @@ if __name__ == '__main__':
                     with gr.Tab(label="Music", id="music"):
                         with gr.Tab(label='ACE-Step', id="acestep"):
                             render_acestep(arg_handler)                    
-                        with gr.Tab(label='DiffRhythm', id="diffrythm"):
-                            render_diffrythm(arg_handler)                    
                         with gr.Tab(label='Stable-Audio', id="soundforge"):
                             render_stable_audio(arg_handler)                    
                         with gr.Tab(label="YuE", id="yue"):                            
@@ -195,7 +190,6 @@ if __name__ == '__main__':
                 process_listen()
                 stable_audio_listen()
                 orpheus_listen()
-                diffrythm_listen()
                 acestep_listen()
                 transcribe_listen()
                 wavetransfer_listen()
