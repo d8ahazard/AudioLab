@@ -102,4 +102,4 @@ wheel
 whisperx>=3.3.4
 x-transformers>=2.3.1
 xxhash
-yt-dlp
+yt-dlp>=2025.5.22
