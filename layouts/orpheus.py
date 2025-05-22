@@ -9,18 +9,24 @@ import shutil
 import tempfile
 import time
 import traceback
+import wave
 from pathlib import Path
-from typing import List
+from typing import List, Generator, Optional
 
 import gradio as gr
+import torch
 from fastapi import HTTPException, BackgroundTasks, Body
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from handlers.args import ArgHandler
-from handlers.config import output_path
+from handlers.config import output_path, model_path
 
-# Import the updated model implementation
-from modules.orpheus.model import OrpheusModel, AVAILABLE_VOICES, EMOTION_TAGS
+# Import the Orpheus TTS model directly
+try:
+    from orpheus_tts import OrpheusModel
+    ORPHEUS_AVAILABLE = True
+except ImportError:
+    ORPHEUS_AVAILABLE = False
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
@@ -30,16 +36,74 @@ orpheus_model = None
 finetune_handler = None
 logger = logging.getLogger("ADLB.Orpheus")
 
+# Available models, voices and emotion tags
+AVAILABLE_MODELS = {
+    "canopylabs/orpheus-tts-0.1-finetune-prod": "Canopy Labs Orpheus TTS (Fine-tuned Production)",
+    "canopylabs/orpheus-tts-0.1-pretrained": "Canopy Labs Orpheus TTS (Pre-trained)",
+    "unsloth/orpheus-3b-0.1-ft": "Unsloth Orpheus 3B (Fine-tuned)",
+    "unsloth/orpheus-3b-0.1-ft-bnb-4bit": "Unsloth Orpheus 3B (Fine-tuned, 4-bit)",
+    "unsloth/orpheus-3b-0.1-pretrained": "Unsloth Orpheus 3B (Pre-trained)",
+    "unsloth/orpheus-3b-0.1-pretrained-bnb-4bit": "Unsloth Orpheus 3B (Pre-trained, 4-bit)",
+    "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit": "Unsloth Orpheus 3B (Pre-trained Unsloth, 4-bit)"
+}
+
+AVAILABLE_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
+
+EMOTION_TAGS = {
+    "laugh": "<laugh>",
+    "chuckle": "<chuckle>",
+    "sigh": "<sigh>",
+    "cough": "<cough>",
+    "sniffle": "<sniffle>",
+    "groan": "<groan>",
+    "yawn": "<yawn>",
+    "gasp": "<gasp>"
+}
+
 # Convert emotion tags to a format for the UI dropdown
 AVAILABLE_EMOTIONS = ["None"] + list(EMOTION_TAGS.keys())
 
 
-def load_model(model_name="canopylabs/orpheus-tts-0.1-finetune-prod"):
+def download_model(model_repo: str) -> str:
+    """
+    Download a model from Hugging Face and return the local path.
+    
+    Args:
+        model_repo: The model repository on Hugging Face
+        
+    Returns:
+        Local path to the downloaded model
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        
+        # Create model directory
+        model_dir = os.path.join(model_path, "orpheus", model_repo.replace("/", "_"))
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Download the model
+        logger.info(f"Downloading model from {model_repo}...")
+        local_path = snapshot_download(
+            repo_id=model_repo,
+            local_dir=model_dir,
+            ignore_patterns=["*.safetensors", "*.bin", "*.pt", "*.h5", "*.ot", "*.msgpack"],
+        )
+        
+        logger.info(f"Model downloaded to {local_path}")
+        return local_path
+    
+    except Exception as e:
+        logger.error(f"Error downloading model: {e}")
+        # Return the repo name as fallback
+        return model_repo
+
+
+def load_model(model_repo="canopylabs/orpheus-tts-0.1-finetune-prod"):
     """
     Load the Orpheus TTS model.
     
     Args:
-        model_name: The name or path of the model to use
+        model_repo: The model repository to use
     
     Returns:
         The loaded model
@@ -47,23 +111,38 @@ def load_model(model_name="canopylabs/orpheus-tts-0.1-finetune-prod"):
     global orpheus_model
 
     try:
-        if orpheus_model is None:
-            orpheus_model = OrpheusModel(model_name)
+        if not ORPHEUS_AVAILABLE:
+            raise ImportError("orpheus_tts package is not installed. Please install it with 'pip install orpheus-tts'")
+        
+        if orpheus_model is None or orpheus_model.model_name != model_repo:
+            # Try to download the model first
+            local_path = download_model(model_repo)
+            
+            # Create the model
+            orpheus_model = OrpheusModel(model_name=local_path)
+            logger.info(f"Loaded Orpheus model: {model_repo}")
+    
     except ImportError as e:
         logger.error(f"Error loading Orpheus TTS model: {e}")
         logger.error("Please install the orpheus-tts package with: pip install orpheus-tts")
         raise
+    except Exception as e:
+        logger.error(f"Error creating Orpheus model: {e}")
+        # Fall back to using the repo directly if download fails
+        orpheus_model = OrpheusModel(model_name=model_repo)
+        logger.info(f"Loaded Orpheus model directly from HF: {model_repo}")
 
     return orpheus_model
 
 
-def generate_speech(text, voice, emotion, temperature, top_p, repetition_penalty,
+def generate_speech(text, model_repo, voice, emotion, temperature, top_p, repetition_penalty,
                     progress=gr.Progress(track_tqdm=True)):
     """
     Generate speech using the Orpheus TTS model.
     
     Args:
         text: The text to synthesize
+        model_repo: The model repository to use
         voice: The voice to use
         emotion: The emotion to apply
         temperature: Sampling temperature
@@ -74,25 +153,44 @@ def generate_speech(text, voice, emotion, temperature, top_p, repetition_penalty
     Returns:
         Path to the generated audio file
     """
-    global orpheus_model
-
     try:
-        model = load_model()
-
         # Process the emotion (convert "None" to an empty string)
         emotion_value = "" if emotion == "None" else emotion
-
-        # Generate speech
+        
+        # Apply emotion tag if provided
+        if emotion_value and emotion_value in EMOTION_TAGS:
+            text = f"{EMOTION_TAGS[emotion_value]} {text}"
+        
+        # Load model
         progress(0.1, "Loading model...")
-        output_file = model.generate_speech_to_file(
+        model = load_model(model_repo)
+        
+        # Generate filename
+        timestamp = int(time.time())
+        output_dir = os.path.join(output_path, "orpheus")
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"orpheus_{voice}_{timestamp}.wav")
+        
+        # Generate speech
+        progress(0.3, "Generating speech...")
+        syn_tokens = model.generate_speech(
             prompt=text,
             voice=voice,
-            emotion=emotion_value,
             temperature=temperature,
             top_p=top_p,
             repetition_penalty=repetition_penalty
         )
-
+        
+        # Save to WAV file
+        progress(0.7, "Saving audio...")
+        with wave.open(output_file, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            
+            for audio_chunk in syn_tokens:
+                wf.writeframes(audio_chunk)
+        
         progress(1.0, "Generation complete")
         return output_file, f"Generated speech with voice '{voice}'" + (
             f" and emotion '{emotion}'" if emotion != "None" else "")
@@ -304,6 +402,16 @@ def render_orpheus(arg_handler: ArgHandler):
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("### 🔧 Settings")
+                    
+                    # Add model selection dropdown
+                    model_dropdown = gr.Dropdown(
+                        choices=list(AVAILABLE_MODELS.items()),
+                        value="canopylabs/orpheus-tts-0.1-finetune-prod",
+                        label="Model",
+                        elem_id="orpheus_model",
+                        elem_classes="hintitem"
+                    )
+                    
                     voice_dropdown = gr.Dropdown(
                         choices=AVAILABLE_VOICES,
                         value="tara",
@@ -400,6 +508,7 @@ def render_orpheus(arg_handler: ArgHandler):
                 fn=generate_speech,
                 inputs=[
                     text_input,
+                    model_dropdown,
                     voice_dropdown,
                     emotion_dropdown,
                     temperature_slider,
@@ -594,6 +703,7 @@ def register_descriptions(arg_handler: ArgHandler):
     """
     descriptions = {
         # TTS tab
+        "orpheus_model": "Select which Orpheus model to use. The Canopy Labs models are the official ones, while Unsloth versions offer optimized variants.",
         "orpheus_text_input": "Enter the text you want to convert to speech. You can use newlines to structure your text.",
         "orpheus_voice": "Select one of the available Orpheus voices (tara, leah, jess, leo, dan, mia, zac, zoe).",
         "orpheus_emotion": "Apply an emotion tag to the generated speech. You can add laugh, chuckle, sigh, cough, sniffle, groan, yawn, or gasp.",
@@ -642,6 +752,7 @@ def register_api_endpoints(api):
 
     class GenerateSpeechRequest(BaseModel):
         text: str
+        model_repo: str = "canopylabs/orpheus-tts-0.1-finetune-prod"
         voice: str = "tara"
         emotion: str = "None"
         temperature: float = 0.7
@@ -664,6 +775,7 @@ def register_api_endpoints(api):
         
         Request body:
         - text: Text to convert to speech
+        - model_repo: Model repository to use (default: "canopylabs/orpheus-tts-0.1-finetune-prod")
         - voice: Voice to use (default: "tara")
         - emotion: Emotion to apply (default: "None")
         - temperature: Sampling temperature (default: 0.7)
@@ -677,6 +789,13 @@ def register_api_endpoints(api):
             # Validate input
             if not request.text or request.text.strip() == "":
                 raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+            # Check if model is valid
+            if request.model_repo not in AVAILABLE_MODELS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid model: {request.model_repo}. Available models: {', '.join(AVAILABLE_MODELS.keys())}"
+                )
 
             # Check if voice is valid
             if request.voice not in AVAILABLE_VOICES:
@@ -695,6 +814,7 @@ def register_api_endpoints(api):
             # Generate speech
             output_file, message = generate_speech(
                 text=request.text,
+                model_repo=request.model_repo,
                 voice=request.voice,
                 emotion=request.emotion,
                 temperature=request.temperature,
@@ -792,10 +912,26 @@ def register_api_endpoints(api):
             logger.exception("Error starting Orpheus finetuning:")
             raise HTTPException(status_code=500, detail=f"Finetuning error: {str(e)}")
 
+    @api.get("/api/v1/orpheus/models", tags=["Orpheus TTS"])
+    async def api_list_models():
+        """
+        List available Orpheus models
+        
+        Returns:
+            List of available models
+        """
+        try:
+            return {
+                "models": {k: v for k, v in AVAILABLE_MODELS.items()}
+            }
+        except Exception as e:
+            logger.exception("Error listing Orpheus models:")
+            raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+
     @api.get("/api/v1/orpheus/voices", tags=["Orpheus TTS"])
     async def api_list_voices():
         """
-        List available Orpheus voices
+        List available Orpheus voices and emotions
         
         Returns:
             List of available voices and emotions

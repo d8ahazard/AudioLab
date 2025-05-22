@@ -41,6 +41,14 @@ def main():
         logger.error("Python 3.8 or higher is required for Orpheus TTS")
         sys.exit(1)
     
+    # Install huggingface_hub for model downloading
+    install_package("huggingface_hub")
+    
+    # First install vllm dependency with specific version
+    success_vllm = install_package("vllm", "0.7.3")
+    if not success_vllm:
+        logger.warning("Failed to install vllm==0.7.3. Continuing with orpheus-tts installation...")
+    
     # Install orpheus-tts
     success = install_package("orpheus-tts")
     
@@ -50,7 +58,8 @@ def main():
         # Test the installation
         try:
             import orpheus_tts
-            logger.info(f"Orpheus TTS version: {orpheus_tts.__version__}")
+            from orpheus_tts import OrpheusModel
+            logger.info("Orpheus TTS imported successfully")
             logger.info("You can now use the Orpheus TTS module in AudioLab")
         except ImportError as e:
             logger.error(f"Failed to import orpheus_tts: {e}")
