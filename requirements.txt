@@ -55,7 +55,7 @@ muq>=0.1.0
 mutagen>=1.47.0
 ninja
 num2words>=0.5.14
-numpy==2.0.2
+numpy>=2.0.2
 omegaconf
 onnx
 onnxruntime-gpu>=1.21.1
