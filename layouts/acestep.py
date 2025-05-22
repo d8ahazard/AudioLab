@@ -31,8 +31,8 @@ logger = logging.getLogger("ADLB.ACEStep")
 
 # Available models and settings
 AVAILABLE_MODELS = ["ACE-Step/ACE-Step-v1-3.5B"]
-DEFAULT_SCHEDULERS = ["flow_match_euler", "euler", "heun", "pingpong"]
-DEFAULT_CFG_TYPES = ["apg", "cfg"]
+DEFAULT_SCHEDULERS = ["euler", "heun", "pingpong"]
+DEFAULT_CFG_TYPES = ["cfg", "apg", "cfg_star"]
 AVAILABLE_LORAS = ["ACE-Step/ACE-Step-v1-chinese-rap-LoRA"]
 
 # Determine if CUDA is available
@@ -216,20 +216,22 @@ def render(arg_handler: ArgHandler):
                             )
                             
                         with gr.Row():
-                            scheduler_type = gr.Dropdown(
+                            scheduler_type = gr.Radio(
                                 choices=DEFAULT_SCHEDULERS,
-                                value="flow_match_euler",
+                                value="euler",
                                 label="Scheduler Type",
                                 elem_id="acestep_scheduler",
-                                elem_classes="hintitem"
+                                elem_classes="hintitem",
+                                info="Scheduler type for the generation. euler is recommended. heun will take more time. pingpong use SDE"
                             )
                             
-                            cfg_type = gr.Dropdown(
+                            cfg_type = gr.Radio(
                                 choices=DEFAULT_CFG_TYPES,
                                 value="apg",
                                 label="CFG Type",
                                 elem_id="acestep_cfg_type",
-                                elem_classes="hintitem"
+                                elem_classes="hintitem",
+                                info="CFG type for the generation. apg is recommended. cfg and cfg_star are almost the same."
                             )
                             
                         with gr.Row():
@@ -241,6 +243,97 @@ def render(arg_handler: ArgHandler):
                                 label="Omega Scale",
                                 elem_id="acestep_omega_scale",
                                 elem_classes="hintitem"
+                            )
+
+                        with gr.Row():
+                            use_erg_tag = gr.Checkbox(
+                                label="Use ERG for tag",
+                                value=True,
+                                elem_id="acestep_use_erg_tag",
+                                elem_classes="hintitem",
+                                info="Use Entropy Rectifying Guidance for tag. It will multiple a temperature to the attention to make a weaker tag condition and make better diversity."
+                            )
+                            
+                            use_erg_lyric = gr.Checkbox(
+                                label="Use ERG for lyric",
+                                value=False,
+                                elem_id="acestep_use_erg_lyric",
+                                elem_classes="hintitem",
+                                info="The same but apply to lyric encoder's attention."
+                            )
+                            
+                            use_erg_diffusion = gr.Checkbox(
+                                label="Use ERG for diffusion",
+                                value=True,
+                                elem_id="acestep_use_erg_diffusion",
+                                elem_classes="hintitem",
+                                info="The same but apply to diffusion model's attention."
+                            )
+
+                        with gr.Row():
+                            guidance_interval = gr.Slider(
+                                minimum=0.0,
+                                maximum=1.0,
+                                step=0.01,
+                                value=0.5,
+                                label="Guidance Interval",
+                                elem_id="acestep_guidance_interval",
+                                elem_classes="hintitem",
+                                info="Guidance interval for the generation. 0.5 means only apply guidance in the middle steps (0.25 * infer_steps to 0.75 * infer_steps)"
+                            )
+                            
+                            guidance_interval_decay = gr.Slider(
+                                minimum=0.0,
+                                maximum=1.0,
+                                step=0.01,
+                                value=0.0,
+                                label="Guidance Interval Decay",
+                                elem_id="acestep_guidance_interval_decay",
+                                elem_classes="hintitem",
+                                info="Guidance interval decay for the generation. Guidance scale will decay from guidance_scale to min_guidance_scale in the interval. 0.0 means no decay."
+                            )
+                            
+                            min_guidance_scale = gr.Slider(
+                                minimum=0.0,
+                                maximum=200.0,
+                                step=0.1,
+                                value=3.0,
+                                label="Min Guidance Scale",
+                                elem_id="acestep_min_guidance_scale",
+                                elem_classes="hintitem",
+                                info="Min guidance scale for guidance interval decay's end scale"
+                            )
+
+                        with gr.Row():
+                            guidance_scale_text = gr.Slider(
+                                minimum=0.0,
+                                maximum=10.0,
+                                step=0.1,
+                                value=0.0,
+                                label="Guidance Scale Text",
+                                elem_id="acestep_guidance_scale_text",
+                                elem_classes="hintitem",
+                                info="Guidance scale for text condition. It can only apply to cfg. set guidance_scale_text=5.0, guidance_scale_lyric=1.5 for start"
+                            )
+                            
+                            guidance_scale_lyric = gr.Slider(
+                                minimum=0.0,
+                                maximum=10.0,
+                                step=0.1,
+                                value=0.0,
+                                label="Guidance Scale Lyric",
+                                elem_id="acestep_guidance_scale_lyric",
+                                elem_classes="hintitem"
+                            )
+
+                        with gr.Row():
+                            oss_steps = gr.Textbox(
+                                label="OSS Steps",
+                                placeholder="16, 29, 52, 96, 129, 158, 172, 183, 189, 200",
+                                value=None,
+                                elem_id="acestep_oss_steps",
+                                elem_classes="hintitem",
+                                info="Optimal Steps for the generation. But not test well"
                             )
 
                     # Add Audio2Audio section
@@ -452,7 +545,7 @@ def render(arg_handler: ArgHandler):
                 outputs=[torch_compile, cpu_offload, overlapped_decode]
             )
 
-            # Unified generation function that handles both regular and LoRA generation
+            # Function to generate music
             def generate_music(
                 use_lora,
                 prompt, 
@@ -474,6 +567,15 @@ def render(arg_handler: ArgHandler):
                 audio2audio_enable,
                 ref_audio_strength,
                 ref_audio_input,
+                use_erg_tag,
+                use_erg_lyric,
+                use_erg_diffusion,
+                guidance_interval,
+                guidance_interval_decay,
+                min_guidance_scale,
+                guidance_scale_text,
+                guidance_scale_lyric,
+                oss_steps,
                 progress=gr.Progress(track_tqdm=True)
             ):
                 if not prompt or prompt.strip() == "":
@@ -512,6 +614,15 @@ def render(arg_handler: ArgHandler):
                         audio2audio_enable=audio2audio_enable,
                         ref_audio_strength=ref_audio_strength,
                         ref_audio_input=ref_audio_input,
+                        use_erg_tag=use_erg_tag,
+                        use_erg_lyric=use_erg_lyric,
+                        use_erg_diffusion=use_erg_diffusion,
+                        guidance_interval=guidance_interval,
+                        guidance_interval_decay=guidance_interval_decay,
+                        min_guidance_scale=min_guidance_scale,
+                        guidance_scale_text=guidance_scale_text,
+                        guidance_scale_lyric=guidance_scale_lyric,
+                        oss_steps=oss_steps,
                         progress_callback=progress
                     )
                 else:
@@ -520,7 +631,7 @@ def render(arg_handler: ArgHandler):
                         prompt=prompt,
                         lyrics=lyrics if lyrics else "",
                         audio_duration=duration,
-                            model_name=base_model,
+                        model_name=base_model,
                         seed=seed if seed is not None else None,
                         device_id=device_id,
                         bf16=bf16,
@@ -532,9 +643,18 @@ def render(arg_handler: ArgHandler):
                         scheduler_type=scheduler_type,
                         cfg_type=cfg_type,
                         omega_scale=omega_scale,
-                            audio2audio_enable=audio2audio_enable,
-                            ref_audio_strength=ref_audio_strength,
-                            ref_audio_input=ref_audio_input,
+                        audio2audio_enable=audio2audio_enable,
+                        ref_audio_strength=ref_audio_strength,
+                        ref_audio_input=ref_audio_input,
+                        use_erg_tag=use_erg_tag,
+                        use_erg_lyric=use_erg_lyric,
+                        use_erg_diffusion=use_erg_diffusion,
+                        guidance_interval=guidance_interval,
+                        guidance_interval_decay=guidance_interval_decay,
+                        min_guidance_scale=min_guidance_scale,
+                        guidance_scale_text=guidance_scale_text,
+                        guidance_scale_lyric=guidance_scale_lyric,
+                        oss_steps=oss_steps,
                         progress_callback=progress
                     )
                 
@@ -563,7 +683,16 @@ def render(arg_handler: ArgHandler):
                     omega_scale,
                     audio2audio_enable,
                     ref_audio_strength,
-                    ref_audio_input
+                    ref_audio_input,
+                    use_erg_tag,
+                    use_erg_lyric,
+                    use_erg_diffusion,
+                    guidance_interval,
+                    guidance_interval_decay,
+                    min_guidance_scale,
+                    guidance_scale_text,
+                    guidance_scale_lyric,
+                    oss_steps
                 ],
                 outputs=[OUTPUT_AUDIO, output_message]
             )
