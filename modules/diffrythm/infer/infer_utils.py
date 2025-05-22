@@ -229,7 +229,24 @@ def prepare_model(max_frames, device, repo_id="ASLP-lab/DiffRhythm-base"):
 
     muq_path = fetch_model("OpenMuQ/MuQ-MuLan-large")
     # prepare muq
-    muq = MuQMuLan.from_pretrained(muq_path)
+    # Find the pytorch_model.bin file in the snapshots directory
+    bin_path = None
+    for root, dirs, files in os.walk(muq_path):
+        if "pytorch_model.bin" in files:
+            bin_path = os.path.join(root, "pytorch_model.bin")
+            break
+    
+    if bin_path is None:
+        raise ValueError(f"Could not find pytorch_model.bin in {muq_path}")
+    
+    # Load config and create model
+    config_path = os.path.join(os.path.dirname(bin_path), "config.json")
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    muq = MuQMuLan(config=config)
+    state_dict = torch.load(bin_path, map_location='cpu')
+    muq.load_state_dict(state_dict)
     muq = muq.to(device).eval()
 
     # prepare vae
