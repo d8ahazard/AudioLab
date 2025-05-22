@@ -28,7 +28,7 @@ ffmpeg_progress_yield
 flash_attn==2.7.4.post1; sys_platform != "win32"
 ftfy>=6.3.1
 fugashi[unidic-lite]
-git+https://github.com/Deathdadev/Orpheus-Speech-PyPi
+orpheus-speech>=0.1.0
 gradio>=5.29.0
 hangul-romanize>=0.1.0
 hf_xet

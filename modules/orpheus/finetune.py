@@ -5,12 +5,21 @@ Orpheus TTS fine-tuning utilities for AudioLab.
 import os
 import logging
 import json
-import shutil
 import subprocess
 import sys
+import yaml
 from pathlib import Path
-from typing import List, Dict, Optional, Union
-
+from typing import Dict, Optional, List
+import datetime
+import tempfile
+import torchaudio
+from datasets import Dataset, Audio, load_dataset
+import transformers
+import datasets
+import torch
+import shutil
+import orpheus_tts  # Import the official package
+            
 from handlers.config import model_path, output_path
 
 logger = logging.getLogger("ADLB.Orpheus.Finetune")
@@ -25,21 +34,14 @@ class OrpheusFinetune:
         self.model_dir = os.path.join(model_path, "orpheus")
         self.output_dir = os.path.join(output_path, "orpheus_finetune")
         self.data_dir = os.path.join(output_path, "orpheus_data")
-        self.repo_dir = os.path.join(self.model_dir, "Orpheus-TTS")
         
         # Create necessary directories
         os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.data_dir, exist_ok=True)
         
-        # Check if the repository exists
-        if not os.path.exists(self.repo_dir):
-            logger.error(f"Orpheus-TTS repository not found at {self.repo_dir}. Please run the setup script first.")
-            raise FileNotFoundError(f"Orpheus-TTS repository not found at {self.repo_dir}. Please run the setup script first.")
-        
         # Check if required packages are installed
         try:
-            import orpheus_tts
             logger.debug("Successfully imported orpheus_tts")
         except ImportError as e:
             if "vllm._C" in str(e):
@@ -52,15 +54,6 @@ class OrpheusFinetune:
                 logger.error(f"Import error details: {e}")
                 raise ImportError(f"Required package not installed: orpheus_tts. Please run the setup script first.") from e
                 
-        # Check other required packages
-        try:
-            import transformers
-            import datasets
-            import torch
-        except ImportError as e:
-            logger.error(f"Required package not installed: {e}. Please run the setup script first.")
-            raise ImportError(f"Required package not installed: {e}. Please run the setup script first.")
-    
     def prepare_dataset(self, audio_dir: str, speaker_name: str) -> str:
         """
         Prepare a dataset for fine-tuning from a directory of audio files.
@@ -72,9 +65,6 @@ class OrpheusFinetune:
         Returns:
             Path to the prepared dataset directory
         """
-        import datetime
-        import torchaudio
-        from datasets import Dataset, Audio
         
         logger.info(f"Preparing dataset from {audio_dir}")
         
@@ -208,16 +198,71 @@ class OrpheusFinetune:
         logger.info(f"Transcription completed and saved to {transcribed_dataset_dir}")
         return transcribed_dataset_dir
     
+    def format_dataset_for_orpheus(self, dataset_dir: str, output_dir: Optional[str] = None) -> str:
+        """
+        Format the dataset according to the Orpheus TTS requirements.
+        
+        Args:
+            dataset_dir: Path to the transcribed dataset directory
+            output_dir: Optional output directory
+            
+        Returns:
+            Path to the formatted dataset
+        """
+        from datasets import load_from_disk
+        
+        # Load dataset
+        dataset = load_from_disk(dataset_dir)
+        
+        # Create output directory if not provided
+        if output_dir is None:
+            output_dir = os.path.join(os.path.dirname(dataset_dir), "formatted")
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract speaker name from dataset (assume all entries have the same speaker)
+        speaker_name = dataset[0]["speaker"] if len(dataset) > 0 else "unknown"
+        
+        # Format the dataset as required by Orpheus
+        formatted_data = []
+        for item in dataset:
+            if not item["text"]:
+                continue
+                
+            # Format as required: {speaker_name}: {text}
+            formatted_item = {
+                "text": f"{speaker_name}: {item['text']}",
+                "audio_path": item["audio"]["path"] if isinstance(item["audio"], dict) else item["audio"]
+            }
+            formatted_data.append(formatted_item)
+        
+        # Save as JSON (for debugging and inspection)
+        with open(os.path.join(output_dir, "dataset.json"), "w") as f:
+            json.dump(formatted_data, f, indent=2)
+        
+        # Create a new HF dataset
+        formatted_dataset = Dataset.from_dict({
+            "text": [item["text"] for item in formatted_data],
+            "audio": [item["audio_path"] for item in formatted_data]
+        })
+        
+        # Save the formatted dataset
+        formatted_dataset.save_to_disk(os.path.join(output_dir, "dataset"))
+        
+        logger.info(f"Dataset formatted for Orpheus and saved to {output_dir}")
+        return os.path.join(output_dir, "dataset")
+    
     def prepare_training_config(self, dataset_dir: str, speaker_name: str, 
-                              base_model: str = "unsloth/orpheus-3b-0.1-ft",
+                              base_model: str = "canopylabs/orpheus-tts-0.1-pretrained",
+                              use_lora: bool = False,
                               training_args: Dict = None) -> str:
         """
         Prepare configuration for fine-tuning.
         
         Args:
-            dataset_dir: Path to the transcribed dataset directory
+            dataset_dir: Path to the formatted dataset directory
             speaker_name: Name of the speaker/voice
             base_model: Base model to fine-tune
+            use_lora: Whether to use LoRA for fine-tuning
             training_args: Additional training arguments
             
         Returns:
@@ -244,33 +289,209 @@ class OrpheusFinetune:
             default_args.update(training_args)
         
         # Create training directory
-        import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         training_dir = os.path.join(self.output_dir, f"{speaker_name.lower()}_{timestamp}")
         os.makedirs(training_dir, exist_ok=True)
         
-        # Create config file
+        # Create config YAML file for the official Orpheus training script
         config = {
-            "base_model": base_model,
-            "dataset_dir": dataset_dir,
-            "output_dir": training_dir,
-            "speaker_name": speaker_name,
-            "training_args": default_args
+            "TTS_dataset": dataset_dir,
+            "model_name": base_model,
+            "epochs": default_args["num_train_epochs"],
+            "batch_size": default_args["batch_size"],
+            "number_processes": default_args.get("gradient_accumulation_steps", 4),
+            "pad_token": 128263,
+            "save_steps": default_args["save_steps"],
+            "learning_rate": default_args["learning_rate"],
+            "save_folder": os.path.join(training_dir, "checkpoints"),
+            "project_name": f"orpheus-{speaker_name.lower()}",
+            "run_name": f"{speaker_name.lower()}-{timestamp}"
         }
         
-        config_path = os.path.join(training_dir, "config.json")
+        # Create config.yaml file
+        config_path = os.path.join(training_dir, "config.yaml")
         with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
+            yaml.dump(config, f, default_flow_style=False)
+        
+        # If using LoRA, copy the LoRA script to the training directory
+        if use_lora:
+            script_path = os.path.join(training_dir, "lora.py")
+            og_files_dir = os.path.join(self.model_dir, "og_files")
+            
+            # Check if original files directory exists
+            if not os.path.exists(og_files_dir):
+                os.makedirs(og_files_dir, exist_ok=True)
+                
+            # Create lora.py if it doesn't exist (copy from modules/orpheus/og_files/lora.py)
+            og_lora_path = os.path.join(os.path.dirname(__file__), "og_files", "lora.py")
+            if os.path.exists(og_lora_path):
+                shutil.copy(og_lora_path, script_path)
+            else:
+                # Recreate the lora.py file
+                self._create_lora_script(script_path)
+        else:
+            # Copy the regular training script
+            script_path = os.path.join(training_dir, "train.py")
+            og_files_dir = os.path.join(self.model_dir, "og_files")
+            
+            # Check if original files directory exists
+            if not os.path.exists(og_files_dir):
+                os.makedirs(og_files_dir, exist_ok=True)
+                
+            # Create train.py if it doesn't exist (copy from modules/orpheus/og_files/train.py)
+            og_train_path = os.path.join(os.path.dirname(__file__), "og_files", "train.py")
+            if os.path.exists(og_train_path):
+                shutil.copy(og_train_path, script_path)
+            else:
+                # Recreate the train.py file
+                self._create_train_script(script_path)
         
         logger.info(f"Training configuration prepared and saved to {config_path}")
         return config_path
     
-    def run_finetune(self, config_path: str, progress_callback=None) -> str:
+    def _create_train_script(self, script_path: str):
+        """Create the training script file."""
+        with open(script_path, "w") as f:
+            f.write("""from datasets import load_dataset
+from transformers import AutoModelForCausalLM, Trainer, TrainingArguments, AutoTokenizer
+import numpy as np
+import yaml
+import wandb
+
+config_file = "config.yaml"
+
+with open(config_file, "r") as file:
+    config = yaml.safe_load(file)
+
+dsn = config["TTS_dataset"]
+
+model_name = config["model_name"]
+run_name = config["run_name"]
+project_name = config["project_name"]
+base_repo_id = config["save_folder"]
+epochs = config["epochs"]
+batch_size = config["batch_size"]
+save_steps = config["save_steps"]
+pad_token = config["pad_token"]
+number_processes = config["number_processes"]
+learning_rate = config["learning_rate"]
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="flash_attention_2")
+
+
+ds = load_dataset(dsn, split="train") 
+
+wandb.init(project=project_name, name = run_name)
+
+training_args = TrainingArguments(
+    overwrite_output_dir=True,
+    num_train_epochs=epochs,
+    per_device_train_batch_size=batch_size, 
+    logging_steps=1,
+    bf16=True,
+    output_dir=f"./{base_repo_id}",
+    report_to="wandb", 
+    save_steps=save_steps,
+    remove_unused_columns=True, 
+    learning_rate=learning_rate,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=ds,
+)
+
+trainer.train()
+""")
+        
+    def _create_lora_script(self, script_path: str):
+        """Create the LoRA training script file."""
+        with open(script_path, "w") as f:
+            f.write("""from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, Trainer, TrainingArguments, AutoTokenizer
+import numpy as np
+import yaml
+import wandb
+
+config_file = "config.yaml"
+
+with open(config_file, "r") as file:
+    config = yaml.safe_load(file)
+
+dsn = config["TTS_dataset"]
+
+model_name = config["model_name"]
+run_name = config["run_name"]
+project_name = config["project_name"]
+base_repo_id = config["save_folder"]
+epochs = config["epochs"]
+batch_size = config["batch_size"]
+save_steps = config["save_steps"]
+pad_token = config["pad_token"]
+number_processes = config["number_processes"]
+learning_rate = config["learning_rate"]
+
+lora_rank = 32
+lora_alpha = 64
+lora_dropout = 0.0
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="flash_attention_2")
+
+lora_config = LoraConfig(
+    r=lora_rank,
+    lora_alpha=lora_alpha,
+    lora_dropout=lora_dropout,
+    target_modules=["q_proj", "k_proj", "v_proj",  "o_proj", "gate_proj", "down_proj", "up_proj"],
+    bias="none",
+    modules_to_save=["lm_head", "embed_tokens"], # Optional to train the embeddings and lm head
+    task_type="CAUSAL_LM",
+    use_rslora=True,
+)
+
+model = get_peft_model(model, lora_config)
+
+ds = load_dataset(dsn, split="train") 
+
+wandb.init(project=project_name, name = run_name)
+
+training_args = TrainingArguments(
+    overwrite_output_dir=True,
+    num_train_epochs=epochs,
+    per_device_train_batch_size=batch_size, 
+    logging_steps=1,
+    bf16=True,
+    output_dir=f"./{base_repo_id}",
+    report_to="wandb", 
+    save_steps=save_steps,
+    remove_unused_columns=True, 
+    learning_rate=learning_rate,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=ds,
+)
+
+trainer.train()
+
+merged_model = model.merge_and_unload()
+
+merged_model.save_pretrained(f"./{base_repo_id}/merged")
+tokenizer.save_pretrained(f"./{base_repo_id}/merged")
+""")
+    
+    def run_finetune(self, config_path: str, use_lora: bool = False, progress_callback=None) -> str:
         """
         Run fine-tuning process using the prepared configuration.
         
         Args:
             config_path: Path to the training configuration file
+            use_lora: Whether to use LoRA for fine-tuning
             progress_callback: Optional callback for progress updates
             
         Returns:
@@ -278,116 +499,32 @@ class OrpheusFinetune:
         """
         # Load configuration
         with open(config_path, "r") as f:
-            config = json.load(f)
+            if config_path.endswith(".json"):
+                config = json.load(f)
+            else:
+                config = yaml.safe_load(f)
         
-        base_model = config["base_model"]
-        dataset_dir = config["dataset_dir"]
-        output_dir = config["output_dir"]
-        speaker_name = config["speaker_name"]
-        training_args = config["training_args"]
+        output_dir = os.path.dirname(config_path)
         
-        logger.info(f"Starting fine-tuning process for {speaker_name}")
-        logger.info(f"Base model: {base_model}")
-        logger.info(f"Dataset: {dataset_dir}")
+        logger.info(f"Starting fine-tuning process")
         logger.info(f"Output directory: {output_dir}")
         
         # Set environment variables for model directories
         os.environ["HF_HOME"] = self.model_dir
         os.environ["TRANSFORMERS_CACHE"] = os.path.join(self.model_dir, "transformers")
         
-        # Create a training script in the output directory
-        train_script = os.path.join(output_dir, "train.py")
-        
-        with open(train_script, "w") as f:
-            f.write("""
-import os
-import json
-import logging
-import torch
-from datasets import load_from_disk
-from transformers import Trainer, TrainingArguments, AutoModelForCausalLM, AutoTokenizer
-
-# Setup logging
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%m/%d/%Y %H:%M:%S",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Load configuration
-with open("config.json", "r") as f:
-    config = json.load(f)
-
-base_model = config["base_model"]
-dataset_dir = config["dataset_dir"]
-output_dir = config["output_dir"]
-speaker_name = config["speaker_name"]
-training_args = config["training_args"]
-
-# Load dataset
-logger.info(f"Loading dataset from {dataset_dir}")
-dataset = load_from_disk(dataset_dir)
-
-# Split dataset
-train_test_split = dataset.train_test_split(test_size=0.1)
-train_dataset = train_test_split["train"]
-eval_dataset = train_test_split["test"]
-
-# Load model and tokenizer
-logger.info(f"Loading base model: {base_model}")
-tokenizer = AutoTokenizer.from_pretrained(base_model)
-model = AutoModelForCausalLM.from_pretrained(
-    base_model,
-    torch_dtype=torch.float16 if training_args.get("fp16", False) else torch.float32,
-    device_map="auto"
-)
-
-# Define training arguments
-args = TrainingArguments(
-    output_dir=output_dir,
-    per_device_train_batch_size=training_args.get("batch_size", 1),
-    per_device_eval_batch_size=training_args.get("batch_size", 1),
-    gradient_accumulation_steps=training_args.get("gradient_accumulation_steps", 4),
-    learning_rate=training_args.get("learning_rate", 5e-5),
-    num_train_epochs=training_args.get("num_train_epochs", 3),
-    save_steps=training_args.get("save_steps", 500),
-    save_total_limit=training_args.get("save_total_limit", 3),
-    logging_steps=training_args.get("logging_steps", 100),
-    evaluation_strategy=training_args.get("evaluation_strategy", "steps"),
-    eval_steps=training_args.get("eval_steps", 500),
-    warmup_steps=training_args.get("warmup_steps", 100),
-    weight_decay=training_args.get("weight_decay", 0.01),
-    fp16=training_args.get("fp16", True),
-    load_best_model_at_end=True,
-    report_to="wandb" if os.environ.get("WANDB_DISABLED") != "true" else "none",
-    run_name=f"orpheus-finetune-{speaker_name}"
-)
-
-# Define Trainer
-trainer = Trainer(
-    model=model,
-    args=args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-    tokenizer=tokenizer
-)
-
-# Train model
-logger.info("Starting training...")
-trainer.train()
-
-# Save final model
-logger.info(f"Saving model to {output_dir}")
-trainer.save_model()
-tokenizer.save_pretrained(output_dir)
-
-logger.info("Training complete!")
-""")
+        # Determine which script to use
+        if use_lora:
+            script_file = os.path.join(output_dir, "lora.py")
+        else:
+            script_file = os.path.join(output_dir, "train.py")
+            
+        if not os.path.exists(script_file):
+            raise FileNotFoundError(f"Training script not found at {script_file}")
         
         # Execute the training script
         try:
-            cmd = [sys.executable, train_script]
+            cmd = [sys.executable, script_file]
             env = os.environ.copy()
             
             # Disable wandb if not needed
@@ -418,7 +555,7 @@ logger.info("Training complete!")
                             for i, part in enumerate(parts):
                                 if part == "epoch":
                                     epoch = float(parts[i+1].strip(","))
-                                    total_epochs = float(training_args.get("num_train_epochs", 3))
+                                    total_epochs = float(config.get("epochs", 3))
                                     progress = epoch / total_epochs
                                     progress_callback(progress)
                                     break
@@ -433,7 +570,14 @@ logger.info("Training complete!")
                 raise RuntimeError(f"Training process failed with exit code {return_code}")
             
             logger.info(f"Fine-tuning completed successfully. Model saved to {output_dir}")
-            return output_dir
+            
+            # Return the path to the fine-tuned model
+            if use_lora:
+                model_dir = os.path.join(output_dir, "checkpoints", "merged")
+            else:
+                model_dir = os.path.join(output_dir, "checkpoints")
+                
+            return model_dir
             
         except Exception as e:
             logger.error(f"Error during fine-tuning: {e}")

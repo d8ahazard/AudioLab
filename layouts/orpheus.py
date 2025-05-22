@@ -18,23 +18,22 @@ from pydantic import BaseModel
 
 from handlers.args import ArgHandler
 from handlers.config import output_path
-from modules.orpheus.finetune import OrpheusFinetune
-from modules.orpheus.model import OrpheusModel
+
+# Import the updated model implementation
+from modules.orpheus.model import OrpheusModel, AVAILABLE_VOICES, EMOTION_TAGS
 
 # Global variables for inter-tab communication
 SEND_TO_PROCESS_BUTTON = None
 OUTPUT_AUDIO = None
 FINETUNE_OUTPUT = None
 orpheus_model = None
-finetune_handler = None
 logger = logging.getLogger("ADLB.Orpheus")
 
-# Available voices and emotions
-AVAILABLE_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
-AVAILABLE_EMOTIONS = ["None", "happy", "sad", "angry", "scared", "disgusted", "surprised"]
+# Convert emotion tags to a format for the UI dropdown
+AVAILABLE_EMOTIONS = ["None"] + list(EMOTION_TAGS.keys())
 
 
-def load_model(model_name="unsloth/orpheus-3b-0.1-ft"):
+def load_model(model_name="canopylabs/orpheus-tts-0.1-finetune-prod"):
     """
     Load the Orpheus TTS model.
     
@@ -110,6 +109,7 @@ def prepare_dataset(audio_dir, speaker_name, progress=gr.Progress(track_tqdm=Tru
         Message about the dataset preparation
     """
     global finetune_handler
+    from modules.orpheus.finetune import OrpheusFinetune
 
     try:
         if finetune_handler is None:
@@ -160,6 +160,7 @@ def transcribe_dataset(dataset_dir, progress=gr.Progress(track_tqdm=True)):
         Message about the transcription process
     """
     global finetune_handler
+    from modules.orpheus.finetune import OrpheusFinetune
 
     try:
         if finetune_handler is None:
@@ -177,15 +178,20 @@ def transcribe_dataset(dataset_dir, progress=gr.Progress(track_tqdm=True)):
         # Transcribe dataset
         transcribed_dir = finetune_handler.transcribe_dataset(dataset_dir, update_progress)
 
-        progress(1.0, "Transcription complete")
-        return transcribed_dir, f"Dataset transcribed successfully. Transcribed dataset saved to {transcribed_dir}"
+        progress(0.9, "Formatting dataset for Orpheus...")
+        
+        # Format the dataset for Orpheus
+        formatted_dir = finetune_handler.format_dataset_for_orpheus(transcribed_dir)
+
+        progress(1.0, "Transcription and formatting complete")
+        return formatted_dir, f"Dataset transcribed and formatted successfully. Ready for fine-tuning."
 
     except Exception as e:
         logger.error(f"Error transcribing dataset: {e}")
         return None, f"Error: {str(e)}"
 
 
-def start_finetune(dataset_dir, speaker_name, base_model, learning_rate, epochs,
+def start_finetune(dataset_dir, speaker_name, base_model, use_lora, learning_rate, epochs,
                    batch_size, progress=gr.Progress(track_tqdm=True)):
     """
     Start the fine-tuning process.
@@ -194,6 +200,7 @@ def start_finetune(dataset_dir, speaker_name, base_model, learning_rate, epochs,
         dataset_dir: Path to the transcribed dataset directory
         speaker_name: Name of the speaker/voice to create
         base_model: Base model to fine-tune
+        use_lora: Whether to use LoRA for fine-tuning
         learning_rate: Learning rate for training
         epochs: Number of training epochs
         batch_size: Batch size for training
@@ -203,6 +210,7 @@ def start_finetune(dataset_dir, speaker_name, base_model, learning_rate, epochs,
         Message about the fine-tuning process
     """
     global finetune_handler
+    from modules.orpheus.finetune import OrpheusFinetune
 
     try:
         if finetune_handler is None:
@@ -225,6 +233,7 @@ def start_finetune(dataset_dir, speaker_name, base_model, learning_rate, epochs,
             dataset_dir=dataset_dir,
             speaker_name=speaker_name,
             base_model=base_model,
+            use_lora=use_lora,
             training_args=training_args
         )
 
@@ -233,7 +242,7 @@ def start_finetune(dataset_dir, speaker_name, base_model, learning_rate, epochs,
             progress(0.2 + value * 0.7, f"Fine-tuning in progress ({int(value * 100)}%)...")
 
         # Run fine-tuning
-        output_dir = finetune_handler.run_finetune(config_path, update_progress)
+        output_dir = finetune_handler.run_finetune(config_path, use_lora, update_progress)
 
         progress(1.0, "Fine-tuning complete")
         return output_dir, f"Fine-tuning completed successfully. Model saved to {output_dir}"
@@ -445,6 +454,13 @@ def render_orpheus(arg_handler: ArgHandler):
                             elem_classes="hintitem"
                         )
 
+                        use_lora = gr.Checkbox(
+                            label="Use LoRA Fine-tuning",
+                            value=False,
+                            elem_id="orpheus_use_lora",
+                            elem_classes="hintitem"
+                        )
+
                         learning_rate = gr.Number(
                             label="Learning Rate",
                             value=5e-5,
@@ -537,6 +553,7 @@ def render_orpheus(arg_handler: ArgHandler):
                     transcribed_output,
                     speaker_name,
                     base_model,
+                    use_lora,
                     learning_rate,
                     epochs,
                     batch_size
@@ -572,11 +589,11 @@ def register_descriptions(arg_handler: ArgHandler):
     descriptions = {
         # TTS tab
         "orpheus_text_input": "Enter the text you want to convert to speech. You can use newlines to structure your text.",
-        "orpheus_voice": "Select one of the available Orpheus voices.",
-        "orpheus_emotion": "Apply an emotion to the generated speech. Leave as 'None' for neutral speech.",
-        "orpheus_temperature": "Controls randomness in generation. Higher values produce more varied output but may be less coherent.",
-        "orpheus_top_p": "Controls diversity of generation. Higher values allow more diverse word choices.",
-        "orpheus_repetition_penalty": "Penalizes repetition in the generated speech. Higher values reduce repetition.",
+        "orpheus_voice": "Select one of the available Orpheus voices (tara, leah, jess, leo, dan, mia, zac, zoe).",
+        "orpheus_emotion": "Apply an emotion tag to the generated speech. You can add laugh, chuckle, sigh, cough, sniffle, groan, yawn, or gasp.",
+        "orpheus_temperature": "Controls randomness in generation. Higher values (0.7-1.5) produce more varied output but may be less coherent.",
+        "orpheus_top_p": "Controls diversity of generation. Higher values (0.7-0.9) allow more diverse word choices.",
+        "orpheus_repetition_penalty": "Penalizes repetition in the generated speech. Values of 1.1 or higher reduce repetition and can make the speech faster.",
         "orpheus_generate_btn": "Generate speech from the entered text.",
         "orpheus_send_to_process": "Send the generated audio to the Process tab for further processing.",
         "orpheus_output_audio": "The generated speech output.",
@@ -587,10 +604,11 @@ def register_descriptions(arg_handler: ArgHandler):
         "orpheus_speaker_name": "Name to give the new voice you're creating.",
         "orpheus_prepare_dataset_btn": "Prepare a dataset from the audio files for fine-tuning.",
         "orpheus_dataset_output": "Path to the prepared dataset.",
-        "orpheus_transcribe_dataset_btn": "Transcribe the audio files in the dataset (optional but recommended).",
-        "orpheus_transcribed_output": "Path to the transcribed dataset.",
+        "orpheus_transcribe_dataset_btn": "Transcribe the audio files in the dataset (required for fine-tuning).",
+        "orpheus_transcribed_output": "Path to the transcribed and formatted dataset ready for training.",
         "orpheus_base_model": "The base Orpheus model to fine-tune. Default is the pretrained model.",
-        "orpheus_learning_rate": "Learning rate for fine-tuning. Lower values are more stable but train slower.",
+        "orpheus_use_lora": "Enable LoRA (Low-Rank Adaptation) fine-tuning for more efficient training with fewer parameters.",
+        "orpheus_learning_rate": "Learning rate for fine-tuning. Default (5e-5) works well for most cases.",
         "orpheus_epochs": "Number of training epochs. More epochs can improve quality but risk overfitting.",
         "orpheus_batch_size": "Batch size for training. Reduce if you encounter memory issues.",
         "orpheus_finetune_btn": "Start the fine-tuning process.",
@@ -622,14 +640,15 @@ def register_api_endpoints(api):
         emotion: str = "None"
         temperature: float = 0.7
         top_p: float = 0.9
-        repetition_penalty: float = 1.0
+        repetition_penalty: float = 1.1
 
     class FinetuneModelRequest(BaseModel):
         speaker_name: str
-        base_model: str = "canopylabs/orpheus-tts-0.1-finetune-prod"
-        learning_rate: float = 1e-5
-        epochs: int = 10
-        batch_size: int = 16
+        base_model: str = "canopylabs/orpheus-tts-0.1-pretrained"
+        use_lora: bool = False
+        learning_rate: float = 5e-5
+        epochs: int = 3
+        batch_size: int = 1
         audio_files: List[FileData]
 
     @api.post("/api/v1/orpheus/generate", tags=["Orpheus TTS"])
@@ -643,7 +662,7 @@ def register_api_endpoints(api):
         - emotion: Emotion to apply (default: "None")
         - temperature: Sampling temperature (default: 0.7)
         - top_p: Top-p sampling parameter (default: 0.9)
-        - repetition_penalty: Repetition penalty parameter (default: 1.0)
+        - repetition_penalty: Repetition penalty parameter (default: 1.1)
         
         Response:
         - JSON response with base64-encoded audio file
@@ -661,10 +680,10 @@ def register_api_endpoints(api):
                 )
 
             # Check if emotion is valid
-            if request.emotion != "None" and request.emotion not in AVAILABLE_EMOTIONS:
+            if request.emotion != "None" and request.emotion not in EMOTION_TAGS:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid emotion: {request.emotion}. Available emotions: {', '.join(['None'] + AVAILABLE_EMOTIONS)}"
+                    detail=f"Invalid emotion: {request.emotion}. Available emotions: {', '.join(['None'] + list(EMOTION_TAGS.keys()))}"
                 )
 
             # Generate speech
@@ -710,10 +729,11 @@ def register_api_endpoints(api):
         
         Request body:
         - speaker_name: Name for the new voice
-        - base_model: Base model to finetune from (default: "canopylabs/orpheus-tts-0.1-finetune-prod")
-        - learning_rate: Learning rate for training (default: 1e-5)
-        - epochs: Number of training epochs (default: 10)
-        - batch_size: Training batch size (default: 16)
+        - base_model: Base model to finetune from (default: "canopylabs/orpheus-tts-0.1-pretrained")
+        - use_lora: Whether to use LoRA fine-tuning (default: false)
+        - learning_rate: Learning rate for training (default: 5e-5)
+        - epochs: Number of training epochs (default: 3)
+        - batch_size: Training batch size (default: 1)
         - audio_files: Array of audio files (each with filename and base64-encoded content)
         
         Response:
@@ -747,6 +767,7 @@ def register_api_endpoints(api):
                 dataset_dir=dataset_dir,
                 speaker_name=request.speaker_name,
                 base_model=request.base_model,
+                use_lora=request.use_lora,
                 learning_rate=request.learning_rate,
                 epochs=request.epochs,
                 batch_size=request.batch_size
@@ -776,7 +797,7 @@ def register_api_endpoints(api):
         try:
             return {
                 "voices": AVAILABLE_VOICES,
-                "emotions": AVAILABLE_EMOTIONS
+                "emotions": ["None"] + list(EMOTION_TAGS.keys())
             }
 
         except Exception as e:
@@ -784,23 +805,40 @@ def register_api_endpoints(api):
             raise HTTPException(status_code=500, detail=f"Error listing voices: {str(e)}")
 
 
-def run_finetune_job(job_id, dataset_dir, speaker_name, base_model, learning_rate, epochs, batch_size):
+def run_finetune_job(job_id, dataset_dir, speaker_name, base_model, use_lora, learning_rate, epochs, batch_size):
     """Run a finetuning job in the background"""
     try:
+        from modules.orpheus.finetune import OrpheusFinetune
+        finetune_handler = OrpheusFinetune()
+        
         # Prepare the dataset
-        prepare_dataset(dataset_dir, speaker_name)
+        prepared_dir = finetune_handler.prepare_dataset(dataset_dir, speaker_name)
 
         # Transcribe the dataset
-        transcribe_dataset(dataset_dir)
+        transcribed_dir = finetune_handler.transcribe_dataset(prepared_dir)
+        
+        # Format the dataset for Orpheus
+        formatted_dir = finetune_handler.format_dataset_for_orpheus(transcribed_dir)
 
-        # Start the finetuning
-        start_finetune(
-            dataset_dir=dataset_dir,
+        # Prepare training configuration
+        training_args = {
+            "learning_rate": float(learning_rate),
+            "num_train_epochs": int(epochs),
+            "batch_size": int(batch_size),
+        }
+        
+        config_path = finetune_handler.prepare_training_config(
+            dataset_dir=formatted_dir,
             speaker_name=speaker_name,
             base_model=base_model,
-            learning_rate=learning_rate,
-            epochs=epochs,
-            batch_size=batch_size
+            use_lora=use_lora,
+            training_args=training_args
+        )
+
+        # Start the finetuning
+        output_dir = finetune_handler.run_finetune(
+            config_path=config_path,
+            use_lora=use_lora
         )
 
         # Record the job completion
@@ -808,6 +846,7 @@ def run_finetune_job(job_id, dataset_dir, speaker_name, base_model, learning_rat
             "status": "completed",
             "job_id": job_id,
             "speaker_name": speaker_name,
+            "model_path": output_dir,
             "completion_time": time.time()
         }
 
