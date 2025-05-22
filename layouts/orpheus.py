@@ -38,13 +38,11 @@ logger = logging.getLogger("ADLB.Orpheus")
 
 # Available models, voices and emotion tags
 AVAILABLE_MODELS = {
-    "canopylabs/orpheus-tts-0.1-finetune-prod": "Canopy Labs Orpheus TTS (Fine-tuned Production)",
-    "canopylabs/orpheus-tts-0.1-pretrained": "Canopy Labs Orpheus TTS (Pre-trained)",
-    "unsloth/orpheus-3b-0.1-ft": "Unsloth Orpheus 3B (Fine-tuned)",
-    "unsloth/orpheus-3b-0.1-ft-bnb-4bit": "Unsloth Orpheus 3B (Fine-tuned, 4-bit)",
-    "unsloth/orpheus-3b-0.1-pretrained": "Unsloth Orpheus 3B (Pre-trained)",
-    "unsloth/orpheus-3b-0.1-pretrained-bnb-4bit": "Unsloth Orpheus 3B (Pre-trained, 4-bit)",
-    "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit": "Unsloth Orpheus 3B (Pre-trained Unsloth, 4-bit)"
+    "Unsloth Orpheus 3B (Fine-tuned)": "unsloth/orpheus-3b-0.1-ft",
+    "Unsloth Orpheus 3B (Fine-tuned, 4-bit)": "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
+    "Unsloth Orpheus 3B (Pre-trained)": "unsloth/orpheus-3b-0.1-pretrained",
+    "Unsloth Orpheus 3B (Pre-trained, 4-bit)": "unsloth/orpheus-3b-0.1-pretrained-bnb-4bit",
+    "Unsloth Orpheus 3B (Pre-trained Unsloth, 4-bit)": "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit",    
 }
 
 AVAILABLE_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
@@ -406,7 +404,7 @@ def render_orpheus(arg_handler: ArgHandler):
                     # Add model selection dropdown
                     model_dropdown = gr.Dropdown(
                         choices=list(AVAILABLE_MODELS.items()),
-                        value="canopylabs/orpheus-tts-0.1-finetune-prod",
+                        value="unsloth/orpheus-3b-0.1-pretrained",
                         label="Model",
                         elem_id="orpheus_model",
                         elem_classes="hintitem"
