@@ -60,77 +60,8 @@ EMOTION_TAGS = {
 
 # Convert emotion tags to a format for the UI dropdown
 AVAILABLE_EMOTIONS = ["None"] + list(EMOTION_TAGS.keys())
-
-
-def download_model(model_repo: str) -> str:
-    """
-    Download a model from Hugging Face and return the local path.
-    
-    Args:
-        model_repo: The model repository on Hugging Face
-        
-    Returns:
-        Local path to the downloaded model
-    """
-    try:
-        from huggingface_hub import snapshot_download
-        
-        # Create model directory
-        model_dir = os.path.join(model_path, "orpheus", model_repo.replace("/", "_"))
-        os.makedirs(model_dir, exist_ok=True)
-        
-        # Download the model
-        logger.info(f"Downloading model from {model_repo}...")
-        local_path = snapshot_download(
-            repo_id=model_repo,
-            local_dir=model_dir,
-            ignore_patterns=["*.safetensors", "*.bin", "*.pt", "*.h5", "*.ot", "*.msgpack"],
-        )
-        
-        logger.info(f"Model downloaded to {local_path}")
-        return local_path
-    
-    except Exception as e:
-        logger.error(f"Error downloading model: {e}")
-        # Return the repo name as fallback
-        return model_repo
-
-
-def load_model(model_repo="canopylabs/orpheus-tts-0.1-finetune-prod"):
-    """
-    Load the Orpheus TTS model.
-    
-    Args:
-        model_repo: The model repository to use
-    
-    Returns:
-        The loaded model
-    """
-    global orpheus_model
-
-    try:
-        if not ORPHEUS_AVAILABLE:
-            raise ImportError("orpheus_tts package is not installed. Please install it with 'pip install orpheus-tts'")
-        
-        if orpheus_model is None or orpheus_model.model_name != model_repo:
-            # Try to download the model first
-            local_path = download_model(model_repo)
-            
-            # Create the model
-            orpheus_model = OrpheusModel(model_name=local_path)
-            logger.info(f"Loaded Orpheus model: {model_repo}")
-    
-    except ImportError as e:
-        logger.error(f"Error loading Orpheus TTS model: {e}")
-        logger.error("Please install the orpheus-tts package with: pip install orpheus-tts")
-        raise
-    except Exception as e:
-        logger.error(f"Error creating Orpheus model: {e}")
-        # Fall back to using the repo directly if download fails
-        orpheus_model = OrpheusModel(model_name=model_repo)
-        logger.info(f"Loaded Orpheus model directly from HF: {model_repo}")
-
-    return orpheus_model
+ORPHEUS_MODEL = None
+LOADED_MODEL = None
 
 
 def generate_speech(text, model_repo, voice, emotion, temperature, top_p, repetition_penalty,
@@ -151,6 +82,7 @@ def generate_speech(text, model_repo, voice, emotion, temperature, top_p, repeti
     Returns:
         Path to the generated audio file
     """
+    global ORPHEUS_MODEL, LOADED_MODEL
     try:
         # Process the emotion (convert "None" to an empty string)
         emotion_value = "" if emotion == "None" else emotion
@@ -161,7 +93,14 @@ def generate_speech(text, model_repo, voice, emotion, temperature, top_p, repeti
         
         # Load model
         progress(0.1, "Loading model...")
-        model = load_model(model_repo)
+        if not ORPHEUS_MODEL or LOADED_MODEL != model_repo:
+            try: 
+                del ORPHEUS_MODEL
+            except: 
+                pass
+            LOADED_MODEL = model_repo
+            ORPHEUS_MODEL = OrpheusModel(model_name=model_repo)
+        model = ORPHEUS_MODEL
         
         # Generate filename
         timestamp = int(time.time())
@@ -750,7 +689,7 @@ def register_api_endpoints(api):
 
     class GenerateSpeechRequest(BaseModel):
         text: str
-        model_repo: str = "canopylabs/orpheus-tts-0.1-finetune-prod"
+        model_repo: str = "Unsloth Orpheus 3B (Pre-trained)"
         voice: str = "tara"
         emotion: str = "None"
         temperature: float = 0.7
@@ -773,7 +712,7 @@ def register_api_endpoints(api):
         
         Request body:
         - text: Text to convert to speech
-        - model_repo: Model repository to use (default: "canopylabs/orpheus-tts-0.1-finetune-prod")
+        - model_repo: Model to use (default: "Unsloth Orpheus 3B (Pre-trained)")
         - voice: Voice to use (default: "tara")
         - emotion: Emotion to apply (default: "None")
         - temperature: Sampling temperature (default: 0.7)
