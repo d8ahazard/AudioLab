@@ -10,7 +10,6 @@ from pydantic import BaseModel, create_model
 
 from layouts.music import register_api_endpoints as register_music_endpoints
 # Import register_api_endpoints functions from layout modules
-from layouts.orpheus import register_api_endpoints as register_orpheus_endpoints
 from layouts.process import register_api_endpoints as register_process_endpoints
 from layouts.rvc_train import register_api_endpoints as register_rvc_endpoints
 from layouts.stable_audio import register_api_endpoints as register_stable_audio_endpoints
@@ -38,7 +37,7 @@ app = FastAPI(
     ## Overview
 
     - **Audio Processing**: Separation, cloning, enhancement, and format conversion
-    - **Voice Synthesis**: Multiple TTS engines including Orpheus for emotional synthesis
+    - **Voice Synthesis**: Multiple TTS engines
     - **Music Generation**: Complete song generation with YuE, DiffRhythm, ACE-Step, and Stable Audio
     - **Training**: Custom voice models with RVC and DiffRhythm
     - **Utilities**: Transcription, project management, and multi-processing
@@ -76,15 +75,6 @@ app = FastAPI(
             """
         },
         {
-            "name": "Orpheus TTS",
-            "description": """
-            Emotional text-to-speech synthesis:
-            - Speech generation with emotions
-            - Custom voice training
-            - Voice model management
-            """
-        },
-        {
             "name": "Stable Audio",
             "description": """
             Music generation with Stable Audio:
@@ -119,7 +109,6 @@ TEMP_DIR = Path("temp_uploads")
 TEMP_DIR.mkdir(exist_ok=True)
 
 # Register API endpoints from layout modules
-register_orpheus_endpoints(app)
 register_music_endpoints(app)
 register_process_endpoints(app)
 register_rvc_endpoints(app)

@@ -29,8 +29,6 @@ from layouts.tts import render_tts, register_descriptions as tts_register_descri
 from layouts.stable_audio import render as render_stable_audio, \
     register_descriptions as stable_audio_register_descriptions, \
     listen as stable_audio_listen
-from layouts.orpheus import listen as orpheus_listen, render_orpheus, \
-    register_descriptions as orpheus_register_descriptions
 from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
     render as render_transcribe
 from layouts.wavetransfer import listen as wavetransfer_listen, register_descriptions as wavetransfer_register_descriptions, \
@@ -148,7 +146,6 @@ if __name__ == '__main__':
             tts_register_descriptions(arg_handler)
             rvc_register_descriptions(arg_handler)
             stable_audio_register_descriptions(arg_handler)
-            orpheus_register_descriptions(arg_handler)
             transcribe_register_descriptions(arg_handler)
             wavetransfer_register_descriptions(arg_handler)
             acestep_register_descriptions(arg_handler)
@@ -178,8 +175,6 @@ if __name__ == '__main__':
                             render_music(arg_handler)                        
                     with gr.Tab(label='TTS', id="tts"):
                         render_tts()
-                    with gr.Tab(label='Orpheus', id="orpheus"):
-                        render_orpheus(arg_handler)
                     with gr.Tab(label='Transcribe', id="transcribe"):
                         render_transcribe(arg_handler)
                     with gr.Tab(label='WaveTransfer', id="wavetransfer"):
@@ -189,7 +184,6 @@ if __name__ == '__main__':
                 music_listen()
                 process_listen()
                 stable_audio_listen()
-                orpheus_listen()
                 acestep_listen()
                 transcribe_listen()
                 wavetransfer_listen()

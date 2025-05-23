@@ -19,7 +19,6 @@ AudioLab is an open-source powerhouse for voice-cloning and audio separation, bu
 - **🎼 Music Generation:** Create music from scratch or remix existing tracks using YuE.
 - **🎵 Song Generation:** Create full-length songs with vocals and instrumentals using DiffRhythm.
 - **🗣️ Zonos Text-to-Speech:** High-quality TTS with deep learning.
-- **🎭 Orpheus TTS:** Real-time natural-sounding speech powered by large language models.
 - **📢 Text-to-Speech:** Clone voices and generate natural-sounding speech with Coqui TTS.
 - **🔊 Text-to-Audio:** Generate sound effects and ambient audio from text descriptions using Stable Audio.
 - **🎛️ Audio Separation:** Isolate vocals, drums, bass, and other components from a track.
@@ -167,16 +166,6 @@ Example applications:
 - Convert acoustic instrument recordings to electronic sounds
 - Experiment with novel timbres for music production
 
-### Orpheus TTS: Real-time Speech Synthesis
-
-Generate natural-sounding speech with LLM-powered text-to-speech capabilities:
-
-- **⚡ Real-time Processing:** Instantaneous speech generation.
-- **🗣️ Voice Cloning:** Create custom voice models from your recordings.
-- **😀 Emotion Control:** Adjust speaking style for more expressive speech.
-- **🌐 Multilingual Support:** Generate speech in multiple languages.
-- **🎭 Style Variety:** Create different styles from a single voice model.
-
 Example applications:
 - Create audiobooks with natural narration
 - Develop voice assistants with your own voice
@@ -236,16 +225,16 @@ Example applications:
 AudioLab is powered by some fantastic open-source projects:
 - 🎵 [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) – Core for audio separation.
 - 🎚 [matchering](https://github.com/sergree/matchering) – Professional-grade remastering.
-- 🔊 [versatile-audio-super-resolution](https://github.com/haoheliu/versatile_audio_super_resolution) – High-quality audio enhancement.
+- 🔊 [versatile-audio-super-resolution](https://github.com/d8ahazard/versatile_audio_super_resolution) – High-quality audio enhancement.
 - 🎙 [Real-Time-Voice-Cloning](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) – Voice cloning.
 - 🎶 [MVSEP-MDX23](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model) – Music separation.
 - 📜 [WhisperX](https://github.com/m-bain/whisperX) – Audio transcription.
+- 📜 [Whisper](https://github.com/openai/whisper) - Original Audio transcription engine.
 - 🗣 [Coqui TTS](https://github.com/coqui-ai/TTS) – State-of-the-art TTS.
 - 🎼 [YuE](https://github.com/multimodal-art-projection/YuE) – Music generation.
 - 🏆 [Zonos](https://github.com/Zyphra/Zonos) – High-quality TTS.
-- 🔈 [Stable Audio](https://stability.ai/blog/stable-audio-open-1-0-free-text-to-audio-model) – Text-to-audio generation.
+- 🔈 [Stable Audio](https://github.com/Stability-AI/stable-audio-tools) – Text-to-audio generation.
 - 🎵 [DiffRhythm](https://github.com/ASLP-lab/DiffRhythm) – Full-length song generation with latent diffusion.
-- 🗣️ [Orpheus-TTS](https://github.com/canopyai/Orpheus-TTS) – Real-time high-quality text-to-speech.
 - 🎵 [WaveTransfer](https://github.com/tencent-ailab/bddm) – Instrument timbre transfer with diffusion.
 
 ---
