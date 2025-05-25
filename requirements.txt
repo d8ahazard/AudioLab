@@ -1,8 +1,8 @@
 ./wheels/audiosr-0.0.9-py3-none-any.whl
 ./wheels/dctorch-0.1.2-py3-none-any.whl
 ./wheels/coqui_tts-0.26.0-py3-none-any.whl
-./wheels/fairseq-0.12.3-cp310-cp310-win_amd64.whl; sys_platform == "win32"
-./wheels/fairseq-0.12.3-cp310-cp310-linux_x86_64.whl; sys_platform != "win32"
+./wheels/fairseq-0.13.0-cp310-cp310-win_amd64.whl; sys_platform == "win32"
+./wheels/fairseq-0.13.0-cp310-cp310-linux_x86_64.whl; sys_platform != "win32"
 ./wheels/laion_clap-1.1.5-py3-none-any.whl
 ./wheels/openvoice_cli-0.0.6-py3-none-any.whl
 ./wheels/stable_audio_tools-0.0.20-py3-none-any.whl
