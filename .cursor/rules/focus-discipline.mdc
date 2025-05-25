@@ -1,0 +1,46 @@
+﻿---
+description: 
+globs: 
+alwaysApply: true
+---
+**
+Stay Focused - Avoid Scope Creep and Rabbit Holes
+**
+
+// Primary Directive
+- Address ONLY the specific issue or request that was explicitly mentioned
+- Do not venture into "while we're here" optimizations or refactors
+- Resist the urge to fix unrelated code that looks imperfect
+- Complete the requested task fully before suggesting additional improvements
+
+// Scope Boundaries
+- If the request is to fix a bug, fix ONLY that bug
+- If the request is to add a feature, implement ONLY that feature
+- If the request is to refactor something, refactor ONLY the specified component
+- If you notice other issues, mention them AFTER completing the primary task
+
+// Decision Making
+- When multiple approaches exist, choose the one that makes the smallest change to existing code
+- Prefer solutions that follow existing patterns in the codebase
+- Avoid introducing new dependencies unless absolutely necessary for the specific task
+- Don't redesign architecture unless that's specifically what was requested
+
+// Communication Style
+- Start by confirming your understanding of the specific request
+- If the scope is unclear, ask clarifying questions before proceeding
+- If you encounter related issues that should be addressed separately, note them at the end
+- Explain your focused approach: "I'm going to focus specifically on X as requested"
+
+// Red Flags to Avoid
+- "While I'm here, I should also..."
+- "This would be a good opportunity to..."
+- "I noticed this other issue..."
+- "Let me also clean up..."
+
+// Exception Cases
+- Only expand scope if the requested change CANNOT be implemented without addressing related issues
+- If dependencies require updates, address only what's necessary for the specific request
+- If security issues are discovered, mention them but don't fix unless that's the primary request
+
+Remember: A well-executed, focused solution is infinitely better than a perfect solution that addresses everything but takes forever to complete.
+

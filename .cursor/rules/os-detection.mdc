@@ -1,0 +1,43 @@
+﻿---
+description: USE WHEN suggesting shell commands or system operations. Ensures proper OS detection and platform-appropriate command formatting.
+globs: 
+alwaysApply: false
+---
+**
+OS Detection and Shell Command Formatting Rule
+**
+
+// OS Detection Strategy
+- Always check the user's OS before suggesting shell commands
+- Use `os.name` or `platform.system()` in Python to detect the operating system
+- For script suggestions, provide platform-appropriate commands
+
+// Windows Commands (when os.name == 'nt' or platform.system() == 'Windows')
+- Use PowerShell syntax for complex operations
+- Use `cmd.exe` syntax for simple commands
+- Path separators: use `\` or `os.path.join()` for cross-platform compatibility
+- Example: `kubectl get pods --cluster=prod` (works on Windows)
+- For file paths: `C:\dev\project\file.txt` or use forward slashes in many contexts
+
+// Linux/macOS Commands (when platform.system() in ['Linux', 'Darwin'])
+- Use bash/shell syntax
+- Path separators: use `/`
+- Example: `./scripts/install.sh` or `chmod +x script.sh`
+- Use standard Unix conventions for file permissions and execution
+
+// Cross-Platform Best Practices
+- When writing Python code, use `pathlib.Path` for file operations
+- Use `subprocess` with proper shell=True/False based on OS
+- For docker commands, they work the same across platforms
+- For kubectl commands, syntax is identical across platforms
+
+// Script Recommendations
+- If suggesting shell scripts, provide both `.sh` (Linux/macOS) and `.ps1` (Windows) versions when relevant
+- For Python scripts, ensure they work cross-platform using appropriate libraries
+- Always test path operations with both forward and backward slashes in mind
+
+// Environment Variables
+- Windows: use `%VARIABLE%` in cmd, `$env:VARIABLE` in PowerShell
+- Linux/macOS: use `$VARIABLE` or `${VARIABLE}`
+- Python: use `os.environ.get('VARIABLE')` for cross-platform access
+

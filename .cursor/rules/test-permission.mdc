@@ -1,0 +1,50 @@
+﻿---
+description: USE WHEN considering running tests or test-related commands. Ensures permission is requested before executing any tests.
+globs: 
+alwaysApply: false
+---
+**
+Test Execution Permission Protocol
+**
+
+// Default Behavior
+- NEVER run tests automatically unless explicitly instructed to do so
+- Always ask for permission before executing any test suite or test command
+- This includes unit tests, integration tests, end-to-end tests, and any form of automated testing
+
+// When to Ask Permission
+- Before running `pytest`, `npm test`, `python -m unittest`, or any testing command
+- Before executing test scripts or test-related make commands
+- Before running any command that might trigger CI/CD pipelines
+- Before executing any command that might affect remote services or databases
+
+// Permission Request Format
+- Clearly state what tests you want to run and why
+- Explain the expected duration and any potential side effects
+- Ask: "Should I run [specific test command] to verify this change?"
+- Wait for explicit confirmation before proceeding
+
+// Exceptions - Auto-run Only When
+- The user explicitly says "run the tests" or "test this"
+- The user includes test commands in their request
+- The user specifically asks you to "verify by testing"
+- The conversation is explicitly about debugging test failures
+
+// Test Analysis Without Execution
+- You CAN analyze test files, test configurations, and test code without running them
+- You CAN suggest what tests should be run and how to run them
+- You CAN review test results that are provided to you
+- You CAN help write or modify test code without executing it
+
+// Safety Considerations
+- Some tests might be expensive to run (long duration, resource intensive)
+- Some tests might have side effects (database changes, API calls, file system modifications)
+- Some tests might require specific environment setup or credentials
+- Some tests might trigger alerts or notifications in production monitoring systems
+
+// Best Practices
+- If you need to verify functionality, suggest the specific test command but ask before running
+- When helping debug test failures, work with provided test output rather than re-running
+- If writing new tests, explain how to run them but don't execute automatically
+- Always consider the impact of test execution on the development environment
+
