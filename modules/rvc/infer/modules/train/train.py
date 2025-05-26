@@ -9,6 +9,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.distributed_c10d import is_initialized
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import shutil
@@ -176,9 +177,16 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     )
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         pass
+    initialized = False
+    try: 
+        initialized = dist.is_initialized()
+    except Exception as e:
+        pass
+    if not initialized:
+        dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
+        
     elif torch.cuda.is_available() and n_gpus > 1:
         # Call init_process_group before DDP
-        dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
         net_g = DDP(net_g, device_ids=[rank])
         net_d = DDP(net_d, device_ids=[rank])
     else:
