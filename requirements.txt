@@ -20,7 +20,6 @@ descript-audio-codec==1.0.0
 descript-audiotools==0.7.2
 diffusers>=0.32.2
 einops>=0.8.0
-fairseq>=0.12.2; sys_platform != "win32"
 faiss-cpu>=1.11.0
 ffmpeg
 ffmpeg-python
