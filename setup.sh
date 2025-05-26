@@ -40,6 +40,7 @@ fi
 
 # Get Python version
 PY_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+write_info "Python version: $PY_VERSION"
 
 # 1) Create or activate venv
 IN_VENV=false
@@ -63,36 +64,24 @@ fi
 
 # 2) Core installer function
 function install_packages() {
-    local packages=("$@")
-    for pkg in "${packages[@]}"; do
-        echo -n -e "\e[36m[INFO]  $pkg -> \e[0m"
-        
-        CMD_ARGS=("install" "$pkg" "--quiet" "--disable-pip-version-check")
-        
-        # If our package name contains './wheels/', force-reinstall
-        if [[ "$pkg" =~ ^\.\/wheels\/ ]]; then
-            # Skip Windows-specific wheels
-            if [[ "$pkg" =~ win_amd64 ]] && [[ ! "$pkg" =~ none-any ]]; then
-                echo -e "\e[33mskipped (Windows-only)\e[0m"
-                continue
-            fi
-            CMD_ARGS+=("--force-reinstall")
-        fi
-        
-        # Add PyTorch CUDA URL
-        CMD_ARGS+=("--extra-index-url" "https://download.pytorch.org/whl/cu124")
-        
-        python -m pip "${CMD_ARGS[@]}" 2>/dev/null
-        
-        if [ $? -eq 0 ]; then
-            # Print check mark (✓)
-            echo -e "\e[32m✓\e[0m"
+    local pkg="$1"
+    write_info "Installing $pkg..."
+    
+    # Handle local wheel files
+    if [[ "$pkg" == ./wheels/* ]]; then
+        if [ -f "$pkg" ]; then
+            pip install "$pkg"
         else
-            # Print cross mark (✗)
-            echo -e "\e[31m✗\e[0m"
-            write_error "Failed to install $pkg; continuing..."
+            write_warning "Local wheel not found: $pkg"
+            return 1
         fi
-    done
+    # Handle direct URLs
+    elif [[ "$pkg" == http* ]]; then
+        pip install "$pkg"
+    # Handle regular packages
+    else
+        pip install "$pkg"
+    fi
 }
 
 # 3) Install fundamental build tools
@@ -109,72 +98,53 @@ install_packages "audio-separator[gpu]>=0.32.0"
 # 5) Process requirements.txt
 if [ -f "./requirements.txt" ]; then
     write_info "Processing requirements.txt..."
+    
+    # Read requirements.txt line by line
     while IFS= read -r line || [ -n "$line" ]; do
-        # Trim the line
-        line=$(echo "$line" | xargs)
         # Skip empty lines and comments
-        if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then
-            continue
-        fi
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         
-        # Split by semicolon for conditions
+        # Remove leading/trailing whitespace
+        line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        
+        # Check if line has platform/version conditions
         if [[ "$line" == *";"* ]]; then
-            pkg_spec=$(echo "$line" | cut -d';' -f1 | xargs)
-            cond_text=$(echo "$line" | cut -d';' -f2- | xargs)
+            pkg_spec=$(echo "$line" | cut -d';' -f1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            conditions=$(echo "$line" | cut -d';' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             
             # Process conditions
-            ok=true
-            IFS='and' read -ra conditions <<< "$cond_text"
+            install=true
             
-            write_debug "Processing conditions for $pkg_spec"
-            write_debug "Found ${#conditions[@]} condition(s): $cond_text"
-            
-            for c in "${conditions[@]}"; do
-                c=$(echo "$c" | xargs)
-                write_debug "  Checking condition: '$c'"
-                
-                if [[ "$c" =~ sys_platform[[:space:]]*==[[:space:]]*[\'\"]win32[\'\"] ]]; then
-                    write_debug "    - sys_platform == win32 match"
-                    # Skip Windows-only packages on non-Windows
-                    if [ "$(uname)" != "MINGW"* ] && [ "$(uname)" != "CYGWIN"* ] && [ "$(uname)" != "MSYS"* ]; then
-                        write_debug "    - SKIP: Not on Windows"
-                        ok=false; break
-                    fi
-                elif [[ "$c" =~ sys_platform[[:space:]]*!=[[:space:]]*[\'\"]win32[\'\"] ]]; then
-                    write_debug "    - sys_platform != win32 match"
-                    # Skip non-Windows packages on Windows
-                    if [[ "$(uname)" == "MINGW"* || "$(uname)" == "CYGWIN"* || "$(uname)" == "MSYS"* ]]; then
-                        write_debug "    - SKIP: On Windows"
-                        ok=false; break
-                    fi
-                elif [[ "$c" =~ python_version[[:space:]]*==[[:space:]]*[\'\"]([0-9\.]+)[\'\"] ]]; then
-                    py_req="${BASH_REMATCH[1]}"
-                    write_debug "    - python_version == $py_req match"
-                    if [ "$PY_VERSION" != "$py_req" ]; then 
-                        write_debug "    - SKIP: Python $PY_VERSION != $py_req"
-                        ok=false; break; 
-                    fi
-                elif [[ "$c" =~ python_version[[:space:]]*!=[[:space:]]*[\'\"]([0-9\.]+)[\'\"] ]]; then
-                    py_req="${BASH_REMATCH[1]}"
-                    write_debug "    - python_version != $py_req match"
-                    if [ "$PY_VERSION" = "$py_req" ]; then 
-                        write_debug "    - SKIP: Python $PY_VERSION == $py_req"
-                        ok=false; break; 
-                    fi
-                else
-                    write_warning "Unrecognized condition '$c'; skipping $pkg_spec"
-                    ok=false
-                    break
+            # Check Windows condition
+            if [[ "$conditions" == *"sys_platform == \"win32\""* ]]; then
+                if [[ ! "$OSTYPE" == "msys"* && ! "$OSTYPE" == "win"* && ! "$OSTYPE" == "cygwin"* ]]; then
+                    install=false
                 fi
-            done
+            fi
             
-            if [ "$ok" = true ]; then
-                write_debug "  All conditions passed, installing $pkg_spec"
+            if [[ "$conditions" == *"sys_platform != \"win32\""* ]]; then
+                if [[ "$OSTYPE" == "msys"* || "$OSTYPE" == "win"* || "$OSTYPE" == "cygwin"* ]]; then
+                    install=false
+                fi
+            fi
+            
+            # Check Python version condition
+            if [[ "$conditions" == *"python_version == "* ]]; then
+                required_version=$(echo "$conditions" | grep -o 'python_version == "[^"]*"' | cut -d'"' -f2)
+                if [[ "$PY_VERSION" != "$required_version" ]]; then
+                    install=false
+                fi
+            fi
+            
+            # Install if all conditions are met
+            if [[ "$install" == true ]]; then
+                write_info "Installing (conditions met): $pkg_spec"
                 install_packages "$pkg_spec"
             else
-                write_info "Skipping $pkg_spec (condition: $cond_text)"
+                write_info "Skipping (conditions not met): $pkg_spec"
             fi
         else
+            # No conditions, install directly
             install_packages "$line"
         fi
     done < "./requirements.txt"
