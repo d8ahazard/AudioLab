@@ -176,7 +176,9 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     )
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         pass
-    elif torch.cuda.is_available():
+    elif torch.cuda.is_available() and n_gpus > 1:
+        # Call init_process_group before DDP
+        dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
         net_g = DDP(net_g, device_ids=[rank])
         net_d = DDP(net_d, device_ids=[rank])
     else:
