@@ -154,7 +154,7 @@ else
 fi
 
 # 6) Re-install torch and related packages
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 numpy>=2.0.2 wandb>=0.17.2 flash_attn --extra-index-url https://download.pytorch.org/whl/cu124
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 numpy>=2.0.2 wandb>=0.17.2 flash_attn --extra-index-url https://download.pytorch.org/whl/cu124 --force-reinstall
 
 # 7) Verification
 write_info "Verifying installations..."
