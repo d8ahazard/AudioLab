@@ -64,7 +64,29 @@ def load_model_ensemble_and_task(
             if "args" in state and state["args"] is not None:
                 cfg = convert_namespace_to_omegaconf(state["args"])
             elif "cfg" in state and state["cfg"] is not None:
-                cfg = state["cfg"]
+                if isinstance(state["cfg"], dict):
+                    # For hubert model, we know it's an audio pretraining task
+                    if "task" not in state["cfg"]:
+                        state["cfg"]["task"] = {
+                            "_name": "hubert_pretraining",
+                            "data": "metadata",
+                            "fine_tuning": False,
+                            "labels": ["km"],
+                            "label_dir": "label",
+                            "label_rate": 50.0,
+                            "sample_rate": 16000,
+                            "normalize": False,
+                            "enable_padding": False,
+                            "max_keep_size": None,
+                            "max_sample_size": 250000,
+                            "min_sample_size": 32000,
+                            "single_target": False,
+                            "random_crop": True,
+                            "pad_audio": False
+                        }
+                    cfg = OmegaConf.create(state["cfg"])
+                else:
+                    cfg = state["cfg"]
             else:
                 raise RuntimeError(f"Neither args nor cfg exist in state keys = {state.keys()}")
 
