@@ -7,10 +7,76 @@ from functools import lru_cache
 import librosa
 import pyworld
 import torch
-from fairseq import checkpoint_utils
 from torch.nn import functional as F
+from omegaconf import OmegaConf
+from fairseq.data import Dictionary
+from fairseq import tasks
 
 from handlers.config import model_path
+
+# Add safe globals for torch.load
+torch.serialization.add_safe_globals([Dictionary])
+
+def load_checkpoint_to_cpu(path, arg_overrides=None):
+    """Loads a checkpoint to CPU with proper handling of PyTorch 2.6+ changes."""
+    with open(path, "rb") as f:
+        state = torch.load(f, map_location=torch.device("cpu"), weights_only=False)
+    return state
+
+def load_model_ensemble_and_task(
+    filenames,
+    arg_overrides=None,
+    task=None,
+    strict=True,
+    suffix="",
+    num_shards=1,
+    state=None,
+):
+    """Modified version of fairseq's load_model_ensemble_and_task that handles PyTorch 2.6+ changes."""
+    assert state is None or len(filenames) == 1
+    assert not (strict and num_shards > 1), "Cannot load state dict with strict=True and checkpoint shards > 1"
+    
+    ensemble = []
+    cfg = None
+    for filename in filenames:
+        orig_filename = filename
+        model_shard_state = {"shard_weights": [], "shard_metadata": []}
+        assert num_shards > 0
+        
+        for shard_idx in range(num_shards):
+            filename = orig_filename.replace(".pt", f"{suffix}.pt")
+            
+            if not os.path.exists(filename):
+                raise IOError(f"Model file not found: {filename}")
+                
+            if state is None:
+                state = load_checkpoint_to_cpu(filename, arg_overrides)
+                
+            if "args" in state and state["args"] is not None:
+                cfg = OmegaConf.create(state["args"])
+            elif "cfg" in state and state["cfg"] is not None:
+                cfg = state["cfg"]
+            else:
+                raise RuntimeError(f"Neither args nor cfg exist in state keys = {state.keys()}")
+
+            if task is None:
+                task = tasks.setup_task(cfg.task, from_checkpoint=True)
+
+            if "task_state" in state:
+                task.load_state_dict(state["task_state"])
+
+            # Build model
+            model = task.build_model(cfg.model)
+            if "optimizer_history" in state and len(state["optimizer_history"]) > 0 and "num_updates" in state["optimizer_history"][-1]:
+                model.set_num_updates(state["optimizer_history"][-1]["num_updates"])
+            model.load_state_dict(state["model"], strict=strict, model_cfg=cfg.model)
+
+            # reset state so it gets loaded for the next model in ensemble
+            state = None
+
+        # build model for ensemble
+        ensemble.append(model)
+    return ensemble, cfg, task
 
 
 def get_index_path_from_model(sid):
@@ -29,7 +95,7 @@ def load_hubert(config):
     hubert_base = os.path.join(model_path, "rvc", "hubert_base.pt")
     if not os.path.exists(hubert_base):
         raise FileNotFoundError(f"Hubert model not found at {hubert_base}")
-    models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
+    models, _, _ = load_model_ensemble_and_task(
         [hubert_base],
         suffix="",
     )
