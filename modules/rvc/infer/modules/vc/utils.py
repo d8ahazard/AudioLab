@@ -1,8 +1,7 @@
 import os
 from functools import lru_cache
-
-import os
-from functools import lru_cache
+import inspect
+import ast
 
 import librosa
 import pyworld
@@ -11,6 +10,8 @@ from torch.nn import functional as F
 from omegaconf import OmegaConf
 from fairseq.data import Dictionary
 from fairseq import tasks
+from fairseq.dataclass.utils import convert_namespace_to_omegaconf
+from fairseq.distributed.fully_sharded_data_parallel import FSDP, has_FSDP
 
 from handlers.config import model_path
 
@@ -21,6 +22,12 @@ def load_checkpoint_to_cpu(path, arg_overrides=None):
     """Loads a checkpoint to CPU with proper handling of PyTorch 2.6+ changes."""
     with open(path, "rb") as f:
         state = torch.load(f, map_location=torch.device("cpu"), weights_only=False)
+    
+    if "args" in state and state["args"] is not None and arg_overrides is not None:
+        args = state["args"]
+        for arg_name, arg_val in arg_overrides.items():
+            setattr(args, arg_name, arg_val)
+            
     return state
 
 def load_model_ensemble_and_task(
@@ -44,7 +51,9 @@ def load_model_ensemble_and_task(
         assert num_shards > 0
         
         for shard_idx in range(num_shards):
-            filename = orig_filename.replace(".pt", f"{suffix}.pt")
+            filename = get_maybe_sharded_checkpoint_filename(
+                orig_filename, suffix, shard_idx, num_shards
+            )
             
             if not os.path.exists(filename):
                 raise IOError(f"Model file not found: {filename}")
@@ -53,43 +62,11 @@ def load_model_ensemble_and_task(
                 state = load_checkpoint_to_cpu(filename, arg_overrides)
                 
             if "args" in state and state["args"] is not None:
-                # Convert args to OmegaConf
-                if isinstance(state["args"], dict):
-                    cfg = OmegaConf.create(state["args"])
-                else:
-                    cfg = OmegaConf.create(vars(state["args"]))
+                cfg = convert_namespace_to_omegaconf(state["args"])
             elif "cfg" in state and state["cfg"] is not None:
-                if isinstance(state["cfg"], dict):
-                    cfg = OmegaConf.create(state["cfg"])
-                else:
-                    cfg = state["cfg"]
+                cfg = state["cfg"]
             else:
                 raise RuntimeError(f"Neither args nor cfg exist in state keys = {state.keys()}")
-
-            # Ensure we have a task configuration
-            if not hasattr(cfg, "task"):
-                # For hubert model, we know it's an audio task
-                cfg.task = OmegaConf.create({
-                    "data": "",
-                    "task": "audio_pretraining",
-                    "labels": "ltr",
-                    "apply_mask": True,
-                    "mask_length": 10,
-                    "mask_prob": 0.65,
-                    "mask_selection": "static",
-                    "mask_other": 0,
-                    "no_mask_overlap": False,
-                    "mask_min_space": 1,
-                    "mask_channel_length": 10,
-                    "mask_channel_prob": 0.0,
-                    "mask_channel_selection": "static",
-                    "mask_channel_other": 0,
-                    "no_mask_channel_overlap": False,
-                    "mask_channel_min_space": 1,
-                    "feature_grad_mult": 0.0,
-                    "layerdrop": 0.1,
-                    "w2v_args": None,
-                })
 
             if task is None:
                 task = tasks.setup_task(cfg.task, from_checkpoint=True)
@@ -97,11 +74,54 @@ def load_model_ensemble_and_task(
             if "task_state" in state:
                 task.load_state_dict(state["task_state"])
 
-            # Build model
-            model = task.build_model(cfg.model)
-            if "optimizer_history" in state and len(state["optimizer_history"]) > 0 and "num_updates" in state["optimizer_history"][-1]:
-                model.set_num_updates(state["optimizer_history"][-1]["num_updates"])
-            model.load_state_dict(state["model"], strict=strict, model_cfg=cfg.model)
+            argspec = inspect.getfullargspec(task.build_model)
+
+            if "fsdp_metadata" in state and num_shards > 1:
+                model_shard_state["shard_weights"].append(state["model"])
+                model_shard_state["shard_metadata"].append(state["fsdp_metadata"])
+                # check FSDP import before the code goes too far
+                if not has_FSDP:
+                    raise ImportError(
+                        "Cannot find FullyShardedDataParallel. "
+                        "Please install fairscale with: pip install fairscale"
+                    )
+                if shard_idx == num_shards - 1:
+                    consolidated_model_state = FSDP.consolidate_shard_weights(
+                        shard_weights=model_shard_state["shard_weights"],
+                        shard_metadata=model_shard_state["shard_metadata"],
+                    )
+                    if "from_checkpoint" in argspec.args:
+                        model = task.build_model(cfg.model, from_checkpoint=True)
+                    else:
+                        model = task.build_model(cfg.model)
+                    if (
+                        "optimizer_history" in state
+                        and len(state["optimizer_history"]) > 0
+                        and "num_updates" in state["optimizer_history"][-1]
+                    ):
+                        model.set_num_updates(
+                            state["optimizer_history"][-1]["num_updates"]
+                        )
+                    model.load_state_dict(
+                        consolidated_model_state, strict=strict, model_cfg=cfg.model
+                    )
+            else:
+                # model parallel checkpoint or unsharded checkpoint
+                # support old external tasks
+
+                if "from_checkpoint" in argspec.args:
+                    model = task.build_model(cfg.model, from_checkpoint=True)
+                else:
+                    model = task.build_model(cfg.model)
+                if (
+                    "optimizer_history" in state
+                    and len(state["optimizer_history"]) > 0
+                    and "num_updates" in state["optimizer_history"][-1]
+                ):
+                    model.set_num_updates(state["optimizer_history"][-1]["num_updates"])
+                model.load_state_dict(
+                    state["model"], strict=strict, model_cfg=cfg.model
+                )
 
             # reset state so it gets loaded for the next model in ensemble
             state = None
@@ -110,6 +130,19 @@ def load_model_ensemble_and_task(
         ensemble.append(model)
     return ensemble, cfg, task
 
+def get_maybe_sharded_checkpoint_filename(
+    filename: str, suffix: str, shard_idx: int, num_shards: int
+) -> str:
+    orig_filename = filename
+    filename = filename.replace(".pt", suffix + ".pt")
+    fsdp_filename = filename[:-3] + f"-shard{shard_idx}.pt"
+    model_parallel_filename = orig_filename[:-3] + f"_part{shard_idx}.pt"
+    if os.path.exists(fsdp_filename):
+        return fsdp_filename
+    elif num_shards > 1:
+        return model_parallel_filename
+    else:
+        return filename
 
 def get_index_path_from_model(sid):
     sid_base = os.path.basename(sid)
