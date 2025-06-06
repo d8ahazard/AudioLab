@@ -53,11 +53,43 @@ def load_model_ensemble_and_task(
                 state = load_checkpoint_to_cpu(filename, arg_overrides)
                 
             if "args" in state and state["args"] is not None:
-                cfg = OmegaConf.create(state["args"])
+                # Convert args to OmegaConf
+                if isinstance(state["args"], dict):
+                    cfg = OmegaConf.create(state["args"])
+                else:
+                    cfg = OmegaConf.create(vars(state["args"]))
             elif "cfg" in state and state["cfg"] is not None:
-                cfg = state["cfg"]
+                if isinstance(state["cfg"], dict):
+                    cfg = OmegaConf.create(state["cfg"])
+                else:
+                    cfg = state["cfg"]
             else:
                 raise RuntimeError(f"Neither args nor cfg exist in state keys = {state.keys()}")
+
+            # Ensure we have a task configuration
+            if not hasattr(cfg, "task"):
+                # For hubert model, we know it's an audio task
+                cfg.task = OmegaConf.create({
+                    "data": "",
+                    "task": "audio_pretraining",
+                    "labels": "ltr",
+                    "apply_mask": True,
+                    "mask_length": 10,
+                    "mask_prob": 0.65,
+                    "mask_selection": "static",
+                    "mask_other": 0,
+                    "no_mask_overlap": False,
+                    "mask_min_space": 1,
+                    "mask_channel_length": 10,
+                    "mask_channel_prob": 0.0,
+                    "mask_channel_selection": "static",
+                    "mask_channel_other": 0,
+                    "no_mask_channel_overlap": False,
+                    "mask_channel_min_space": 1,
+                    "feature_grad_mult": 0.0,
+                    "layerdrop": 0.1,
+                    "w2v_args": None,
+                })
 
             if task is None:
                 task = tasks.setup_task(cfg.task, from_checkpoint=True)
