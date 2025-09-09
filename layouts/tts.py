@@ -1,5 +1,6 @@
 import os
 import logging
+from time import time
 
 import gradio as gr
 from huggingface_hub import hf_hub_download
@@ -7,6 +8,9 @@ from huggingface_hub import hf_hub_download
 from handlers.args import ArgHandler
 from handlers.tts import TTSHandler
 from handlers.config import output_path, model_path, app_path
+import torchaudio as ta
+from chatterbox.tts import ChatterboxTTS
+
 
 arg_handler = ArgHandler()
 SEND_TO_PROCESS_BUTTON: gr.Button = None
@@ -359,6 +363,22 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
     except Exception as e:
         logger.exception("Error in Zonos TTS:")
         return f"Error: {str(e)}"
+    
+def run_chatterbox_tts(text, speaker_sample, exaggeration, cfg, progress=gr.Progress(track_tqdm=True)):
+    """Generate audio using the Chatterbox TTS model."""
+    try:
+        model = ChatterboxTTS.from_pretrained(device="cuda")
+        if os.path.exists(speaker_sample):
+            wav = model.generate(text, audio_prompt_path=speaker_sample)
+        else:
+            wav = model.generate(text)
+        output_file = os.path.join(output_path, "chatterbox", f"CHATTERBOX_{int(time.time())}.wav")
+        ta.save(output_file, wav, model.sr)
+        return gr.update(value=output_file)
+    except Exception as e:
+        logger.exception("Error in Chatterbox TTS:")
+        return f"Error: {str(e)}"
+
 
 def run_dia_tts(text, prompt_text, speaker_sample, speed, progress=gr.Progress(track_tqdm=True)):
     """Generate audio using the DIA TTS model."""
@@ -439,7 +459,20 @@ def render_tts():
         """Toggle UI elements based on selected model."""
         zonos_selected = model_name == "Zonos"
         dia_selected = model_name == "DIA"
+        chatterbox_selected = model_name == "Chatterbox"
         regular_tts = not (zonos_selected or dia_selected)
+        speakers = []
+        speaker = None
+        """Handle model selection for regular TTS."""
+        if model_name != "Zonos" and model_name != "DIA" and model_name != "Chatterbox":
+            try:
+                tts_handler.load_model(model_name)
+                speakers = tts_handler.available_speakers()
+                speaker = speakers[0] if speakers else None
+            except Exception as e:
+                logger.warning(f"Error loading model {model_name}: {e}")
+                
+
         
         if zonos_selected:
             # When Zonos is selected
@@ -450,6 +483,8 @@ def render_tts():
                 gr.update(visible=True),  # emotion_dropdown
                 gr.update(visible=False),  # speaker_list
                 gr.update(visible=False),  # dia_prompt_text
+                gr.update(visible=False),  # exaggeration (only for chatterbox)
+                gr.update(visible=False),  # cfg (only for chatterbox)
                 gr.update(placeholder="Enter text to synthesize. For Zonos, you can include [Emotion] tags.\nUse empty lines for pauses (0.5s each).")  # input_text placeholder
             )
         elif dia_selected:
@@ -459,7 +494,20 @@ def render_tts():
                 gr.update(visible=False),  # emotion_dropdown
                 gr.update(visible=False),  # speaker_list
                 gr.update(visible=True),  # dia_prompt_text
+                gr.update(visible=False),  # exaggeration (only for chatterbox)
+                gr.update(visible=False),  # cfg (only for chatterbox)
                 gr.update(placeholder="Enter text to synthesize with DIA. Use [S1] and [S2] tags for different speakers.\nYou can include non-verbal sounds in parentheses like (laughs), (coughs), etc.")  # input_text placeholder
+            )
+        elif chatterbox_selected:
+            # When Chatterbox is selected
+            return (
+                gr.update(choices=["en"], value="en"),  # language (Chatterbox only supports English)
+                gr.update(visible=False),  # emotion_dropdown
+                gr.update(visible=False),  # speaker_list
+                gr.update(visible=False),  # dia_prompt_text
+                gr.update(visible=True),  # exaggeration (only for chatterbox)
+                gr.update(visible=True),  # cfg (only for chatterbox)
+                gr.update(placeholder="Enter text to synthesize with Chatterbox.")  # input_text placeholder
             )
         else:
             # For regular TTS models
@@ -475,6 +523,8 @@ def render_tts():
                 gr.update(visible=False),  # emotion_dropdown
                 gr.update(choices=speakers, value=speaker, visible=True),  # speaker_list
                 gr.update(visible=False),  # dia_prompt_text
+                gr.update(visible=False),  # exaggeration (only for chatterbox)
+                gr.update(visible=False),  # cfg (only for chatterbox)
                 gr.update(placeholder="Enter text to synthesize.")  # input_text placeholder
             )
 
@@ -484,23 +534,6 @@ def render_tts():
         models = tts_handler.available_models()
         # Always include DIA and Zonos as the first options
         return gr.update(choices=["DIA", "Zonos"] + models, value="DIA")
-
-    def select_tts_model(model):
-        """Handle model selection for regular TTS."""
-        if model == "Zonos" or model == "DIA":
-            # For Zonos or DIA, don't try to load it as a regular TTS model
-            return gr.update(choices=[], value=None, visible=False)
-        else:
-            # For regular TTS models
-            try:
-                tts_handler.load_model(model)
-                speakers = tts_handler.available_speakers()
-                speaker = speakers[0] if speakers else None
-                return gr.update(choices=speakers, value=speaker, visible=True)
-            except Exception as e:
-                logger.warning(f"Error loading model {model}: {e}")
-                # If there's an error loading the model, return empty speaker list
-                return gr.update(choices=[], value=None, visible=True)
 
     def generate_tts(model, text, language, emotion, speaker_sample, dia_prompt, speaker, speed, progress=gr.Progress(track_tqdm=True)):
         """Dispatch to appropriate TTS generation function based on model."""
@@ -518,6 +551,9 @@ def render_tts():
             elif model == "DIA":
                 # Generate using DIA
                 return run_dia_tts(text, dia_prompt, speaker_sample, speed, progress)
+            elif model == "Chatterbox":
+                # Generate using Chatterbox
+                return run_chatterbox_tts(text, speaker_sample, ch_exaggeration, ch_cfg, progress)
             else:
                 # Generate using regular TTS models
                 try:
@@ -542,8 +578,8 @@ def render_tts():
                 # Adding DIA as the first model, followed by Zonos and others
                 tts_model = gr.Dropdown(
                     label="Model",
-                    choices=["DIA", "Zonos"] + tts_handler.available_models(),
-                    value="DIA",  # Set DIA as default
+                    choices=["Chatterbox","DIA", "Zonos"] + tts_handler.available_models(),
+                    value="Chatterbox",  # Set DIA as default
                     elem_classes="hintitem", elem_id="tts_infer_model", key="tts_infer_model"
                 )
                 
@@ -583,6 +619,25 @@ def render_tts():
                     elem_classes="hintitem", elem_id="tts_infer_dia_prompt", key="tts_infer_dia_prompt"
                 )
                 
+                # Add Chatterbox prompt textbox
+                ch_exaggeration = gr.Slider(
+                    label="Exaggeration",
+                    minimum=0.0,
+                    maximum=2.0,
+                    step=0.1,
+                    value=1.0,
+                    elem_classes="hintitem", elem_id="tts_infer_exaggeration", key="tts_infer_exaggeration"
+                )
+
+                ch_cfg = gr.Slider(
+                    label="CFG",
+                    minimum=0.0,
+                    maximum=2.0,
+                    step=0.1,
+                    value=1.0,
+                    elem_classes="hintitem", elem_id="tts_infer_cfg", key="tts_infer_cfg"
+                )
+
                 speed_slider = gr.Slider(
                     label="Speech Speed",
                     minimum=0.0,
@@ -633,7 +688,7 @@ def render_tts():
         tts_model.change(
             fn=toggle_ui_elements,
             inputs=[tts_model],
-            outputs=[tts_language, emotion_dropdown, speaker_list, dia_prompt_text, input_text]
+            outputs=[tts_language, emotion_dropdown, speaker_list, dia_prompt_text, ch_exaggeration, ch_cfg, input_text]
         )
         
         # Regular TTS model event handlers - only handle language change if model isn't a special model
@@ -641,13 +696,6 @@ def render_tts():
             fn=lambda lang, model: update_tts_model(lang) if model not in ["Zonos", "DIA"] else gr.update(),
             inputs=[tts_language, tts_model],
             outputs=[tts_model]
-        )
-        
-        # Ensure proper model selection handling
-        tts_model.change(
-            fn=select_tts_model,
-            inputs=[tts_model],
-            outputs=[speaker_list]
         )
         
         # Generation button

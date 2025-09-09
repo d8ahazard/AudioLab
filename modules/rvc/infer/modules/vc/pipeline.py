@@ -139,6 +139,8 @@ class Pipeline(object):
         self.bh, self.ah = signal.butter(N=5, Wn=48, btype="high", fs=self.sr)
         self.tgt_sr = tgt_sr
         self.is_half = config.is_half
+        # Disable post-pipeline hiss suppressor; we handle hiss at the mono stage in vc_single
+        self.enable_post_hiss_notch = False
 
     def get_f0(self, audio, p_len, f0_up_key, f0_method, filter_radius, inp_f0=None,
                merge_type="median", crepe_hop_length=160, f0_autotune=False,
@@ -331,6 +333,7 @@ class Pipeline(object):
             debug_clone_audio(audio_opt, final_sr, f"vc_single_final_audio_after_resampling")
         else:
             final_sr = tgt_sr
+
         peak = np.max(np.abs(audio_opt))
         if peak > 0.99:
             audio_opt = audio_opt * (0.99 / peak)
@@ -457,6 +460,92 @@ class VC:
                 self.get_vc(model)
             if self.hubert_model is None:
                 self.hubert_model = load_hubert(self.config)
+            # Local helper: apply adaptive hiss notch on mono before stereo duplication
+            def _apply_mono_hiss_notch(orig_mono: np.ndarray, cloned_mono: np.ndarray, sr: int) -> np.ndarray:
+                try:
+                    if orig_mono.ndim != 1:
+                        orig_mono = orig_mono.reshape(-1)
+                    if cloned_mono.ndim != 1:
+                        cloned_mono = cloned_mono.reshape(-1)
+                    n = min(len(orig_mono), len(cloned_mono))
+                    if n < 4096:
+                        return cloned_mono
+                    ref = orig_mono[:n]
+                    clo = cloned_mono[:n]
+                    # Quiet region selection on original
+                    frame = 2048
+                    hop = 1024
+                    rms = []
+                    starts = []
+                    for s in range(0, n - frame, hop):
+                        seg = ref[s:s+frame]
+                        starts.append(s)
+                        rms.append(float(np.sqrt(np.mean(seg * seg)) + 1e-10))
+                    if not rms:
+                        return cloned_mono
+                    rms = np.array(rms)
+                    thr = np.percentile(rms, 15.0)
+                    quiet_idx = np.where(rms <= thr)[0]
+                    if quiet_idx.size < 3:
+                        return cloned_mono
+                    noise = np.concatenate([clo[starts[i]:starts[i]+frame] - ref[starts[i]:starts[i]+frame] for i in quiet_idx])
+                    # Spectrum analysis
+                    win = np.hanning(len(noise))
+                    spec = np.fft.rfft(noise * win)
+                    mag = np.abs(spec)
+                    freqs = np.fft.rfftfreq(len(noise), 1.0 / sr)
+                    band = (freqs >= 1500) & (freqs <= 20000)
+                    if not np.any(band):
+                        return cloned_mono
+                    mag_band = mag[band]
+                    freqs_band = freqs[band]
+                    if mag_band.size < 8:
+                        return cloned_mono
+                    med = np.median(mag_band) + 1e-12
+                    cand_idx = np.argsort(mag_band)[-6:][::-1]
+                    peak_freqs = []
+                    for ci in cand_idx:
+                        if mag_band[ci] > 6.0 * med:
+                            f0 = float(freqs_band[ci])
+                            if all(abs(f0 - pf) > 60.0 for pf in peak_freqs):
+                                peak_freqs.append(f0)
+                        if len(peak_freqs) >= 3:
+                            break
+                    if not peak_freqs:
+                        return cloned_mono
+                    # Prefer bandstop between two strongest peaks
+                    if len(peak_freqs) >= 2:
+                        from scipy.signal import butter, filtfilt
+                        f_low = float(min(peak_freqs))
+                        f_high = float(max(peak_freqs))
+                        margin = 120.0
+                        nyq = sr / 2.0
+                        w1 = max(20.0, f_low - margin) / nyq
+                        w2 = min(nyq * 0.98, f_high + margin) / nyq
+                        if 0.0 < w1 < w2 < 1.0:
+                            logger.info(f"[RVC] Mono hiss notch: bandstop {int(w1*nyq)}-{int(w2*nyq)}Hz before stereo dup")
+                            b, a = butter(N=2, Wn=[w1, w2], btype="bandstop")
+                            try:
+                                return filtfilt(b, a, cloned_mono)
+                            except Exception:
+                                return cloned_mono
+                    # Fallback: individual narrow notches
+                    from scipy.signal import iirnotch, filtfilt
+                    y = cloned_mono.copy()
+                    for f0 in peak_freqs:
+                        Q = 25.0
+                        w0 = f0 / (sr / 2.0)
+                        if w0 <= 0 or w0 >= 1:
+                            continue
+                        b, a = iirnotch(w0, Q)
+                        try:
+                            y = filtfilt(b, a, y)
+                        except Exception:
+                            pass
+                    logger.info(f"[RVC] Mono hiss notch: notches at {', '.join(f'{pf:.0f}Hz' for pf in peak_freqs)} before stereo dup")
+                    return y
+                except Exception as _:
+                    return cloned_mono
             def process_track(wav, label):
                 if og_sr != sr_rvc:
                     wav_resamp = librosa.resample(wav, orig_sr=og_sr, target_sr=sr_rvc)
@@ -492,6 +581,9 @@ class VC:
                 else:
                     mono = 0.5 * (left_channel + right_channel)
                     mono_conv, proc_sr = process_track(mono, "mono")
+                    # Apply hiss notch on mono before stereo duplication
+                    mono_conv = _apply_mono_hiss_notch(mono, mono_conv, proc_sr)
+                    # Match RMS post-filter
                     orig_rms = np.sqrt(np.mean(mono**2))
                     proc_rms = np.sqrt(np.mean(mono_conv**2)) or 1e-8
                     mono_conv *= (orig_rms / proc_rms)
@@ -499,7 +591,13 @@ class VC:
             else:
                 mono = audio_float if audio_float.ndim == 1 else audio_float.mean(axis=1)
                 mono_conv, proc_sr = process_track(mono, "mono")
-                final_audio = mono_conv.reshape(-1, 1)
+                # Apply hiss notch on mono before stereo duplication
+                mono_conv = _apply_mono_hiss_notch(mono, mono_conv, proc_sr)
+                # Match RMS to original mono and output dual-mono to avoid channel discrepancies
+                orig_rms = np.sqrt(np.mean(mono**2))
+                proc_rms = np.sqrt(np.mean(mono_conv**2)) or 1e-8
+                mono_conv *= (orig_rms / proc_rms)
+                final_audio = np.stack([mono_conv, mono_conv], axis=1)
             # debug_clone_audio(final_audio, proc_sr, "vc_single_final_audio_before_silence_restore")
             # final_audio = restore_silence(audio_float, final_audio, og_sr, proc_sr)
             debug_clone_audio(final_audio, proc_sr, "vc_single_final_audio")
@@ -573,7 +671,20 @@ class VC:
 
                 base_name, ext = os.path.splitext(os.path.basename(path))
                 model_base, _ = os.path.splitext(os.path.basename(model))
-                cloned_name = f"{base_name}(Cloned)({model_base}_{f0_method}).wav"
+                # Append pitch shift to filename if non-zero: e.g., (-1), (+2), (+0.5)
+                pitch_suffix = ""
+                try:
+                    if isinstance(f0_up_key, (int, float)) and f0_up_key != 0:
+                        # Show sign with one decimal if needed, trim trailing .0
+                        val = float(f0_up_key)
+                        sign = "+" if val > 0 else "-"
+                        abs_val = abs(val)
+                        text_val = ("%g" % abs_val)
+                        pitch_suffix = f"({sign}{text_val})"
+                except Exception:
+                    pitch_suffix = ""
+
+                cloned_name = f"{base_name}(Cloned)({model_base}_{f0_method}){pitch_suffix}.wav"
                 output_file = os.path.join(opt_root, cloned_name)
                 param_match = False
                 if os.path.exists(clone_params_file):

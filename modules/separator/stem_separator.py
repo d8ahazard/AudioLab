@@ -4,7 +4,7 @@ import os
 import subprocess
 import uuid
 import warnings
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Tuple
 
 import librosa
 import numpy as np
@@ -112,7 +112,13 @@ class EnsembleDemucsMDXMusicSeparationModel:
             "UVR-MDX-NET-Voc_FT.onnx", "Kim_Vocal_1.onnx", "Kim_Vocal_2.onnx",
             "MDX23C-DrumSep-aufr33-jarredou.ckpt",
             "17_HP-Wind_Inst-UVR.pth",
-            "kuielab_a_bass.onnx"
+            "kuielab_a_bass.onnx",
+            # Added higher-fidelity candidates
+            "vocals_mel_band_roformer.ckpt",
+            "melband_roformer_big_beta4.ckpt",
+            # Transform models
+            "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+            "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"
         ]
         for model in self.model_list:
             self.separator.download_model_files(model)
@@ -135,9 +141,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
         # Transformation and BG vocal options
         self.reverb_removal = options.get("reverb_removal", "Nothing")
+        self.echo_removal = options.get("echo_removal", "Nothing")
         self.crowd_removal = options.get("crowd_removal", "Nothing")
         self.noise_removal = options.get("noise_removal", "Nothing")
-        self.delay_removal_model = options.get("delay_removal_model", "UVR-DeEcho-DeReverb.pth")
+        self.delay_removal_model = options.get("delay_removal_model", "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt")
         self.noise_removal_model = options.get("noise_removal_model", "UVR-DeNoise.pth")
         self.crowd_removal_model = options.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx")
         self.separate_bg_vocals = options.get("separate_bg_vocals", True)
@@ -163,6 +170,74 @@ class EnsembleDemucsMDXMusicSeparationModel:
             self.callback(self.global_step / self.total_steps, desc, self.total_steps)
         logger.info(f"[{self.global_step}/{self.total_steps}] {desc}")
 
+    def _residual_subtract(self, base: np.ndarray, component: np.ndarray, sr: int, max_shift_ms: float = 12.0) -> np.ndarray:
+        """
+        Subtracts component from base with small time alignment and gain matching to reduce hiss.
+
+        - Aligns component to base via cross-correlation within ±max_shift_ms
+        - Computes per-channel least-squares gain alpha = (base·comp)/(comp·comp)
+        - Clips alpha to a reasonable range to avoid over-subtraction
+        - Returns the residual with original base length
+
+        Shapes are (channels, samples).
+        """
+        if not isinstance(base, np.ndarray) or not isinstance(component, np.ndarray):
+            return base
+        if base.ndim == 1:
+            base = np.stack([base, base], axis=0)
+        if component.ndim == 1:
+            component = np.stack([component, component], axis=0)
+        channels = base.shape[0]
+        max_shift = int((max_shift_ms / 1000.0) * float(sr))
+        if max_shift < 0:
+            max_shift = 0
+        # Work on overlap region; keep non-overlap from base
+        n = min(base.shape[-1], component.shape[-1])
+        residual = np.copy(base)
+
+        def shift_signal(x: np.ndarray, lag: int) -> np.ndarray:
+            if lag == 0:
+                return x
+            if lag > 0:
+                # component lags ref → pad front
+                pad = np.zeros(lag, dtype=x.dtype)
+                y = np.concatenate([pad, x[:-lag]])
+            else:
+                # component leads ref → pad end
+                lag = -lag
+                pad = np.zeros(lag, dtype=x.dtype)
+                y = np.concatenate([x[lag:], pad])
+            return y
+
+        for ch in range(channels):
+            ref = base[ch, :n]
+            sig = component[ch, :n]
+            # Small-lag alignment via cross-correlation
+            if max_shift > 0 and ref.size > 0 and sig.size > 0:
+                # Limit to a slice to keep computation reasonable on long tracks
+                probe_len = min(n, 44100)  # up to ~1s for correlation
+                ref_probe = ref[:probe_len]
+                sig_probe = sig[:probe_len]
+                corr = np.correlate(ref_probe, sig_probe, mode="full")
+                center = len(corr) // 2
+                window = corr[center - max_shift:center + max_shift + 1]
+                best_rel = int(np.argmax(window)) - max_shift
+            else:
+                best_rel = 0
+            sig_aligned = shift_signal(sig, best_rel)
+            # Gain match (least-squares alpha)
+            denom = float(np.dot(sig_aligned, sig_aligned)) + 1e-8
+            alpha = float(np.dot(ref, sig_aligned)) / denom
+            # Clip alpha to avoid over-subtraction; allow mild >1 when needed
+            alpha = float(np.clip(alpha, 0.0, 1.25))
+            res = ref - alpha * sig_aligned
+            residual[ch, :n] = res
+
+        # Prevent NaNs/Infs
+        if not np.isfinite(residual).all():
+            residual = np.nan_to_num(residual, nan=0.0, posinf=0.0, neginf=0.0)
+        return residual
+
     def _blend_tracks(self, tracks: List[np.ndarray], weights: List[float]) -> np.ndarray:
         """
         Blends a list of tracks with given weights.
@@ -176,9 +251,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
         """
         max_length = max(t.shape[-1] for t in tracks)
         combined = np.zeros((tracks[0].shape[0], max_length), dtype=np.float32)
-        total_weight = sum(weights)
-        for t in tracks:
-            combined[:, :t.shape[-1]] += t
+        total_weight = max(sum(weights), 1e-6)
+        for idx, t in enumerate(tracks):
+            weight = weights[idx] if idx < len(weights) else 1.0
+            combined[:, :t.shape[-1]] += t * float(weight)
         combined = combined / total_weight
         peak = np.max(np.abs(combined))
         if peak > 0:
@@ -205,6 +281,42 @@ class EnsembleDemucsMDXMusicSeparationModel:
         output_partial = self.separator.separate(tmp_wav)
         output_files = [os.path.join(output_folder, f) for f in output_partial]
         stems = {}
+        # First pass: classify outputs using robust heuristics
+        vocals_idx = None
+        inst_idx = None
+        lowered = [os.path.basename(f).lower() for f in output_files]
+        # Strong instrumental indicators
+        inst_tags = ["instrumental", "accompaniment", "no_vocals", "no vocals", "without vocals", "minus vocals", "inst"]
+        # Negative qualifiers for vocals
+        vocals_neg = ["no_vocals", "no vocals", "without vocals", "bg", "background", "backing"]
+        for i, name in enumerate(lowered):
+            if any(tag in name for tag in inst_tags):
+                inst_idx = i
+        for i, name in enumerate(lowered):
+            if ("vocals" in name or "(vocals)" in name) and not any(neg in name for neg in vocals_neg):
+                vocals_idx = i
+                break
+        # If still ambiguous and exactly 2 files, choose the non-instrumental as vocals
+        if vocals_idx is None and len(output_files) == 2 and inst_idx is not None:
+            other = 1 - inst_idx
+            vocals_idx = other
+        # If we have vocals but no explicit instrumental, pick the other file as instrumental when 2 outputs
+        if vocals_idx is not None and inst_idx is None and len(output_files) == 2:
+            inst_idx = 1 - vocals_idx
+        # If neither detected, try again with simpler rules
+        if vocals_idx is None:
+            for i, name in enumerate(lowered):
+                if "vocals" in name and "no vocals" not in name and "no_vocals" not in name and "bg" not in name:
+                    vocals_idx = i
+                    break
+        if inst_idx is None:
+            for i, name in enumerate(lowered):
+                if any(tag in name for tag in inst_tags):
+                    inst_idx = i
+                    break
+        # STRICT original mapping: rely only on explicit (Vocals)/(Instrumental) tags
+        stems = {}
+        vocals_path = None
         for file in output_files:
             arr, _ = librosa.load(file, sr=sr, mono=False)
             if arr.ndim == 1:
@@ -212,8 +324,31 @@ class EnsembleDemucsMDXMusicSeparationModel:
             flow = file.lower()
             if "(vocals)" in flow:
                 stems["vocals"] = arr
+                vocals_path = file
             elif "(instrumental)" in flow:
                 stems["instrumental"] = arr
+        # Minimal, safe fallback: if instrumental not found by exact tag, accept common aliases
+        if "instrumental" not in stems:
+            for file in output_files:
+                name = os.path.basename(file).lower()
+                if any(tag in name for tag in ["accompaniment", "no_vocals", "no vocals", "without vocals", "minus vocals", " inst ", "_inst", "(inst)"]):
+                    arr, _ = librosa.load(file, sr=sr, mono=False)
+                    if arr.ndim == 1:
+                        arr = np.stack([arr, arr], axis=0)
+                    stems["instrumental"] = arr
+                    break
+        # Vocals-only rule: whatever file is NOT the vocals becomes the instrumental
+        if self.vocals_only and "vocals" in stems and "instrumental" not in stems:
+            for file in output_files:
+                if vocals_path is not None and os.path.abspath(file) == os.path.abspath(vocals_path):
+                    continue
+                # First non-vocal output becomes instrumental
+                arr, _ = librosa.load(file, sr=sr, mono=False)
+                if arr.ndim == 1:
+                    arr = np.stack([arr, arr], axis=0)
+                stems["instrumental"] = arr
+                break
+        # No heuristics, no fallbacks here: strictly keep original behavior
         # Clean up temporary file
         if os.path.exists(tmp_wav):
             os.remove(tmp_wav)
@@ -242,12 +377,17 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 "output_folder": file["output_folder"]
             }
         models_with_weights = [
+            ("vocals_mel_band_roformer.ckpt", 8.6, 16.0),
             ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),
+            ("melband_roformer_big_beta4.ckpt", 8.5, 16.0),
             ("MDX23C-8KFFT-InstVoc_HQ.ckpt", 7.2, 14.9),
             ("UVR-MDX-NET-Voc_FT.onnx", 6.9, 14.9),
             ("Kim_Vocal_2.onnx", 6.9, 14.9),
             ("Kim_Vocal_1.onnx", 6.8, 14.9),
         ]
+        # Avoid over-aggressive blending for very small ensembles which can leak vocals
+        if self.ensemble_strength <= 2:
+            self.options["residual_blend"] = min(float(self.options.get("residual_blend", 0.4)), 0.2)
         models_with_weights = models_with_weights[:self.ensemble_strength]
 
         for model_name, v_wt, i_wt in models_with_weights:
@@ -268,13 +408,57 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["i_weights"].append(i_wt)
                 self._advance_progress(f"Ensemble model '{model_name}' processed for {base_name}.")
         for base_name, res in results.items():
+            # Restore original, strict blending behavior
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
             res["instrumental"] = self._blend_tracks(res["instrumental_list"], res["i_weights"])
+            # Post-blend de-bleed: mix-based residual subtraction blended into instrumental
+            try:
+                mix_np = res.get("mix_np")
+                voc_np = res.get("vocals")
+                if isinstance(mix_np, np.ndarray) and isinstance(voc_np, np.ndarray):
+                    resid = self._residual_subtract(mix_np, voc_np, res["sr"])  # gain-matched, aligned
+                    # Align lengths
+                    min_len = min(resid.shape[-1], res["instrumental"].shape[-1])
+                    resid = resid[:, :min_len]
+                    inst = res["instrumental"][:, :min_len]
+                    # Only blend if it reduces correlation with vocals (prevents vocal bleed)
+                    def cosine_abs(a: np.ndarray, b: np.ndarray) -> float:
+                        a_flat = a.reshape(-1)
+                        b_flat = b.reshape(-1)
+                        denom = (np.linalg.norm(a_flat) * np.linalg.norm(b_flat)) + 1e-8
+                        return float(abs(np.dot(a_flat, b_flat)) / denom)
+                    sim_inst = cosine_abs(inst, voc_np[:, :min_len])
+                    sim_resid = cosine_abs(resid, voc_np[:, :min_len])
+                    if sim_resid + 1e-6 < sim_inst - 0.01:  # requires a small but real improvement
+                        blend = float(self.options.get("residual_blend", 0.4))
+                        blend = 0.0 if blend < 0 else (1.0 if blend > 1.0 else blend)
+                        inst_refined = (1.0 - blend) * inst + blend * resid
+                        # Peak safety
+                        peak = float(np.max(np.abs(inst_refined)))
+                        if peak > 0.99:
+                            inst_refined = inst_refined * (0.99 / peak)
+                        res["instrumental"] = inst_refined
+            except Exception:
+                pass
+            # Safety: if instrumental is near-silent, derive residual from mix - vocals
+            try:
+                i_peak = float(np.max(np.abs(res["instrumental"])) if isinstance(res.get("instrumental"), np.ndarray) else 0.0)
+            except Exception:
+                i_peak = 0.0
+            if i_peak < 1e-6:
+                mix_np = res.get("mix_np")
+                voc_np = res.get("vocals")
+                if isinstance(mix_np, np.ndarray) and isinstance(voc_np, np.ndarray):
+                    resid = self._residual_subtract(mix_np, voc_np, res["sr"])  # gain-matched, aligned
+                    peak = float(np.max(np.abs(resid)))
+                    if peak > 1.0:
+                        resid = resid / peak
+                    res["instrumental"] = resid
         return results
 
     def _multistem_separation_all(self, results: Dict[str, Dict]) -> None:
         """
-        Runs 6-stem separation on the instrumental track for all files.
+        Runs 6-stem separation on the full mix for all files.
 
         Parameters:
             results (Dict[str, Dict]): Separation results.
@@ -282,35 +466,40 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.separator.load_model("htdemucs_6s.yaml")
         for base_name, res in results.items():
             sr = res["sr"]
-            inst = res["instrumental"]
+            mix_np = res.get("mix_np")
+            if mix_np is None or mix_np.size == 0:
+                # Fallback to instrumental if mix is unavailable
+                mix_np = res.get("instrumental")
+            if mix_np is None or mix_np.size == 0:
+                mix_np = np.zeros((2, 1), dtype=np.float32)
             self.separator.output_dir = res["output_folder"]
             self.separator.model_instance.output_dir = res["output_folder"]
 
-            tmp_instru_wav = write_temp_wav(inst, sr, res["output_folder"])
-            demucs_partial = self.separator.separate(tmp_instru_wav)
+            tmp_mix_wav = write_temp_wav(mix_np, sr, res["output_folder"])
+            demucs_partial = self.separator.separate(tmp_mix_wav)
             demucs_files = [os.path.join(self.separator.output_dir, f) for f in demucs_partial]
-            res["drums"] = np.zeros_like(inst)
-            res["bass"] = np.zeros_like(inst)
-            res["guitar"] = np.zeros_like(inst)
-            res["piano"] = np.zeros_like(inst)
-            res["other"] = np.zeros_like(inst)
+            res["drums"] = None
+            res["bass"] = None
+            res["guitar"] = None
+            res["piano"] = None
+            res["other"] = None
             for f in demucs_files:
                 lowf = os.path.basename(f).lower()
                 arr, _ = librosa.load(f, sr=sr, mono=False)
                 if arr.ndim == 1:
                     arr = np.stack([arr, arr], axis=0)
-                if "(drums)" in lowf:
+                if ("(drums)" in lowf) or ("drums" in lowf) or ("drum" in lowf):
                     res["drums"] = arr
-                elif "(bass)" in lowf:
+                elif ("(bass)" in lowf) or ("bass" in lowf):
                     res["bass"] = arr
-                elif "(guitar)" in lowf:
+                elif ("(guitar)" in lowf) or ("guitar" in lowf):
                     res["guitar"] = arr
-                elif "(piano)" in lowf:
+                elif ("(piano)" in lowf) or ("piano" in lowf):
                     res["piano"] = arr
-                elif "(other)" in lowf:
+                elif ("(other)" in lowf) or ("other" in lowf) or ("accompaniment" in lowf) or ("rest" in lowf):
                     res["other"] = arr
-            if os.path.exists(tmp_instru_wav):
-                os.remove(tmp_instru_wav)
+            if os.path.exists(tmp_mix_wav):
+                os.remove(tmp_mix_wav)
             self._advance_progress(f"6-stem separation completed for {base_name}.")
 
     def _alt_bass_separation_all(self, results: Dict[str, Dict]) -> None:
@@ -369,7 +558,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 if arrp.ndim == 1:
                     arrp = np.stack([arrp, arrp], axis=0)
                 if arrp.shape[-1] <= drums_other.shape[-1]:
-                    drums_other[:, :arrp.shape[-1]] -= arrp
+                    # Gain-matched, time-aligned subtraction to reduce hiss
+                    drums_other[:, :arrp.shape[-1]] = self._residual_subtract(drums_other[:, :arrp.shape[-1]], arrp, sr)
                 if "(kick)" in dplow:
                     res["drums_kick"] = arrp
                 elif "(snare)" in dplow:
@@ -382,6 +572,17 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     res["drums_ride"] = arrp
                 elif "(crash)" in dplow:
                     res["drums_crash"] = arrp
+            # Only set stems that were actually detected; otherwise derive reasonable defaults
+            if res.get("drums") is None:
+                res["drums"] = np.zeros_like(drums)
+            if res.get("bass") is None:
+                res["bass"] = np.zeros_like(drums)
+            if res.get("guitar") is None:
+                res["guitar"] = np.zeros_like(drums)
+            if res.get("piano") is None:
+                res["piano"] = np.zeros_like(drums)
+            if res.get("other") is None:
+                res["other"] = np.zeros_like(drums)
             res["drums_other"] = drums_other
             self._advance_progress(f"Advanced drum separation done for {base_name}.")
 
@@ -415,7 +616,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     new_woodwinds = arrw
             leftover_other = np.copy(other)
             if new_woodwinds.shape[-1] <= leftover_other.shape[-1]:
-                leftover_other[:, :new_woodwinds.shape[-1]] -= new_woodwinds
+                # Gain-matched, time-aligned subtraction to reduce hiss
+                leftover_other[:, :new_woodwinds.shape[-1]] = self._residual_subtract(leftover_other[:, :new_woodwinds.shape[-1]], new_woodwinds, sr)
             res["woodwinds"] = new_woodwinds
             res["other"] = leftover_other
             self._advance_progress(f"Woodwinds separated for {base_name}.")
@@ -455,6 +657,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
             output_folder = res["output_folder"]
             for stem_key, label in stem_names.items():
                 if stem_key in res and res[stem_key] is not None:
+                    # Skip writing stems that are effectively silent (prevents empty files)
+                    arr = res[stem_key]
+                    if isinstance(arr, np.ndarray) and float(np.max(np.abs(arr)) if arr.size > 0 else 0.0) < 1e-6:
+                        continue
                     if stem_key == "bg_vocals" and "bg_vocals_" in base_name:
                         bg_int = int(base_name.split("bg_vocals_")[-1])
                         label = f"(BG_Vocals_{bg_int})"
@@ -528,8 +734,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             os.rename(filepath, final_path)
         return final_path
 
-    def _apply_bg_vocal_splitting(self, vocals_array: np.ndarray, sr: int, base_name: str, output_folder: str) -> (
-    np.ndarray, np.ndarray):
+    def _apply_bg_vocal_splitting(self, vocals_array: np.ndarray, sr: int, base_name: str, output_folder: str) -> Tuple[np.ndarray, np.ndarray]:
         """
         Applies background vocal splitting to the vocals array.
 
@@ -588,7 +793,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
         if skip_transforms is None:
             skip_transforms = []
         transformations = [
-            ("UVR-De-Echo-Normal.pth", "No Echo", self.reverb_removal),
+            ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", "No Reverb", self.reverb_removal),
+            (self.delay_removal_model, "dry", self.echo_removal),
             (self.crowd_removal_model, "No Crowd", self.crowd_removal),
             (self.noise_removal_model, "No Noise", self.noise_removal),
         ]
@@ -666,11 +872,11 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     # Pre-calculate total steps for accurate progress tracking.
     N = len(files_data)
     ensemble_models = [
+        ("vocals_mel_band_roformer.ckpt", 8.6, 16.0),
         ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),
+        ("melband_roformer_big_beta4.ckpt", 8.5, 16.0),
         ("MDX23C-8KFFT-InstVoc_HQ.ckpt", 7.2, 14.9),
         ("UVR-MDX-NET-Voc_FT.onnx", 6.9, 14.9),
-        ("Kim_Vocal_2.onnx", 6.9, 14.9),
-        ("Kim_Vocal_1.onnx", 6.8, 14.9),
     ]
     ensemble_models = ensemble_models[:model.ensemble_strength]
     ensemble_steps = len(ensemble_models) * N
@@ -720,13 +926,14 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
         for base_name, res in results.items():
             if res.get("vocals") is not None:
                 res["vocals"] = model._apply_transform_chain(
-                    res["vocals"], res["sr"], base_name, "vocals", res["output_folder"], skip_transforms=["No Echo"]
+                    res["vocals"], res["sr"], base_name, "vocals", res["output_folder"], skip_transforms=["No Reverb"]
                 )
             if res.get("instrumental") is not None:
                 res["instrumental"] = model._apply_transform_chain(
                     res["instrumental"], res["sr"], base_name, "instrumental", res["output_folder"]
                 )
 
+    # Only run multistem logic when not in vocals-only mode
     if not model.vocals_only:
         model._multistem_separation_all(results)
         if model.alt_bass_model:
@@ -781,14 +988,15 @@ def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, 
         "delay_removal": kwargs.get("delay_removal", "Nothing"),
         "crowd_removal": kwargs.get("crowd_removal", "Nothing"),
         "noise_removal": kwargs.get("noise_removal", "Nothing"),
-        "delay_removal_model": kwargs.get("delay_removal_model", "UVR-DeEcho-DeReverb.pth"),
+        "delay_removal_model": kwargs.get("delay_removal_model", "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"),
         "noise_removal_model": kwargs.get("noise_removal_model", "UVR-DeNoise.pth"),
         "crowd_removal_model": kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx"),
         "separate_bg_vocals": kwargs.get("separate_bg_vocals", True),
         "bg_vocal_layers": kwargs.get("bg_vocal_layers", 1),
         "store_reverb_ir": kwargs.get("store_reverb_ir", False),
         "callback": callback,
-        "ensemble_strength": kwargs.get("ensemble_strength", 1)
+        "ensemble_strength": kwargs.get("ensemble_strength", 2),
+        "residual_blend": kwargs.get("residual_blend", 0.4)
     }
     return predict_with_model(options, callback)
 

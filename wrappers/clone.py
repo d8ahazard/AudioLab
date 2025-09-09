@@ -123,7 +123,7 @@ class Clone(BaseWrapper):
             group_name="RVC Controls"
         ),
         "clone_stereo": TypedInput(
-            default=True,
+            default=False,
             description="Preserve stereo information when cloning.",
             type=bool,
             gradio_type="Checkbox",
@@ -325,7 +325,8 @@ class Clone(BaseWrapper):
             protect = filtered_kwargs.get("accent_strength", 0.2)
             index_rate = filtered_kwargs.get("index_rate", 1)
             filter_radius = filtered_kwargs.get("filter_radius", 3)
-            clone_stereo = filtered_kwargs.get("clone_stereo", True)
+            # Default to mono cloning unless explicitly enabled to avoid channel artifacts
+            clone_stereo = filtered_kwargs.get("clone_stereo", False)
             pitch_correction = filtered_kwargs.get("pitch_correction", False)
             pitch_correction_humanize = filtered_kwargs.get("pitch_correction_humanize", 0.95)
             merge_type = filtered_kwargs.get("merge_type", "median")
@@ -419,7 +420,7 @@ class Clone(BaseWrapper):
                                 model=selected_voice,
                                 sid=spk_id,
                                 paths=[proc_file],
-                                f0_up_key=filtered_kwargs["pitch_shift"],
+                                f0_up_key=filtered_kwargs.get("pitch_shift", 0),
                                 f0_method=f0method,
                                 index_rate=index_rate,
                                 filter_radius=filter_radius,

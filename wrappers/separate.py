@@ -30,14 +30,14 @@ class Separate(BaseWrapper):
     file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
-        "delete_extra_stems": TypedInput(
-            default=True,
+		"delete_extra_stems": TypedInput(
+			default=True,
             description="Automatically delete intermediate stem files after processing.",
             type=bool,
             gradio_type="Checkbox"
         ),
-        "separate_bg_vocals": TypedInput(
-            default=True,
+		"separate_bg_vocals": TypedInput(
+			default=False,
             description="Separate background vocals from main vocals.",
             type=bool,
             gradio_type="Checkbox"
@@ -51,14 +51,14 @@ class Separate(BaseWrapper):
             gradio_type="Slider",
             render=False
         ),
-        "vocals_only": TypedInput(
-            default=True,
+		"vocals_only": TypedInput(
+			default=True,
             description="Enable to separate only the main vocals and instrumental, disable for additional stems.",
             type=bool,
             gradio_type="Checkbox"
         ),
-        "store_reverb_ir": TypedInput(
-            default=True,
+		"store_reverb_ir": TypedInput(
+			default=False,
             description="Store the impulse response for reverb removal. Will be used to re-apply reverb later.",
             type=bool,
             gradio_type="Checkbox"
@@ -82,22 +82,29 @@ class Separate(BaseWrapper):
             gradio_type="Checkbox"
         ),
         # Removal toggles
-        "reverb_removal": TypedInput(
-            default="Main Vocals",
+		"reverb_removal": TypedInput(
+			default="Nothing",
             description="Apply reverb removal.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
-        "crowd_removal": TypedInput(
-            default="Nothing",
+		"echo_removal": TypedInput(
+			default="Nothing",
+			description="Apply echo/delay removal.",
+			type=str,
+			choices=["Nothing", "Main Vocals", "All Vocals", "All"],
+			gradio_type="Dropdown"
+		),
+		"crowd_removal": TypedInput(
+			default="Nothing",
             description="Apply crowd noise removal.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
             gradio_type="Dropdown"
         ),
-        "noise_removal": TypedInput(
-            default="Nothing",
+		"noise_removal": TypedInput(
+			default="Nothing",
             description="Apply general noise removal.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
@@ -110,6 +117,17 @@ class Separate(BaseWrapper):
             choices=["UVR-DeNoise.pth", "UVR-DeNoise-Lite.pth"],
             gradio_type="Dropdown"
         ),
+		"delay_removal_model": TypedInput(
+			default="dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt",
+			description="Select the model for echo/delay removal.",
+			type=str,
+			choices=[
+				"dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt",
+				"dereverb-echo_mel_band_roformer_sdr_10.0169.ckpt",
+				"UVR-DeEcho-DeReverb.pth"
+			],
+			gradio_type="Dropdown"
+		),
         "crowd_removal_model": TypedInput(
             default="UVR-MDX-NET_Crowd_HQ_1.onnx",
             description="Select the model for crowd noise removal.",
@@ -266,7 +284,7 @@ class Separate(BaseWrapper):
                 "delay_removal": filtered_kwargs.get("delay_removal", "Nothing"),
                 "crowd_removal": filtered_kwargs.get("crowd_removal", "Nothing"),
                 "noise_removal": filtered_kwargs.get("noise_removal", "Nothing"),
-                "delay_removal_model": filtered_kwargs.get("delay_removal_model", "UVR-DeEcho-DeReverb.pth"),
+                "delay_removal_model": filtered_kwargs.get("delay_removal_model", "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"),
                 "noise_removal_model": filtered_kwargs.get("noise_removal_model", "UVR-DeNoise.pth"),
                 "crowd_removal_model": filtered_kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx"),
                 "store_reverb_ir": filtered_kwargs.get("store_reverb_ir", True)
