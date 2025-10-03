@@ -1,0 +1,43 @@
+{
+  "config": {
+    "seed": 8864359875973030258,
+    "device": "cuda",
+    "model_config": "configs/models/CRNN.yaml",
+    "model": "CRNN",
+    "resume_iteration": 0,
+    "valid_interval": 500,
+    "feature_type": "melspec",
+    "sample_rate": 16000,
+    "win_length": 1024,
+    "hop_length": 640,
+    "fmin": 0,
+    "fmax": 8000,
+    "n_mels": 66,
+    "n_mfcc": 20,
+    "dataset": {
+      "train": [
+        "TIMIT"
+      ],
+      "valid": [
+        "TIMIT"
+      ],
+      "test": [
+        "TIMIT"
+      ]
+    },
+    "num_lbl": 5,
+    "batch_size": 16,
+    "num_frames": 168,
+    "model_complexity": 64,
+    "max_iteration": 1000000,
+    "learning_rate": 1.8268946096351353e-05,
+    "lr_decay_step": 853,
+    "lr_decay_rate": 0.98,
+    "patience": 5,
+    "es_criteria": "f1_micro",
+    "goal": "maximize",
+    "delta": 0,
+    "logger": "wandb"
+  },
+  "consts": {}
+}

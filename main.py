@@ -35,6 +35,8 @@ from layouts.wavetransfer import listen as wavetransfer_listen, register_descrip
     render as render_wavetransfer
 from layouts.acestep import listen as acestep_listen, register_descriptions as acestep_register_descriptions, \
     render as render_acestep
+from layouts.align import listen as align_listen, register_descriptions as align_register_descriptions, \
+    render as render_align
 
 # Configure logging and fix formatting so time, name, level, are each in []
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s', level=logging.DEBUG)
@@ -147,6 +149,7 @@ if __name__ == '__main__':
             rvc_register_descriptions(arg_handler)
             stable_audio_register_descriptions(arg_handler)
             transcribe_register_descriptions(arg_handler)
+            align_register_descriptions(arg_handler)
             wavetransfer_register_descriptions(arg_handler)
             acestep_register_descriptions(arg_handler)
 
@@ -177,6 +180,8 @@ if __name__ == '__main__':
                         render_tts()
                     with gr.Tab(label='Transcribe', id="transcribe"):
                         render_transcribe(arg_handler)
+                    with gr.Tab(label='Align', id="align"):
+                        render_align(arg_handler)
                     with gr.Tab(label='WaveTransfer', id="wavetransfer"):
                         render_wavetransfer(arg_handler)
 
@@ -187,6 +192,7 @@ if __name__ == '__main__':
                 acestep_listen()
                 transcribe_listen()
                 wavetransfer_listen()
+                align_listen()
                 # demo.queue()
 
             # Create a unified FastAPI app that serves both the API and the Gradio UI

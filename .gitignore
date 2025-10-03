@@ -1,5 +1,8 @@
 __pycache__
-/models/
+# Ignore all models by default, but keep rtla subfolder
+models/*
+!models/rtla/
+!models/rtla/**
 checkpoint/
 outputs/
 output/

@@ -1,4 +1,5 @@
 import datetime
+from collections import deque
 import logging
 import os
 from handlers.config import model_path
@@ -50,6 +51,108 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 global_step = 0
 last_saved_epoch = None  # Track the last saved epoch for cleanup
+loss_tracker = None  # Global loss tracker for early stopping/auto-save
+
+
+class LossTracker:
+    """
+    Tracks moving averages and trends of losses to detect overtraining/plateaus
+    and decide on auto-saving and early stopping.
+    """
+    def __init__(self,
+                 ema_alpha: float = 0.05,
+                 min_delta: float = 1e-4,
+                 zero_threshold: float = 0.02,
+                 slope_window: int = 200,
+                 slope_min: float = 1e-5,
+                 upslope_patience_steps: int = 2000,
+                 plateau_patience_steps: int = 4000):
+        self.ema_alpha = float(ema_alpha)
+        self.min_delta = float(min_delta)
+        self.zero_threshold = float(zero_threshold)
+        self.slope_window = int(max(10, slope_window))
+        self.slope_min = float(slope_min)
+        self.upslope_patience_steps = int(upslope_patience_steps)
+        self.plateau_patience_steps = int(plateau_patience_steps)
+
+        self.ema_gen = None
+        self.ema_disc = None
+        self.ema_mel = None
+        self.ema_kl = None
+        self.ema_fm = None
+
+        self.best_gen = float('inf')
+        self.steps_since_best = 0
+        self.steps_since_last_save = 0
+        self.gen_hist = deque(maxlen=self.slope_window)
+
+        self.upslope_counter = 0
+        self.plateau_counter = 0
+
+    def _ema(self, prev, val):
+        if prev is None:
+            return float(val)
+        a = self.ema_alpha
+        return (1.0 - a) * float(prev) + a * float(val)
+
+    def update(self, loss_gen_all, loss_disc, loss_mel, loss_kl, loss_fm):
+        self.ema_gen = self._ema(self.ema_gen, loss_gen_all)
+        self.ema_disc = self._ema(self.ema_disc, loss_disc)
+        self.ema_mel = self._ema(self.ema_mel, loss_mel)
+        self.ema_kl = self._ema(self.ema_kl, loss_kl)
+        self.ema_fm = self._ema(self.ema_fm, loss_fm)
+
+        self.gen_hist.append(self.ema_gen)
+        self.steps_since_last_save += 1
+        self.steps_since_best += 1
+
+        # Track upslope
+        if self.ema_gen > (self.best_gen + self.min_delta):
+            self.upslope_counter += 1
+        else:
+            self.upslope_counter = 0
+
+        # Track plateau via simple slope across window
+        if len(self.gen_hist) >= self.gen_hist.maxlen:
+            start = self.gen_hist[0]
+            end = self.gen_hist[-1]
+            slope = (end - start) / float(self.gen_hist.maxlen)
+            if abs(slope) < self.slope_min:
+                self.plateau_counter += self.gen_hist.maxlen
+            else:
+                # decay plateau counter if we see movement
+                self.plateau_counter = max(0, self.plateau_counter - self.gen_hist.maxlen)
+
+    def should_save_best(self) -> bool:
+        if self.ema_gen is None:
+            return False
+        if self.ema_gen + self.min_delta < self.best_gen:
+            self.best_gen = self.ema_gen
+            self.steps_since_best = 0
+            return True
+        return False
+
+    def near_zero(self) -> bool:
+        return (self.ema_gen is not None) and (self.ema_gen <= self.zero_threshold)
+
+    def should_early_stop(self) -> bool:
+        # Early stop if consistent upslope or long plateau
+        if self.upslope_counter >= self.upslope_patience_steps:
+            return True
+        if self.plateau_counter >= self.plateau_patience_steps:
+            return True
+        return False
+
+    def reset_after_save(self):
+        self.steps_since_last_save = 0
+
+    def status_str(self) -> str:
+        return (
+            f"EMA(gen={self.ema_gen:.4f} disc={self.ema_disc:.4f} mel={self.ema_mel:.4f} "
+            f"kl={self.ema_kl:.4f} fm={self.ema_fm:.4f}), "
+            f"best_gen={self.best_gen:.4f}, steps_since_save={self.steps_since_last_save}, "
+            f"upslope={self.upslope_counter}, plateau={self.plateau_counter}"
+        )
 
 
 class EpochRecorder:
@@ -108,11 +211,12 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     if rank == 0:
         logger.info(hps)
 
-    # Only do this if torch is compiled with libuv
-    if hasattr(torch, 'distributed') and torch.distributed.is_initialized():
-        dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
-    else:
-        logger.warning("torch.distributed is not initialized. Skipping distributed setup.")
+    # Initialize distributed only for multi-GPU training
+    backend = "nccl" if torch.cuda.is_available() and os.name != "nt" else "gloo"
+    if n_gpus > 1 and not dist.is_initialized():
+        dist.init_process_group(backend=backend, init_method="env://", world_size=n_gpus, rank=rank)
+        # Ensure all ranks reach this point before proceeding
+        dist.barrier()
 
     torch.manual_seed(hps.train.seed)
 
@@ -175,23 +279,15 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        pass
-    initialized = False
-    try: 
-        initialized = dist.is_initialized()
-    except Exception as e:
-        pass
-    if not initialized:
-        dist.init_process_group("gloo", "env://", world_size=n_gpus, rank=rank)
-        
-    elif torch.cuda.is_available() and n_gpus > 1:
-        # Call init_process_group before DDP
-        net_g = DDP(net_g, device_ids=[rank])
-        net_d = DDP(net_d, device_ids=[rank])
-    else:
-        net_g = DDP(net_g)
-        net_d = DDP(net_d)
+    if n_gpus > 1 and dist.is_initialized():
+        if torch.cuda.is_available():
+            # Wrap with DDP on the specific device
+            net_g = DDP(net_g, device_ids=[rank])
+            net_d = DDP(net_d, device_ids=[rank])
+        else:
+            # CPU DDP fallback
+            net_g = DDP(net_g)
+            net_d = DDP(net_d)
 
     d_path = utils.latest_checkpoint_path(os.path.join(hps.model_dir, "saves"), "D_*.pth")
     g_path = utils.latest_checkpoint_path(os.path.join(hps.model_dir, "saves"), "G_*.pth")
@@ -436,6 +532,60 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         _ = commons.clip_grad_value_(net_g.parameters(), None)
         scaler.step(optim_g)
         scaler.update()
+
+        # Update global loss tracker and possibly log/save
+        global loss_tracker
+        if loss_tracker is None and rank == 0:
+            # Initialize with default heuristics; could be moved to hps later
+            loss_tracker = LossTracker(
+                ema_alpha=0.05,
+                min_delta=1e-4,
+                zero_threshold=0.02,
+                slope_window=200,
+                slope_min=1e-5,
+                upslope_patience_steps=2000,
+                plateau_patience_steps=4000,
+            )
+        if rank == 0 and loss_tracker is not None:
+            loss_tracker.update(
+                float(loss_gen_all.detach().cpu()),
+                float(loss_disc.detach().cpu()),
+                float(loss_mel.detach().cpu()),
+                float(loss_kl.detach().cpu()),
+                float(loss_fm.detach().cpu()),
+            )
+            if global_step % hps.train.log_interval == 0:
+                logger.info(f"[Tracker] {loss_tracker.status_str()}")
+
+            # Auto-save when we hit a new best or near-zero gen loss
+            did_save = False
+            if loss_tracker.near_zero() or loss_tracker.should_save_best():
+                # Trigger a lightweight save at current epoch/step
+                try:
+                    if hasattr(net_g, "module"):
+                        ckpt = net_g.module.state_dict()
+                    else:
+                        ckpt = net_g.state_dict()
+                    utils.save_checkpoint(
+                        net_g, optim_g, hps.train.learning_rate, epoch,
+                        os.path.join(hps.model_dir, "saves", f"G_e{epoch}_step{global_step}.pth"),
+                    )
+                    utils.save_checkpoint(
+                        net_d, optim_d, hps.train.learning_rate, epoch,
+                        os.path.join(hps.model_dir, "saves", f"D_e{epoch}_step{global_step}.pth"),
+                    )
+                    loss_tracker.reset_after_save()
+                    did_save = True
+                    logger.info("[Tracker] Auto-saved checkpoint due to best/near-zero gen loss.")
+                except Exception as e:
+                    logger.warning(f"[Tracker] Auto-save failed: {e}")
+
+            # Early stop if sustained upslope or long plateau after at least one save
+            if (did_save or loss_tracker.steps_since_best > 0) and loss_tracker.should_early_stop():
+                if rank == 0:
+                    logger.info("[Tracker] Early stopping: sustained upslope or plateau detected.")
+                # Break out of batch loop; outer loop will handle termination
+                break
 
         if rank == 0 and global_step % hps.train.log_interval == 0:
             lr = optim_g.param_groups[0]["lr"]
