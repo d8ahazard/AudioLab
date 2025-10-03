@@ -470,7 +470,9 @@ def _assemble_by_sentences_with_wp(master_sents: List[Dict[str, Any]],
                                    target_y: np.ndarray,
                                    sr: int,
                                    xfade_ms: float,
-                                   master_len: int) -> Tuple[np.ndarray, List[Tuple[float, float, bool]]]:
+                                   master_len: int,
+                                   master_y: Optional[np.ndarray] = None,
+                                   max_nudge_ms: float = 0.0) -> Tuple[np.ndarray, List[Tuple[float, float, bool]]]:
     """Build aligned audio by stretching whole sentences using DTW timing mapping.
     For each master sentence [t0,t1], map to target times via wp, extract, uniformly time-stretch to fit,
     and place with crossfade. Avoids per-sample warping (which can cause pitch jitter).
@@ -482,6 +484,14 @@ def _assemble_by_sentences_with_wp(master_sents: List[Dict[str, Any]],
 
     times_ref = wp[0].astype(np.float64) / float(RTLA_FR)
     times_tgt = wp[1].astype(np.float64) / float(RTLA_FR)
+    # Simple onset envelopes for optional micro-nudging
+    def _env(y):
+        y_abs = np.abs(y.astype(np.float32))
+        win = max(1, int(sr * (10.0 / 1000.0)))
+        k = np.ones(win, dtype=np.float32) / float(win)
+        return np.convolve(y_abs, k, mode="same")
+    master_env = _env(master_y) if (master_y is not None and max_nudge_ms > 0.0) else None
+    target_env = _env(target_y) if max_nudge_ms > 0.0 else None
 
     for s in master_sents:
         m_start = float(s["start"]) if isinstance(s, dict) else float(s.start)
@@ -496,10 +506,40 @@ def _assemble_by_sentences_with_wp(master_sents: List[Dict[str, Any]],
 
         # Map master times to target times (linear interp over DTW path)
         t0 = float(np.interp(m_start, times_ref, times_tgt, left=times_tgt[0], right=times_tgt[-1]))
-        t1 = float(np.interp(m_end, times_ref, times_tgt, left=times_tgt[-1], right=times_tgt[-1]))
+        t1 = float(np.interp(m_end, times_ref, times_tgt, left=times_tgt[0], right=times_tgt[-1]))
         if not (t1 > t0):
             placed_spans.append((m_start, m_end, False))
             continue
+
+        # Optional onset nudge: bounded by max_nudge_ms
+        if master_env is not None and target_env is not None:
+            win_ms = min(150.0, max(50.0, (m_end - m_start) * 1000.0 * 0.3))
+            win_samps = max(1, int(sr * (win_ms / 1000.0)))
+            nudge_samps = max(1, int(sr * (max_nudge_ms / 1000.0)))
+            m0 = start_samp
+            m1 = min(len(master_env), m0 + win_samps)
+            ref_seg = master_env[m0:m1]
+            if ref_seg.size >= 8:
+                tgt_c = time_to_samples(t0, sr)
+                t_lo = max(0, tgt_c - nudge_samps)
+                t_hi = min(len(target_env), tgt_c + nudge_samps + win_samps)
+                cand = target_env[t_lo:t_hi]
+                best_off = 0
+                best_score = -1.0
+                step = max(1, int(sr * 0.001))
+                max_off = min(nudge_samps * 2, max(0, cand.size - ref_seg.size))
+                for off in range(0, max_off + 1, step):
+                    seg = cand[off:off + ref_seg.size]
+                    if seg.size != ref_seg.size:
+                        break
+                    denom = (np.linalg.norm(ref_seg) * np.linalg.norm(seg)) + 1e-8
+                    score = float(np.dot(ref_seg, seg) / denom)
+                    if score > best_score:
+                        best_score = score
+                        best_off = off
+                signed = best_off - (tgt_c - t_lo)
+                signed = np.clip(signed, -nudge_samps, nudge_samps)
+                t0 = t0 + float(signed) / float(sr)
         src0 = time_to_samples(t0, sr)
         src1 = time_to_samples(t1, sr)
         src0 = max(0, min(len(target_y) - 1, src0))
@@ -709,7 +749,10 @@ def align_secondary_to_master(master_audio_path: str,
         wp = _compute_warp_path(master_audio_path, tgt_path)
         if wp is not None:
             # Use DTW only to estimate per-sentence source spans, then uniform-stretch sentences
-            out, placed_spans = _assemble_by_sentences_with_wp(master_sents, wp, tgt_y, sr, xfade_ms, master_len)
+            out, placed_spans = _assemble_by_sentences_with_wp(
+                master_sents, wp, tgt_y, sr, xfade_ms, master_len,
+                master_y=master_y, max_nudge_ms=tolerance_ms
+            )
         else:
             # Fallback to sentence/window-based assembly
             out = np.zeros(master_len, dtype=np.float32)
