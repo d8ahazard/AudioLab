@@ -275,7 +275,7 @@ def render(arg_handler: ArgHandler):
 
                         # Initial validation
                         if not any(char in lyrics_txt for char in ['[', ']']):
-                            return [gr.update()] * 4 + [gr.update(value="Error: No [verse] or [chorus] labels found in lyrics")]
+                            return [gr.update()] * 5 + [gr.update(value="Error: No [verse] or [chorus] labels found in lyrics")]
 
                         # Model setup
                         progress(current_step/total_steps, "Setting up models...")

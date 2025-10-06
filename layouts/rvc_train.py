@@ -1092,6 +1092,9 @@ def render():
                 )
 
             def update_time_info(input_files):
+                if input_files is None:
+                    yield gr.update(value="")
+                    return
                 yield gr.update(value=f"Calculating length of {len(input_files)} input files...")
                 total_length = 0
                 if not input_files:
