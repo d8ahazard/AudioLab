@@ -557,31 +557,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             if global_step % hps.train.log_interval == 0:
                 logger.info(f"[Tracker] {loss_tracker.status_str()}")
 
-            # Auto-save when we hit a new best or near-zero gen loss
-            did_save = False
-            if loss_tracker.near_zero() or loss_tracker.should_save_best():
-                # Trigger a lightweight save at current epoch/step
-                try:
-                    if hasattr(net_g, "module"):
-                        ckpt = net_g.module.state_dict()
-                    else:
-                        ckpt = net_g.state_dict()
-                    utils.save_checkpoint(
-                        net_g, optim_g, hps.train.learning_rate, epoch,
-                        os.path.join(hps.model_dir, "saves", f"G_e{epoch}_step{global_step}.pth"),
-                    )
-                    utils.save_checkpoint(
-                        net_d, optim_d, hps.train.learning_rate, epoch,
-                        os.path.join(hps.model_dir, "saves", f"D_e{epoch}_step{global_step}.pth"),
-                    )
-                    loss_tracker.reset_after_save()
-                    did_save = True
-                    logger.info("[Tracker] Auto-saved checkpoint due to best/near-zero gen loss.")
-                except Exception as e:
-                    logger.warning(f"[Tracker] Auto-save failed: {e}")
-
             # Early stop if sustained upslope or long plateau after at least one save
-            if (did_save or loss_tracker.steps_since_best > 0) and loss_tracker.should_early_stop():
+            if loss_tracker.should_early_stop():
                 if rank == 0:
                     logger.info("[Tracker] Early stopping: sustained upslope or plateau detected.")
                 # Break out of batch loop; outer loop will handle termination
@@ -598,6 +575,11 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     if rank == 0:
         # Save model if it's time for a periodic save or if training is complete
         should_save = (epoch % hps.save_epoch_frequency == 0) or (epoch >= hps.train.epochs)
+
+        # Also save if we have a very good loss (auto-save at epoch boundaries)
+        if loss_tracker is not None and (loss_tracker.near_zero() or loss_tracker.should_save_best()):
+            should_save = True
+            logger.info("[Tracker] Auto-saving at epoch boundary due to best/near-zero gen loss.")
         
         if should_save:
             # If save_latest_only is True and we have a previous save, clean up old checkpoints
@@ -656,6 +638,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
             # Update last_saved_epoch for next cleanup
             last_saved_epoch = epoch
+
+            # Reset loss tracker after saving
+            if loss_tracker is not None:
+                loss_tracker.reset_after_save()
 
             # Copy index file if it exists - look for added_*.index files
             index_path = None
