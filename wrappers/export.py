@@ -202,9 +202,9 @@ class Export(BaseWrapper):
                 if hasattr(project_file, "video_sources"):
                     video_sources.update(project_file.video_sources)
                 if original_videos:
-                    for video_path in original_videos:
-                        if os.path.exists(video_path):
-                            video_sources[video_path] = video_path
+                    for original_video_path, video_source_path in original_videos.items():
+                        if os.path.exists(video_source_path):
+                            video_sources[original_video_path] = video_source_path
                 
                 if export_all_stems:
                     stems = project_file.all_outputs()
@@ -260,19 +260,33 @@ class Export(BaseWrapper):
                     
                     if main_audio:
                         # Process each video file
-                        for audio_key, video_path in video_sources.items():
+                        for original_video_path, video_path in video_sources.items():
                             if os.path.exists(video_path):
                                 try:
                                     if callback:
                                         callback(0.7, f"Recombining audio with video: {os.path.basename(video_path)}")
-                                    
-                                    # Determine which audio to use (original processed audio or main output)
+
+                                    # Find the extracted audio that corresponds to this video
                                     audio_for_video = None
-                                    if os.path.exists(audio_key) and audio_key in stems:
-                                        # Use the processed version of this specific extracted audio
-                                        audio_for_video = audio_key
-                                    else:
-                                        # Use the main processed audio
+
+                                    # Look for extracted audio files in the project directory
+                                    if hasattr(project_file, "project_dir") and project_file.project_dir:
+                                        extracted_audio_pattern = f"{os.path.splitext(os.path.basename(original_video_path))[0]}_extracted.wav"
+                                        potential_audio = os.path.join(project_file.project_dir, extracted_audio_pattern)
+
+                                        # Check if this extracted audio exists and is in the stems
+                                        if os.path.exists(potential_audio) and potential_audio in stems:
+                                            audio_for_video = potential_audio
+                                        else:
+                                            # Look for any processed version of the extracted audio
+                                            for stem in stems:
+                                                stem_name = os.path.basename(stem).lower()
+                                                if extracted_audio_pattern.lower().replace("_extracted.wav", "") in stem_name:
+                                                    audio_for_video = stem
+                                                    break
+
+                                    # If we couldn't find a specific audio for this video, use the main audio
+                                    if not audio_for_video:
                                         audio_for_video = main_audio
                                     
                                     # Create output video filename
