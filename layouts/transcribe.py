@@ -789,8 +789,19 @@ def render(arg_handler: ArgHandler):
             # If the selected file is a text file, show its content
             if selected_file.endswith(".txt"):
                 try:
-                    with open(selected_file, "r", encoding="utf-8") as f:
-                        content = f.read()
+                    # Try multiple encodings to handle different file types
+                    content = None
+                    for encoding in ["utf-8", "utf-16", "latin-1"]:
+                        try:
+                            with open(selected_file, "r", encoding=encoding) as f:
+                                content = f.read()
+                            break
+                        except UnicodeDecodeError:
+                            continue
+
+                    if content is None:
+                        return "Error: Could not decode text file with any supported encoding.", gr.update(visible=False)
+
                     return content, gr.update(visible=False)
                 except Exception as e:
                     return f"Error loading text file: {str(e)}", gr.update(visible=False)

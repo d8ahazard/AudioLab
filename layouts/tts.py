@@ -61,10 +61,23 @@ def download_model():
 def download_speaker_model():
     """Download Zonos speaker embedding model files."""
     model_dir = os.path.join(model_path, "zonos")
-    _ = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
-                        filename="ResNet293_SimAM_ASP_base.pt", local_dir=model_dir)
-    _ = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
-                        filename="ResNet293_SimAM_ASP_base_LDA-128.pt", local_dir=model_dir)
+
+    # Ensure model directory exists and has proper permissions
+    os.makedirs(model_dir, exist_ok=True)
+
+    try:
+        _ = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+                            filename="ResNet293_SimAM_ASP_base.pt", local_dir=model_dir)
+        _ = hf_hub_download(repo_id="Zyphra/Zonos-v0.1-speaker-embedding",
+                            filename="ResNet293_SimAM_ASP_base_LDA-128.pt", local_dir=model_dir)
+    except PermissionError as e:
+        logger.warning(f"Permission error downloading speaker model: {e}")
+        logger.info("Continuing without speaker model - Zonos may work with reduced functionality")
+        # Create placeholder files to indicate the download was attempted
+        placeholder_file = os.path.join(model_dir, "ResNet293_SimAM_ASP_base.pt.placeholder")
+        with open(placeholder_file, 'w') as f:
+            f.write("Download attempted but failed due to permissions")
+
     return model_dir
 
 def download_dia_model():
@@ -245,6 +258,7 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
     import torchaudio
     from pydub import AudioSegment, effects  # for compression & normalization
     import numpy as np
+    from time import time as time_func  # Import time function specifically
 
     from modules.zonos.conditioning import make_cond_dict
     from modules.zonos.model import Zonos
@@ -354,7 +368,7 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
             seg = effects.speedup(seg, playback_speed=float(speed))
 
         # 9) Export final cross‐platform
-        out_file = os.path.join(output_path, "zonos", f"ZONOS_{int(time.time())}.wav")
+        out_file = os.path.join(output_path, "zonos", f"ZONOS_{int(time_func())}.wav")
         os.makedirs(os.path.dirname(out_file), exist_ok=True)
         seg.export(out_file, format="wav")
 
@@ -372,7 +386,7 @@ def run_chatterbox_tts(text, speaker_sample, exaggeration, cfg, progress=gr.Prog
             wav = model.generate(text, audio_prompt_path=speaker_sample)
         else:
             wav = model.generate(text)
-        output_file = os.path.join(output_path, "chatterbox", f"CHATTERBOX_{int(time.time())}.wav")
+        output_file = os.path.join(output_path, "chatterbox", f"CHATTERBOX_{int(time())}.wav")
         ta.save(output_file, wav, model.sr)
         return gr.update(value=output_file)
     except Exception as e:
@@ -386,8 +400,9 @@ def run_dia_tts(text, prompt_text, speaker_sample, speed, progress=gr.Progress(t
     import torch
     import soundfile as sf
     import numpy as np
+    from time import time as time_func  # Import time function specifically
     from modules.diatts.dia.model import Dia
-    
+
     global dia_model
     
     try:
@@ -435,16 +450,22 @@ def run_dia_tts(text, prompt_text, speaker_sample, speed, progress=gr.Progress(t
             print(f"Skipping audio speed adjustment (factor: {speed_factor:.2f}).")
     
         # 4) Save to file
-        timestamp = int(time.time())
+        timestamp = int(time_func())
         out_dir = os.path.join(output_path, "dia")
         os.makedirs(out_dir, exist_ok=True)
         out_file = os.path.join(out_dir, f"DIA_{timestamp}.wav")
-        
+
         # Save the file (using 44.1kHz sampling rate as per the example)
         sf.write(out_file, output_audio_np, output_sr)
         logger.info(f"Audio saved to {out_file}")
-        
-        return gr.update(value=out_file)
+
+        # Ensure the file exists before returning
+        if os.path.exists(out_file):
+            logger.info(f"DIA file successfully created: {out_file}")
+            return gr.update(value=out_file)
+        else:
+            logger.error(f"DIA file was not created successfully: {out_file}")
+            return f"Error: Failed to create output file at {out_file}"
     
     except Exception as e:
         logger.exception("Error in DIA TTS:")
@@ -513,13 +534,22 @@ def render_tts():
             # For regular TTS models
             tts_handler.language = "en"  # Default to English
             languages = tts_handler.available_languages()
+            # Add common English variants if not present to avoid validation errors
+            if "en" in languages and "en-us" not in languages:
+                languages.append("en-us")
+            if "en" in languages and "en-gb" not in languages:
+                languages.append("en-gb")
+
             models = tts_handler.available_models()
             tts_handler.load_model(model_name)  # Use the currently selected model instead of the first one
             speakers = tts_handler.available_speakers()
             speaker = speakers[0] if speakers else None
-            
+
+            # Use en-us as default if available, otherwise fall back to en
+            default_lang = "en-us" if "en-us" in languages else ("en" if "en" in languages else languages[0] if languages else "en")
+
             return (
-                gr.update(choices=languages, value="en"),  # language
+                gr.update(choices=languages, value=default_lang),  # language
                 gr.update(visible=False),  # emotion_dropdown
                 gr.update(choices=speakers, value=speaker, visible=True),  # speaker_list
                 gr.update(visible=False),  # dia_prompt_text
