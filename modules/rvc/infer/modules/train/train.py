@@ -57,7 +57,7 @@ loss_tracker = None  # Global loss tracker for early stopping/auto-save
 class LossTracker:
     """
     Tracks moving averages and trends of losses to detect overtraining/plateaus
-    and decide on auto-saving and early stopping.
+    and decide on auto-saving and early stopping with intelligent save controls.
     """
     def __init__(self,
                  ema_alpha: float = 0.05,
@@ -66,7 +66,10 @@ class LossTracker:
                  slope_window: int = 200,
                  slope_min: float = 1e-5,
                  upslope_patience_steps: int = 2000,
-                 plateau_patience_steps: int = 4000):
+                 plateau_patience_steps: int = 4000,
+                 min_save_interval: int = 5,  # Minimum epochs between best-model saves
+                 significant_improvement_threshold: float = 0.05,  # 5% improvement required
+                 max_best_saves: int = 3):  # Keep only the best N saves
         self.ema_alpha = float(ema_alpha)
         self.min_delta = float(min_delta)
         self.zero_threshold = float(zero_threshold)
@@ -74,6 +77,9 @@ class LossTracker:
         self.slope_min = float(slope_min)
         self.upslope_patience_steps = int(upslope_patience_steps)
         self.plateau_patience_steps = int(plateau_patience_steps)
+        self.min_save_interval = int(min_save_interval)
+        self.significant_improvement_threshold = float(significant_improvement_threshold)
+        self.max_best_saves = int(max_best_saves)
 
         self.ema_gen = None
         self.ema_disc = None
@@ -88,6 +94,11 @@ class LossTracker:
 
         self.upslope_counter = 0
         self.plateau_counter = 0
+
+        # Intelligent save tracking
+        self.epochs_since_best_save = 0  # Track epochs since last best save
+        self.best_saves_history = []  # Keep track of best saves for cleanup
+        self.current_epoch = 0  # Track current epoch
 
     def _ema(self, prev, val):
         if prev is None:
@@ -105,6 +116,7 @@ class LossTracker:
         self.gen_hist.append(self.ema_gen)
         self.steps_since_last_save += 1
         self.steps_since_best += 1
+        self.epochs_since_best_save += 1
 
         # Track upslope
         if self.ema_gen > (self.best_gen + self.min_delta):
@@ -132,6 +144,44 @@ class LossTracker:
             return True
         return False
 
+    def should_save_intelligent_best(self, current_epoch: int) -> tuple[bool, str]:
+        """
+        Intelligently decide if we should save a best model based on:
+        1. Minimum interval between saves
+        2. Significant improvement threshold
+        3. Maximum number of best saves to keep
+
+        Returns: (should_save, reason)
+        """
+        if self.ema_gen is None:
+            return False, "No loss data"
+
+        # Check if enough epochs have passed since last best save
+        if self.epochs_since_best_save < self.min_save_interval:
+            return False, f"Only {self.epochs_since_best_save}/{self.min_save_interval} epochs since last best save"
+
+        # Check if this is a significant improvement
+        if self.best_gen != float('inf'):
+            improvement_ratio = (self.best_gen - self.ema_gen) / self.best_gen
+            if improvement_ratio < self.significant_improvement_threshold:
+                return False, f"Improvement {improvement_ratio:.3f} < threshold {self.significant_improvement_threshold}"
+
+        # Check if we should update best and save
+        if self.ema_gen + self.min_delta < self.best_gen:
+            self.best_gen = self.ema_gen
+            self.steps_since_best = 0
+            return True, "New best loss achieved"
+
+        return False, "No significant improvement"
+
+    def set_epoch(self, epoch: int):
+        """Update the current epoch tracking"""
+        self.current_epoch = epoch
+
+    def reset_best_save_counter(self):
+        """Reset the counter when we save a best model"""
+        self.epochs_since_best_save = 0
+
     def near_zero(self) -> bool:
         return (self.ema_gen is not None) and (self.ema_gen <= self.zero_threshold)
 
@@ -145,12 +195,31 @@ class LossTracker:
 
     def reset_after_save(self):
         self.steps_since_last_save = 0
+        self.reset_best_save_counter()
+
+    def add_best_save(self, save_path: str):
+        """Add a best save to history and cleanup old ones if needed"""
+        self.best_saves_history.append(save_path)
+
+        # Keep only the best N saves
+        if len(self.best_saves_history) > self.max_best_saves:
+            # Remove oldest saves (keep the most recent N)
+            saves_to_remove = self.best_saves_history[:-self.max_best_saves]
+            for old_save in saves_to_remove:
+                try:
+                    if os.path.exists(old_save):
+                        os.remove(old_save)
+                        print(f"Cleaned up old best save: {old_save}")
+                except Exception as e:
+                    print(f"Failed to remove old best save {old_save}: {e}")
+            self.best_saves_history = self.best_saves_history[-self.max_best_saves:]
 
     def status_str(self) -> str:
         return (
             f"EMA(gen={self.ema_gen:.4f} disc={self.ema_disc:.4f} mel={self.ema_mel:.4f} "
             f"kl={self.ema_kl:.4f} fm={self.ema_fm:.4f}), "
             f"best_gen={self.best_gen:.4f}, steps_since_save={self.steps_since_last_save}, "
+            f"epochs_since_best_save={self.epochs_since_best_save}, "
             f"upslope={self.upslope_counter}, plateau={self.plateau_counter}"
         )
 
@@ -536,7 +605,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         # Update global loss tracker and possibly log/save
         global loss_tracker
         if loss_tracker is None and rank == 0:
-            # Initialize with default heuristics; could be moved to hps later
+            # Initialize with intelligent save controls
             loss_tracker = LossTracker(
                 ema_alpha=0.05,
                 min_delta=1e-4,
@@ -545,6 +614,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 slope_min=1e-5,
                 upslope_patience_steps=2000,
                 plateau_patience_steps=4000,
+                min_save_interval=5,  # Save best models every 5 epochs minimum
+                significant_improvement_threshold=0.03,  # 3% improvement required
+                max_best_saves=3,  # Keep only 3 best saves
             )
         if rank == 0 and loss_tracker is not None:
             loss_tracker.update(
@@ -576,10 +648,17 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         # Save model if it's time for a periodic save or if training is complete
         should_save = (epoch % hps.save_epoch_frequency == 0) or (epoch >= hps.train.epochs)
 
-        # Also save if we have a very good loss (auto-save at epoch boundaries)
-        if loss_tracker is not None and (loss_tracker.near_zero() or loss_tracker.should_save_best()):
-            should_save = True
-            logger.info("[Tracker] Auto-saving at epoch boundary due to best/near-zero gen loss.")
+        # Also save if we have a very good loss (intelligent auto-save at epoch boundaries)
+        if loss_tracker is not None:
+            should_save_intelligent, reason = loss_tracker.should_save_intelligent_best(epoch)
+            if should_save_intelligent:
+                should_save = True
+                logger.info(f"[Tracker] Auto-saving at epoch boundary: {reason}")
+
+            # Also save if near zero loss (exceptional case)
+            if loss_tracker.near_zero():
+                should_save = True
+                logger.info("[Tracker] Auto-saving at epoch boundary due to near-zero gen loss.")
         
         if should_save:
             # If save_latest_only is True and we have a previous save, clean up old checkpoints
@@ -659,7 +738,11 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             
             model_file_path = os.path.join(model_path, "trained", f"{model_name}.pth")
             logger.info(f"Saved checkpoint: {model_file_path}")
-            
+
+            # Track this save for intelligent cleanup if it was an intelligent best save
+            if loss_tracker is not None and should_save_intelligent:
+                loss_tracker.add_best_save(model_file_path)
+
         if epoch >= hps.train.epochs:
             logger.info("Training is done. The program is closed.")
 
