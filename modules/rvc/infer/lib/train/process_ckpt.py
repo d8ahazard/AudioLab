@@ -42,8 +42,11 @@ def savee(ckpt, sr, if_f0, name, epoch, version, hps):
         opt["sr"] = sr
         opt["f0"] = if_f0
         opt["version"] = version
+
+        # Use the provided name (which may include epoch suffix) for saving
         out_file = os.path.join(model_path, "trained", f"{name}.pth")
         torch.save(opt, out_file)
+        logger.info(f"Saved model checkpoint: {out_file}")
         return "Success."
     except Exception as e:
         logger.error(f"Error saving final ckpt: {e}")

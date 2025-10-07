@@ -606,7 +606,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 for save_dir in [os.path.join(model_path, "trained"), os.path.join(hps.model_dir, "saves")]:
                     if os.path.exists(save_dir):
                         for file in os.listdir(save_dir):
-                            if f"_e{last_saved_epoch}" in file and (file.endswith(".pth") or file.endswith(".index")):
+                            if f"_v{last_saved_epoch}" in file and (file.endswith(".pth") or file.endswith(".index")):
                                 try:
                                     os.remove(os.path.join(save_dir, file))
                                 except Exception as e:
@@ -618,36 +618,45 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             else:
                 ckpt = net_g.state_dict()
             
-            # Save checkpoints in saves directory
-            utils.save_checkpoint(
-                net_g,
-                optim_g,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "saves", f"G_e{epoch}.pth"),
-            )
-            utils.save_checkpoint(
-                net_d,
-                optim_d,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "saves", f"D_e{epoch}.pth"),
-            )
+            # Save checkpoints in saves directory (only when save frequency is met or final epoch)
+            if should_save:
+                utils.save_checkpoint(
+                    net_g,
+                    optim_g,
+                    hps.train.learning_rate,
+                    epoch,
+                    os.path.join(hps.model_dir, "saves", f"G_e{epoch}.pth"),
+                )
+                utils.save_checkpoint(
+                    net_d,
+                    optim_d,
+                    hps.train.learning_rate,
+                    epoch,
+                    os.path.join(hps.model_dir, "saves", f"D_e{epoch}.pth"),
+                )
             
+            # Determine the model name for this save (with epoch suffix for intermediate saves)
+            model_name = f"{hps.name}_v{epoch}" if epoch < hps.train.epochs else hps.name
+
             # Save the model in trained directory
-            model_file = savee(
+            save_result = savee(
                 ckpt,
                 hps.sample_rate,
                 hps.if_f0,
-                f"{hps.name}_e{epoch}" if epoch < hps.train.epochs else hps.name,
+                model_name,
                 epoch,
                 hps.version,
                 hps,
             )
-            
+
+            if save_result != "Success.":
+                logger.error(f"Failed to save model: {save_result}")
+                # Skip the rest of the save logic for this epoch
+                # Note: Continue not used here as we're not in a loop
+
             # Update last_saved_epoch for next cleanup
             last_saved_epoch = epoch
-            
+
             # Copy index file if it exists - look for added_*.index files
             index_path = None
             for file in os.listdir(hps.model_dir):
@@ -656,13 +665,14 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     break
 
             if index_path is not None and os.path.exists(index_path):
-                target_index = model_file.replace(".pth", ".index")
+                target_index = os.path.join(model_path, "trained", f"{model_name}.index")
                 shutil.copy2(index_path, target_index)
                 logger.info(f"Copied index file to {target_index}")
             else:
                 logger.warning(f"No index file found in {hps.model_dir} to copy alongside model")
             
-            logger.info(f"Saved checkpoint: {model_file}")
+            model_file_path = os.path.join(model_path, "trained", f"{model_name}.pth")
+            logger.info(f"Saved checkpoint: {model_file_path}")
             
         if epoch >= hps.train.epochs:
             logger.info("Training is done. The program is closed.")
