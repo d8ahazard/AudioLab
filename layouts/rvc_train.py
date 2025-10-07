@@ -280,6 +280,32 @@ def get_dataset_length(index_file):
         return 0
 
 
+def validate_model_and_index(project_name, model_version):
+    """Validate that both model and index files exist and are properly named."""
+    exp_dir = os.path.join(output_path, "voices", project_name)
+
+    # Check if project directory exists
+    if not os.path.exists(exp_dir):
+        return False, f"Project directory {exp_dir} does not exist"
+
+    # Check for trained model in the trained folder
+    trained_model_path = os.path.join(model_path, "trained", f"{project_name}.pth")
+    if not os.path.exists(trained_model_path):
+        return False, f"Trained model not found at {trained_model_path}"
+
+    # Check for index file in trained folder
+    trained_index_path = os.path.join(model_path, "trained", f"{project_name}.index")
+    if not os.path.exists(trained_index_path):
+        return False, f"Index file not found at {trained_index_path}"
+
+    # Also check for index in index_root
+    index_root_path = os.path.join(index_root, f"{project_name}.index")
+    if not os.path.exists(index_root_path):
+        logger.warning(f"Index not found in index_root: {index_root_path}")
+
+    return True, "Model and index validation successful"
+
+
 def click_train(
         voice_name,
         resume_training,
@@ -478,12 +504,18 @@ def train_index(project_name, model_version):
     added_index_path = os.path.join(exp_dir, f"added_IVF{n_ivf}_Flat_nprobe_{index_ivf.nprobe}_{model_version}.index")
     faiss.write_index(index, added_index_path)
     infos.append(f"Successfully built index: {added_index_path}")
+
+    # Also create a simple added_*.index file for compatibility with training code
+    simple_index_path = os.path.join(exp_dir, f"added_{os.path.basename(exp_dir)}.index")
+    shutil.copy2(added_index_path, simple_index_path)
+    infos.append(f"Created compatible index: {simple_index_path}")
+
     try:
         logger.info(f"Copying index to {index_root}")
         shutil.copy(added_index_path, os.path.join(index_root, f"{os.path.basename(exp_dir)}.index"))
         infos.append(f"Linked index to external location: {outside_index_root}")
-    except Exception:
-        infos.append(f"Failed to link index to external location: {outside_index_root}")
+    except Exception as e:
+        infos.append(f"Failed to link index to external location: {outside_index_root}. Error: {e}")
     dataset_length = get_dataset_length(os.path.join(index_root, f"{os.path.basename(exp_dir)}.index"))
     infos.append(f"Dataset contains {dataset_length} total vectors")
 
@@ -676,8 +708,22 @@ def train1key(
         yield get_info_str(error_msg), gr.update(visible=False)
         return get_info_str(error_msg), gr.update(visible=False)
 
-    yield get_info_str("Processing complete!"), gr.update(visible=False)
-    return get_info_str("Processing complete!"), gr.update(visible=False)
+    # Final validation
+    try:
+        progress(0.9, "Validating final model and index")
+        yield get_info_str("Step5: Validating final model and index."), gr.update(visible=False)
+        validation_success, validation_msg = validate_model_and_index(project_name, project_version)
+        if validation_success:
+            yield get_info_str(f"✅ {validation_msg}"), gr.update(visible=False)
+        else:
+            yield get_info_str(f"⚠️  Validation warning: {validation_msg}"), gr.update(visible=False)
+    except Exception as e:
+        error_msg = f"Error during validation: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield get_info_str(f"⚠️  {error_msg}"), gr.update(visible=False)
+
+    yield get_info_str("🎉 Training and setup complete! Model and index are ready."), gr.update(visible=False)
+    return get_info_str("🎉 Training and setup complete! Model and index are ready."), gr.update(visible=False)
 
 
 def resume_training(

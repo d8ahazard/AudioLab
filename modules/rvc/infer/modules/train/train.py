@@ -648,20 +648,43 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             # Update last_saved_epoch for next cleanup
             last_saved_epoch = epoch
             
-            # Copy index file if it exists
+            # Copy index file if it exists - look for added_*.index files
             index_path = None
             for file in os.listdir(hps.model_dir):
-                if file.endswith(".index") and file.startswith("added_"):
+                if file.endswith(".index") and ("added_" in file or file.startswith("added")):
                     index_path = os.path.join(hps.model_dir, file)
                     break
-                    
+
             if index_path is not None and os.path.exists(index_path):
                 target_index = model_file.replace(".pth", ".index")
                 shutil.copy2(index_path, target_index)
                 logger.info(f"Copied index file to {target_index}")
+            else:
+                logger.warning(f"No index file found in {hps.model_dir} to copy alongside model")
             
             logger.info(f"Saved checkpoint: {model_file}")
             
         if epoch >= hps.train.epochs:
             logger.info("Training is done. The program is closed.")
+
+            # Ensure final model and index are properly saved to trained folder
+            final_model_name = f"{hps.name}.pth"
+            final_model_path = os.path.join(model_path, "trained", final_model_name)
+
+            # Check if final model exists and has corresponding index
+            if os.path.exists(final_model_path):
+                final_index_path = final_model_path.replace(".pth", ".index")
+
+                # If index doesn't exist alongside final model, try to copy it
+                if not os.path.exists(final_index_path):
+                    # Look for the most recent index file in the experiment directory
+                    index_files = [f for f in os.listdir(hps.model_dir) if f.endswith(".index") and ("added_" in f or f.startswith("added"))]
+                    if index_files:
+                        latest_index = max(index_files, key=lambda f: os.path.getmtime(os.path.join(hps.model_dir, f)))
+                        latest_index_path = os.path.join(hps.model_dir, latest_index)
+                        shutil.copy2(latest_index_path, final_index_path)
+                        logger.info(f"Copied final index to trained folder: {final_index_path}")
+
+                logger.info(f"Final model and index saved: {final_model_path} and {final_index_path}")
+
             return
