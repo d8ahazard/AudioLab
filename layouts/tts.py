@@ -329,7 +329,7 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
                 logger.info(f"Added 0.5s pause after chunk {idx+1}")
 
         if not audio_segments:
-            return "Error: No chunks generated."
+            return gr.update(value=None), "❌ Zonos Error: No audio chunks generated"
 
         # 5) Concatenate => final_audio [samples]
         # All segments should now have the same dimension structure
@@ -372,11 +372,11 @@ def run_zonos_tts(language, emotion_choice, text, speaker_sample, speed, progres
         os.makedirs(os.path.dirname(out_file), exist_ok=True)
         seg.export(out_file, format="wav")
 
-        return gr.update(value=out_file)
+        return gr.update(value=out_file), "✅ Speech generated successfully"
 
     except Exception as e:
         logger.exception("Error in Zonos TTS:")
-        return f"Error: {str(e)}"
+        return gr.update(value=None), f"❌ Zonos TTS Error: {str(e)}"
     
 def run_chatterbox_tts(text, speaker_sample, exaggeration, cfg, progress=gr.Progress(track_tqdm=True)):
     """Generate audio using the Chatterbox TTS model."""
@@ -388,10 +388,10 @@ def run_chatterbox_tts(text, speaker_sample, exaggeration, cfg, progress=gr.Prog
             wav = model.generate(text)
         output_file = os.path.join(output_path, "chatterbox", f"CHATTERBOX_{int(time())}.wav")
         ta.save(output_file, wav, model.sr)
-        return gr.update(value=output_file)
+        return gr.update(value=output_file), "✅ Speech generated successfully"
     except Exception as e:
         logger.exception("Error in Chatterbox TTS:")
-        return f"Error: {str(e)}"
+        return gr.update(value=None), f"❌ Chatterbox TTS Error: {str(e)}"
 
 
 def run_dia_tts(text, prompt_text, speaker_sample, speed, progress=gr.Progress(track_tqdm=True)):
@@ -462,14 +462,14 @@ def run_dia_tts(text, prompt_text, speaker_sample, speed, progress=gr.Progress(t
         # Ensure the file exists before returning
         if os.path.exists(out_file):
             logger.info(f"DIA file successfully created: {out_file}")
-            return gr.update(value=out_file)
+            return gr.update(value=out_file), "✅ Speech generated successfully"
         else:
             logger.error(f"DIA file was not created successfully: {out_file}")
-            return f"Error: Failed to create output file at {out_file}"
-    
+            return gr.update(value=None), f"❌ DIA Error: Failed to create output file at {out_file}"
+
     except Exception as e:
         logger.exception("Error in DIA TTS:")
-        return f"Error: {str(e)}"
+        return gr.update(value=None), f"❌ DIA TTS Error: {str(e)}"
 
 def render_tts():
     global SEND_TO_PROCESS_BUTTON, OUTPUT_AUDIO
@@ -569,34 +569,43 @@ def render_tts():
         """Dispatch to appropriate TTS generation function based on model."""
         try:
             if not text or text.strip() == "":
-                return "Error: Please enter some text to speak."
-            
+                return gr.update(value=None), "❌ Error: Please enter some text to speak."
+
             if model == "Zonos":
                 # For Zonos, we need a speaker reference sample
                 if not speaker_sample:
-                    return "Error: Zonos requires a speaker audio reference file."
-                
+                    return gr.update(value=None), "❌ Error: Zonos requires a speaker audio reference file."
+
                 # Generate using Zonos
-                return run_zonos_tts(language, emotion, text, speaker_sample, speed, progress)
+                result = run_zonos_tts(language, emotion, text, speaker_sample, speed, progress)
+                if isinstance(result, str) and result.startswith("Error"):
+                    return gr.update(value=None), f"❌ {result}"
+                return result, "✅ Speech generated successfully with Zonos"
             elif model == "DIA":
                 # Generate using DIA
-                return run_dia_tts(text, dia_prompt, speaker_sample, speed, progress)
+                result = run_dia_tts(text, dia_prompt, speaker_sample, speed, progress)
+                if isinstance(result, str) and result.startswith("Error"):
+                    return gr.update(value=None), f"❌ {result}"
+                return result, "✅ Speech generated successfully with DIA"
             elif model == "Chatterbox":
                 # Generate using Chatterbox
-                return run_chatterbox_tts(text, speaker_sample, ch_exaggeration, ch_cfg, progress)
+                result = run_chatterbox_tts(text, speaker_sample, ch_exaggeration, ch_cfg, progress)
+                if isinstance(result, str) and result.startswith("Error"):
+                    return gr.update(value=None), f"❌ {result}"
+                return result, "✅ Speech generated successfully with Chatterbox"
             else:
                 # Generate using regular TTS models
                 try:
                     spoken = tts_handler.handle(
                         text=text, model_name=model, speaker_wav=speaker_sample, selected_speaker=speaker, speed=speed
                     )
-                    return gr.update(value=spoken)
+                    return gr.update(value=spoken), f"✅ Speech generated successfully with {model}"
                 except Exception as e:
-                            logger.exception(f"Error in regular TTS generation with model {model}:")
-                            return f"Error: Could not generate speech with {model}: {str(e)}"
+                    logger.exception(f"Error in regular TTS generation with model {model}:")
+                    return gr.update(value=None), f"❌ Error: Could not generate speech with {model}"
         except Exception as e:
             logger.exception("Error in TTS generation:")
-            return f"Error: {str(e)}"
+            return gr.update(value=None), f"❌ Error: {str(e)}"
 
     with gr.Blocks() as tts:
         gr.Markdown("# 🗣️ Text to Speech")
@@ -714,6 +723,13 @@ def render_tts():
                     interactive=False
                 )
 
+                tts_status = gr.Textbox(
+                    label="Status",
+                    placeholder="Ready to generate speech...",
+                    elem_classes="hintitem", elem_id="tts_infer_status", key="tts_infer_status",
+                    interactive=False
+                )
+
         # Set up event handlers
         tts_model.change(
             fn=toggle_ui_elements,
@@ -732,7 +748,7 @@ def render_tts():
         start_tts.click(
             fn=generate_tts,
             inputs=[tts_model, input_text, tts_language, emotion_dropdown, speaker_wav, dia_prompt_text, speaker_list, speed_slider],
-            outputs=[OUTPUT_AUDIO]
+            outputs=[OUTPUT_AUDIO, tts_status]
         )
 
     return tts
