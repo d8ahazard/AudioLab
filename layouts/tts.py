@@ -387,6 +387,8 @@ def run_chatterbox_tts(text, speaker_sample, exaggeration, cfg, progress=gr.Prog
         else:
             wav = model.generate(text)
         output_file = os.path.join(output_path, "chatterbox", f"CHATTERBOX_{int(time())}.wav")
+        # Create the output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         ta.save(output_file, wav, model.sr)
         return gr.update(value=output_file), "✅ Speech generated successfully"
     except Exception as e:
@@ -577,22 +579,16 @@ def render_tts():
                     return gr.update(value=None), "❌ Error: Zonos requires a speaker audio reference file."
 
                 # Generate using Zonos
-                result = run_zonos_tts(language, emotion, text, speaker_sample, speed, progress)
-                if isinstance(result, str) and result.startswith("Error"):
-                    return gr.update(value=None), f"❌ {result}"
-                return result, "✅ Speech generated successfully with Zonos"
+                audio_update, status_msg = run_zonos_tts(language, emotion, text, speaker_sample, speed, progress)
+                return audio_update, status_msg
             elif model == "DIA":
                 # Generate using DIA
-                result = run_dia_tts(text, dia_prompt, speaker_sample, speed, progress)
-                if isinstance(result, str) and result.startswith("Error"):
-                    return gr.update(value=None), f"❌ {result}"
-                return result, "✅ Speech generated successfully with DIA"
+                audio_update, status_msg = run_dia_tts(text, dia_prompt, speaker_sample, speed, progress)
+                return audio_update, status_msg
             elif model == "Chatterbox":
                 # Generate using Chatterbox
-                result = run_chatterbox_tts(text, speaker_sample, ch_exaggeration, ch_cfg, progress)
-                if isinstance(result, str) and result.startswith("Error"):
-                    return gr.update(value=None), f"❌ {result}"
-                return result, "✅ Speech generated successfully with Chatterbox"
+                audio_update, status_msg = run_chatterbox_tts(text, speaker_sample, ch_exaggeration, ch_cfg, progress)
+                return audio_update, status_msg
             else:
                 # Generate using regular TTS models
                 try:
