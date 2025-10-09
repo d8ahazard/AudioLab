@@ -304,16 +304,7 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     outputs = []
     all_outputs = []
 
-    # Check for special directories in input files that should automatically skip separation
-    special_dirs = ["tts", "zonos", "stable_audio"]
-    has_special_files = any(any(special_dir in input_file for special_dir in special_dirs) for input_file in inputs)
-    has_tts_files = any(os.path.basename(input_file).startswith(("TTS_", "ZONOS_")) for input_file in inputs)
-
-    # If we have special files but Separate is in processors, note it but continue
-    if (has_special_files or has_tts_files) and "Separate" in processors:
-        logger.info("Special files detected that would typically skip separation - continuing with user-selected processors")
-
-    # Handle video files: extract audio and create project structure
+    # Handle video files first: extract audio and create project structure
     original_videos = {}
     processed_inputs = []
 
@@ -331,6 +322,36 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
             processed_inputs.append(ProjectFiles(input_file))
 
     inputs = processed_inputs
+
+    # Now check for files that should skip separation (after video processing)
+    special_dirs = ["tts", "zonos", "stable_audio"]
+    has_special_files = any(any(special_dir in input_file for special_dir in special_dirs) for input_file in inputs)
+    has_tts_files = any(os.path.basename(input_file).startswith(("TTS_", "ZONOS_")) for input_file in inputs)
+    has_extracted_audio = any("_extracted.wav" in input_file for input_file in inputs)
+    has_processed_outputs = any(
+        any(output_dir in input_file.lower() for output_dir in ["outputs", "process"])
+        for input_file in inputs
+    )
+
+    # Check if we should skip separation for certain file types
+    skip_separation_files = has_special_files or has_tts_files or has_extracted_audio or has_processed_outputs
+
+    # If we have files that should skip separation and Separate is in processors, evaluate if we need it
+    if skip_separation_files and "Separate" in processors:
+        # Check if any files actually need separation
+        # We need separation if we have regular audio files that aren't already processed
+        has_regular_audio = any(
+            not (has_special_files or has_tts_files) and
+            not ("_extracted.wav" in input_file) and
+            not any(output_dir in input_file.lower() for output_dir in ["outputs", "process"])
+            for input_file in inputs
+        )
+
+        if not has_regular_audio:
+            logger.warning("Removing 'Separate' processor - all input files are already processed, extracted audio, or special files that don't need separation")
+            processors = [p for p in processors if p != "Separate"]
+        else:
+            logger.info(f"Keeping 'Separate' processor - found {sum(1 for input_file in inputs if not (has_special_files or has_tts_files) and not ('_extracted.wav' in input_file) and not any(output_dir in input_file.lower() for output_dir in ['outputs', 'process']))} regular audio files that may need separation")
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
     pitch_shift_vocals_only = settings.get("Clone", {}).get("pitch_shift_vocals_only", False)

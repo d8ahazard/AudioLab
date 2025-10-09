@@ -158,7 +158,32 @@ class Merge(BaseWrapper):
                 )
 
                 project.add_output("merged", output_file)
+
+                # Check if this project has video sources and reconstruct videos with merged audio
+                video_outputs = []
+                if hasattr(project, "video_source") and project.video_source:
+                    # Reconstruct video with merged audio
+                    video_name = os.path.splitext(os.path.basename(project.video_source))[0]
+                    merged_name = os.path.splitext(os.path.basename(output_file))[0]
+                    videos_dir = os.path.join(project.project_dir, "videos")
+                    os.makedirs(videos_dir, exist_ok=True)
+
+                    output_video = os.path.join(videos_dir, f"{video_name}_with_{merged_name}.mp4")
+
+                    # Recombine video with merged audio using BaseWrapper static method
+                    result_video = BaseWrapper.recombine_audio_with_video(project.video_source, output_file, output_video)
+                    if result_video:
+                        video_outputs.append(result_video)
+                        project.add_output("video", result_video)
+                        logger.info(f"Created video with merged audio: {result_video}")
+
                 pj_outputs.append(project)
+
+                # Return video outputs as well so they appear in the UI
+                if video_outputs:
+                    for video_output in video_outputs:
+                        if video_output not in project.last_outputs:
+                            project.last_outputs.append(video_output)
         except Exception as e:
             logger.exception("Error merging audio files.")
             if callback is not None:

@@ -194,18 +194,81 @@ def load_pyannote_pipeline(model_id: str, use_auth_token: Optional[str] = None):
 
 def initialize_openvoice_model() -> Tuple[str, str]:
     """
-    Initialize the OpenVoice model, downloading it to model_path if needed.
-    
+    Initialize the OpenVoice v2 model, downloading and extracting it to model_path if needed.
+
     Returns:
         Tuple of (config_path, checkpoint_path)
     """
-    model_files = {
-        "checkpoint.pth": "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/converter/checkpoint.pth?download=true",
-        "config.json": "https://huggingface.co/myshell-ai/OpenVoice/raw/main/checkpoints/converter/config.json"
-    }
-    
-    model_dir = check_model("openvoice", "converter", model_files)
-    config_path = os.path.join(model_dir, "config.json")
-    checkpoint_path = os.path.join(model_dir, "checkpoint.pth")
-    
-    return config_path, checkpoint_path 
+    v2_zip_url = "https://myshell-public-repo-host.s3.amazonaws.com/openvoice/checkpoints_v2_0417.zip"
+
+    # Extract to model_path/openvoice/ (the zip contains checkpoints_v2/ subdirectory)
+    model_dir = os.path.join(model_path, "openvoice")
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Check if the checkpoints_v2/converter directory exists (indicates successful extraction)
+    checkpoints_v2_dir = os.path.join(model_dir, "checkpoints_v2")
+    converter_dir = os.path.join(checkpoints_v2_dir, "converter")
+
+    if not os.path.exists(converter_dir) or not os.listdir(converter_dir):
+        logger.info("Downloading OpenVoice v2 model...")
+        success = download_and_extract_zip(v2_zip_url, model_dir)
+        if not success:
+            raise RuntimeError("Failed to download OpenVoice v2 model")
+
+    # Verify the model files exist
+    config_path = os.path.join(converter_dir, "config.json")
+    checkpoint_path = os.path.join(converter_dir, "checkpoint.pth")
+
+    if not os.path.exists(config_path) or not os.path.exists(checkpoint_path):
+        raise RuntimeError("OpenVoice v2 model files not found after extraction")
+
+    return config_path, checkpoint_path
+
+
+def download_and_extract_zip(url: str, extract_to: str) -> bool:
+    """
+    Download a zip file and extract it to the specified directory.
+
+    Args:
+        url: URL of the zip file to download
+        extract_to: Directory to extract the zip contents to
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        import zipfile
+        import tempfile
+        import requests
+
+        # Create temporary file for download
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+        # Download the zip file
+        logger.info(f"Downloading OpenVoice v2 from {url}")
+        response = requests.get(url, stream=True)
+        if not response.ok:
+            logger.error(f"Failed to download from {url}, status code: {response.status_code}")
+            return False
+
+        # Save to temporary file
+        with open(tmp_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        # Extract to destination
+        logger.info(f"Extracting OpenVoice v2 to {extract_to}")
+        with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+
+        # Clean up temporary file
+        os.unlink(tmp_path)
+
+        logger.info("OpenVoice v2 extraction complete")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error downloading/extracting OpenVoice v2: {e}")
+        return False 
