@@ -402,7 +402,21 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
     pitch_shift_vocals_only = settings.get("Clone", {}).get("pitch_shift_vocals_only", False)
-    clone_voice = settings.get("Clone", {}).get("selected_voice", None)
+    
+    # Get the clone method and appropriate voice identifier
+    clone_method = settings.get("Clone", {}).get("clone_method", "RVC")
+    if clone_method == "RVC":
+        clone_voice = settings.get("Clone", {}).get("selected_voice", None)
+    elif clone_method == "OpenVoice" or clone_method == "TTS":
+        # For OpenVoice/TTS, use the source speaker filename
+        source_speaker = settings.get("Clone", {}).get("source_speaker", None)
+        if source_speaker:
+            clone_voice = os.path.splitext(os.path.basename(source_speaker))[0]
+        else:
+            clone_voice = clone_method  # Fallback to method name
+    else:
+        clone_voice = None
+    
     f0_method = settings.get("Clone", {}).get("pitch_extraction_method", "rmvpe+")
     for idx, processor_title in enumerate(processors):
         tgt_processor = get_processor(processor_title)
@@ -851,7 +865,21 @@ def register_api_endpoints(api):
                     # Store pitch shift value for chaining
                     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
                     pitch_shift_vocals_only = settings.get("Clone", {}).get("pitch_shift_vocals_only", False)
-                    clone_voice = settings.get("Clone", {}).get("selected_voice", None)
+                    
+                    # Get the clone method and appropriate voice identifier
+                    clone_method = settings.get("Clone", {}).get("clone_method", "RVC")
+                    if clone_method == "RVC":
+                        clone_voice = settings.get("Clone", {}).get("selected_voice", None)
+                    elif clone_method == "OpenVoice" or clone_method == "TTS":
+                        # For OpenVoice/TTS, use the source speaker filename
+                        source_speaker = settings.get("Clone", {}).get("source_speaker", None)
+                        if source_speaker:
+                            clone_voice = os.path.splitext(os.path.basename(source_speaker))[0]
+                        else:
+                            clone_voice = clone_method  # Fallback to method name
+                    else:
+                        clone_voice = None
+                    
                     f0_method = settings.get("Clone", {}).get("pitch_extraction_method", "rmvpe+")
                     
                     # Process each processor in sequence

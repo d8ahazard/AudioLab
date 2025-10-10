@@ -54,41 +54,21 @@ def split_audio_into_chunks(audio_path: str, chunk_duration_seconds: float = 10.
         audio = AudioSegment.from_file(audio_path)
         audio_duration = audio.duration_seconds
         sample_rate = audio.frame_rate
+        num_channels = audio.channels
 
-        logger.info(f"Splitting audio into {chunk_duration_seconds}s chunks (duration: {audio_duration:.2f}s, sample_rate: {sample_rate}Hz)")
+        logger.info(f"Splitting audio into {chunk_duration_seconds}s chunks (duration: {audio_duration:.2f}s, sample_rate: {sample_rate}Hz, channels: {num_channels})")
 
-        # Calculate chunk boundaries to maintain sample alignment
-        chunk_samples = int(chunk_duration_seconds * sample_rate)
-        total_samples = len(audio.get_array_of_samples())
-
+        # Calculate chunk boundaries based on time, not samples
         chunk_paths = []
         num_chunks = int(np.ceil(audio_duration / chunk_duration_seconds))
 
         for i in range(num_chunks):
-            # Calculate exact sample boundaries for this chunk
-            start_sample = i * chunk_samples
-            end_sample = min((i + 1) * chunk_samples, total_samples)
+            # Calculate time boundaries for this chunk
+            start_time_ms = i * chunk_duration_seconds * 1000
+            end_time_ms = min((i + 1) * chunk_duration_seconds * 1000, audio_duration * 1000)
 
-            # Extract chunk with precise sample boundaries
-            start_time_ms = (start_sample / sample_rate) * 1000
-            end_time_ms = (end_sample / sample_rate) * 1000
-
+            # Extract chunk with precise time boundaries
             chunk = audio[int(start_time_ms):int(end_time_ms)]
-
-            # Ensure chunk has exact expected length
-            expected_chunk_samples = chunk_samples if i < num_chunks - 1 else total_samples - start_sample
-            actual_chunk_samples = len(chunk.get_array_of_samples())
-
-            if actual_chunk_samples != expected_chunk_samples:
-                logger.warning(f"Chunk {i} length mismatch: expected {expected_chunk_samples}, got {actual_chunk_samples}")
-
-                # If the last chunk is too short, pad it with silence to maintain timing
-                if i == num_chunks - 1 and actual_chunk_samples < expected_chunk_samples:
-                    padding_samples = expected_chunk_samples - actual_chunk_samples
-                    padding_duration_ms = (padding_samples / sample_rate) * 1000
-                    silence = AudioSegment.silent(duration=padding_duration_ms)
-                    chunk += silence
-                    logger.info(f"Padded chunk {i} with {padding_duration_ms}ms silence")
 
             chunk_path = os.path.join(temp_dir, f"chunk_{i:03d}.wav")
             chunk.export(chunk_path, format='wav')
@@ -120,6 +100,27 @@ def concatenate_audio_chunks(chunk_paths: List[str], output_path: str) -> bool:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
+        # Remove existing output file if it exists (Windows file locking issue)
+        if os.path.exists(output_path):
+            try:
+                # Wait a moment for any file handles to be released
+                import time
+                time.sleep(0.1)
+                os.remove(output_path)
+                logger.info(f"Removed existing output file: {output_path}")
+            except Exception as e:
+                logger.warning(f"Could not remove existing output file: {e}")
+                # Try renaming it first then deleting
+                try:
+                    backup_path = output_path + ".old"
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
+                    os.rename(output_path, backup_path)
+                    os.remove(backup_path)
+                    logger.info(f"Removed output file via rename workaround")
+                except Exception as e2:
+                    logger.error(f"Could not remove output file even with workaround: {e2}")
+
         # Load and concatenate all chunks without any gaps
         combined_audio = AudioSegment.empty()
 
@@ -129,15 +130,21 @@ def concatenate_audio_chunks(chunk_paths: List[str], output_path: str) -> bool:
                 # Concatenate directly without silence - maintain exact timing
                 combined_audio += chunk_audio
                 logger.debug(f"Added chunk {i+1}/{len(chunk_paths)}: {len(chunk_audio)} samples")
+                # Release the chunk audio reference to free memory
+                del chunk_audio
 
-        # Export final audio
-        combined_audio.export(output_path, format='wav')
-        logger.info(f"Successfully concatenated audio to {output_path} (length: {len(combined_audio)} samples)")
+        # Export final audio with explicit file closing
+        with open(output_path, 'wb') as f:
+            combined_audio.export(f, format='wav')
+        
+        logger.info(f"Successfully concatenated audio to {output_path} (duration: {combined_audio.duration_seconds:.2f}s)")
 
         return True
 
     except Exception as e:
         logger.error(f"Error concatenating audio chunks: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 def cleanup_temp_files(temp_dir: str):
