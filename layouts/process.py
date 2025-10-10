@@ -129,46 +129,56 @@ def is_video(file_path: str) -> bool:
     return Path(file_path).suffix.lower() in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']
 
 
-def handle_video_input(video_path: str, progress=gr.Progress()) -> ProjectFiles:
+def handle_video_input(video_path: str, should_separate: bool = False, progress=gr.Progress()) -> ProjectFiles:
     """
     Extract audio from video file and create project structure.
 
     Args:
         video_path: Path to the video file
+        should_separate: Whether separation should be applied to the extracted audio
         progress: Progress callback function
 
     Returns:
         ProjectFiles object with extracted audio and video metadata
     """
     try:
-        # Create project directory
-        video_name = Path(video_path).stem
-        project_dir = os.path.join(output_path, "process", f"video_{video_name}_{int(datetime.now().timestamp())}")
-        os.makedirs(project_dir, exist_ok=True)
+        # Create a project using the original video to ensure consistent naming: outputs/process/{basename}_{hash}
+        project_file = ProjectFiles(video_path)
 
-        # Create source subdirectory
-        source_dir = os.path.join(project_dir, "source")
-        os.makedirs(source_dir, exist_ok=True)
-
-        # Copy video file to source directory
+        # Copy video file into project source
         video_filename = Path(video_path).name
-        video_dest = os.path.join(source_dir, video_filename)
-        import shutil
-        shutil.copy2(video_path, video_dest)
+        video_dest = os.path.join(project_file.project_dir, "source", video_filename)
+        if not os.path.exists(video_dest):
+            import shutil
+            shutil.copy2(video_path, video_dest)
 
-        # Extract audio from video
-        progress(0.1, f"Extracting audio from {video_filename}...")
-        extracted_audio = extract_audio_from_video(video_path, project_dir)
+        if should_separate:
+            # Extract audio but don't set it as src_file yet - separation will handle it
+            progress(0.1, f"Extracting audio from {video_filename} for separation...")
+            extracted_audio = extract_audio_from_video(video_dest, project_file.project_dir)
 
-        if not extracted_audio or not os.path.exists(extracted_audio):
-            logger.error(f"Failed to extract audio from video: {video_path}")
-            return None
+            if not extracted_audio or not os.path.exists(extracted_audio):
+                logger.error(f"Failed to extract audio from video: {video_path}")
+                return None
 
-        # Create ProjectFiles object
-        project_file = ProjectFiles(extracted_audio)
-        project_file.project_dir = project_dir
+            # Set the extracted audio as the source file for separation processing
+            project_file.src_file = extracted_audio
+            project_file.extracted_audio_path = extracted_audio
+        else:
+            # Extract audio directly and use it as the source file
+            progress(0.1, f"Extracting audio from {video_filename}...")
+            extracted_audio = extract_audio_from_video(video_dest, project_file.project_dir)
+
+            if not extracted_audio or not os.path.exists(extracted_audio):
+                logger.error(f"Failed to extract audio from video: {video_path}")
+                return None
+
+            # Set the extracted audio as the source file
+            project_file.src_file = extracted_audio
+            project_file.extracted_audio_path = extracted_audio
+
+        # Track video source
         project_file.video_source = video_dest
-        project_file.extracted_audio_path = extracted_audio
 
         logger.info(f"Successfully processed video: {video_filename}")
         return project_file
@@ -194,7 +204,10 @@ def extract_audio_from_video(video_path: str, output_dir: str) -> str:
         import subprocess
 
         video_name = Path(video_path).stem
-        output_audio = os.path.join(output_dir, f"{video_name}_extracted.wav")
+        # Put extracted audio in source folder alongside video
+        source_dir = os.path.join(output_dir, "source")
+        os.makedirs(source_dir, exist_ok=True)
+        output_audio = os.path.join(source_dir, f"{video_name}_extracted.wav")
 
         # ffmpeg command to extract audio
         cmd = [
@@ -308,10 +321,14 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     original_videos = {}
     processed_inputs = []
 
+    # Check if separation is enabled for videos
+    should_separate_videos = "Separate" in processors
+
     for input_file in inputs:
         if is_video(input_file):
             # Extract audio from video and create project structure
-            project_file = handle_video_input(input_file, progress)
+            # If separation is enabled, extract audio but let separation processor handle it
+            project_file = handle_video_input(input_file, should_separate_videos, progress)
             if project_file:
                 original_videos[input_file] = project_file.video_source  # Pass the video path, not audio
                 processed_inputs.append(project_file)
@@ -324,34 +341,64 @@ def process(processors: List[str], inputs: List[str], progress=gr.Progress()) ->
     inputs = processed_inputs
 
     # Now check for files that should skip separation (after video processing)
+    # Extract file paths from ProjectFiles objects for detection logic
+    def get_file_paths(items):
+        """Extract file paths from ProjectFiles objects or return strings as-is"""
+        paths = []
+        for item in items:
+            if hasattr(item, 'src_file'):
+                paths.append(item.src_file)
+            else:
+                paths.append(str(item))
+        return paths
+
+    input_paths = get_file_paths(inputs)
     special_dirs = ["tts", "zonos", "stable_audio"]
-    has_special_files = any(any(special_dir in input_file for special_dir in special_dirs) for input_file in inputs)
-    has_tts_files = any(os.path.basename(input_file).startswith(("TTS_", "ZONOS_")) for input_file in inputs)
-    has_extracted_audio = any("_extracted.wav" in input_file for input_file in inputs)
+    has_special_files = any(any(special_dir in input_path for special_dir in special_dirs) for input_path in input_paths)
+    has_tts_files = any(os.path.basename(input_path).startswith(("TTS_", "ZONOS_")) for input_path in input_paths)
+    has_extracted_audio = any("_extracted.wav" in input_path for input_path in input_paths)
+    # Check if files are in processed output directories (not just in process directory)
     has_processed_outputs = any(
-        any(output_dir in input_file.lower() for output_dir in ["outputs", "process"])
-        for input_file in inputs
+        any(output_dir in input_path.lower() for output_dir in ["outputs"]) and
+        any(processed_dir in input_path.lower() for processed_dir in ["cloned", "stems", "merged", "converted", "videos"])
+        for input_path in input_paths
     )
 
     # Check if we should skip separation for certain file types
-    skip_separation_files = has_special_files or has_tts_files or has_extracted_audio or has_processed_outputs
+    # But exclude video-extracted audio that needs separation from the "already extracted" check
+    video_extracted_audio = []
+    for item in inputs:
+        if hasattr(item, 'extracted_audio_path') and item.extracted_audio_path:
+            # Check if this extracted audio is from a video and separation is enabled
+            if should_separate_videos and hasattr(item, 'video_source'):
+                video_extracted_audio.append(item.extracted_audio_path)
+
+    # Only consider extracted audio as "already processed" if it's not from a video that needs separation
+    actual_extracted_audio = [p for p in input_paths if "_extracted.wav" in p and p not in video_extracted_audio]
+    has_actual_extracted_audio = len(actual_extracted_audio) > 0
+
+    skip_separation_files = has_special_files or has_tts_files or has_actual_extracted_audio or has_processed_outputs
 
     # If we have files that should skip separation and Separate is in processors, evaluate if we need it
     if skip_separation_files and "Separate" in processors:
         # Check if any files actually need separation
         # We need separation if we have regular audio files that aren't already processed
+        # OR if we have video-extracted audio that needs separation
         has_regular_audio = any(
             not (has_special_files or has_tts_files) and
-            not ("_extracted.wav" in input_file) and
-            not any(output_dir in input_file.lower() for output_dir in ["outputs", "process"])
-            for input_file in inputs
+            not ("_extracted.wav" in input_path) and
+            not has_processed_outputs
+            for input_path in input_paths
         )
 
-        if not has_regular_audio:
+        has_video_audio_needing_separation = any(p in video_extracted_audio for p in input_paths)
+
+        if not has_regular_audio and not has_video_audio_needing_separation:
             logger.warning("Removing 'Separate' processor - all input files are already processed, extracted audio, or special files that don't need separation")
             processors = [p for p in processors if p != "Separate"]
         else:
-            logger.info(f"Keeping 'Separate' processor - found {sum(1 for input_file in inputs if not (has_special_files or has_tts_files) and not ('_extracted.wav' in input_file) and not any(output_dir in input_file.lower() for output_dir in ['outputs', 'process']))} regular audio files that may need separation")
+            regular_count = sum(1 for input_path in input_paths if not (has_special_files or has_tts_files) and not ('_extracted.wav' in input_path) and not has_processed_outputs)
+            logger.info(f"Keeping 'Separate' processor - found {regular_count} regular audio files and {len(video_extracted_audio)} video audio files that may need separation")
     # Store the clone pitch shift value for the next processor
     clone_pitch_shift = settings.get("Clone", {}).get("pitch_shift", 0)
     pitch_shift_vocals_only = settings.get("Clone", {}).get("pitch_shift_vocals_only", False)

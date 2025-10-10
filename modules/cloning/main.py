@@ -20,7 +20,8 @@ def clone_voice_openvoice(
     target_file: str, 
     source_file: str, 
     output_dir: str, 
-    strength: float = 0.5
+    strength: float = 0.5,
+    temp_dir: str = None
 ) -> Optional[str]:
     """
     Clone a voice using OpenVoice.
@@ -37,16 +38,18 @@ def clone_voice_openvoice(
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
     
-    # Generate output filename
+    # Generate output filename per spec: {base}(OpenVoice_{source})(Cloned).wav
     base_name = os.path.splitext(os.path.basename(target_file))[0]
     source_base = os.path.splitext(os.path.basename(source_file))[0]
-    output_file = os.path.join(output_dir, f"{base_name}_cloned_openvoice_{source_base}.wav")
+    output_file = os.path.join(output_dir, f"{base_name}(OpenVoice_{source_base})(Cloned).wav")
     
     return openvoice.clone_voice(
         target_speaker_path=target_file,
         source_speaker_path=source_file,
         output_path=output_file,
-        tau=strength
+        tau=strength,
+        chunk_duration=10.0,  # Use chunking for large files
+        temp_dir=temp_dir
     )
 
 

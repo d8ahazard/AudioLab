@@ -165,10 +165,9 @@ class Merge(BaseWrapper):
                     # Reconstruct video with merged audio
                     video_name = os.path.splitext(os.path.basename(project.video_source))[0]
                     merged_name = os.path.splitext(os.path.basename(output_file))[0]
-                    videos_dir = os.path.join(project.project_dir, "videos")
-                    os.makedirs(videos_dir, exist_ok=True)
 
-                    output_video = os.path.join(videos_dir, f"{video_name}_with_{merged_name}.mp4")
+                    # Put final video in project root, not videos subfolder
+                    output_video = os.path.join(project.project_dir, f"{video_name}_with_{merged_name}.mp4")
 
                     # Recombine video with merged audio using BaseWrapper static method
                     result_video = BaseWrapper.recombine_audio_with_video(project.video_source, output_file, output_video)

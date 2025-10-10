@@ -240,8 +240,6 @@ class Export(BaseWrapper):
                 # Process video files if requested
                 video_outputs = []
                 if export_videos and video_sources:
-                    videos_dir = os.path.join(project_file.project_dir, "videos")
-                    os.makedirs(videos_dir, exist_ok=True)
                     
                     if callback:
                         callback(0.6, "Processing video files...")
@@ -289,11 +287,11 @@ class Export(BaseWrapper):
                                     if not audio_for_video:
                                         audio_for_video = main_audio
                                     
-                                    # Create output video filename
+                                    # Create output video filename in project root
                                     video_name = os.path.splitext(os.path.basename(video_path))[0]
                                     audio_name = os.path.splitext(os.path.basename(audio_for_video))[0]
-                                    output_video = os.path.join(videos_dir, f"{video_name}_with_{audio_name}.mp4")
-                                    
+                                    output_video = os.path.join(project_file.project_dir, f"{video_name}_with_{audio_name}.mp4")
+
                                     # Recombine video with audio
                                     result_video = self.recombine_audio_with_video(video_path, audio_for_video, output_video)
                                     if result_video:

@@ -459,7 +459,8 @@ class Clone(BaseWrapper):
                                 target_file=proc_file,
                                 source_file=source_speaker,
                                 output_dir=os.path.join(project.project_dir, "cloned"),
-                                strength=voice_strength
+                                strength=voice_strength,
+                                temp_dir=project.project_dir
                             )
                             
                             if output_file and os.path.exists(output_file):
