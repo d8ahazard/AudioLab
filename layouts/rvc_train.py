@@ -121,18 +121,17 @@ def get_pretrained_models(path_str, f0_str, sr2):
     )
 
 
-def separate_vocal(audio_files: List[str], progress=gr.Progress()) -> List[str]:
+def separate_vocal(audio_files: List[str], separate_bg_vocals: bool = True, progress=gr.Progress()) -> List[str]:
     progress(0, f"Separating vocals from {len(audio_files)} audio files...")
     separator = Separate()
     args = {
-        "separate_stems": False,
-        "remove_bg_vocals": True,
-        "reverb_removal": "Main Vocals",
+        "vocals_only": True,
+        "separate_bg_vocals": separate_bg_vocals,
+        "reverb_removal": "Nothing",
         "echo_removal": "Nothing",
-        "delay_removal": "Nothing",
         "crowd_removal": "Nothing",
         "noise_removal": "Nothing",
-        "delay_removal_model": "UVR-De-Echo-Normal.pth",
+        "delay_removal_model": "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt",
         "noise_removal_model": "UVR-DeNoise.pth",
         "crowd_removal_model": "UVR-MDX-NET_Crowd_HQ_1.onnx",
     }
@@ -543,6 +542,7 @@ def train1key(
         save_weights_every,
         project_version,
         gpus_rmvpe,
+        separate_bg_vocals=True,
         pause_after_separation=False,
         progress=gr.Progress()
 ):
@@ -576,16 +576,6 @@ def train1key(
     if num_cpus == 0:
         num_cpus = 1
 
-    # Analyze pitch range before processing
-    yield get_info_str("Step 1: Analyzing pitch range of input files..."), gr.update(visible=False)
-    pitch_info = analyze_pitch_range(inputs, progress)
-    if pitch_info:
-        yield get_info_str(f"Pitch Analysis Results:"), gr.update(visible=False)
-        yield get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz"), gr.update(visible=False)
-        yield get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz"), gr.update(visible=False)
-        yield get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz"), gr.update(visible=False)
-        yield get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz"), gr.update(visible=False)
-
     # Continue with preprocessing and training
     gt_wavs_dir = os.path.join(exp_dir, "0_gt_wavs")
     feature_dir = os.path.join(exp_dir, "3_feature256" if project_version == "v1" else "3_feature768")
@@ -602,8 +592,18 @@ def train1key(
             yield get_info_str("Step1: Preprocessing data."), gr.update(visible=False)
             vocal_files = inputs
             if separate_vocals:
-                vocal_files, bg_vocal_files = separate_vocal(inputs, progress)
+                vocal_files, bg_vocal_files = separate_vocal(inputs, separate_bg_vocals, progress)
                 yield get_info_str(f"Separated vocals from {len(vocal_files)} files."), gr.update(visible=False)
+            
+            # Analyze pitch range AFTER vocal separation
+            yield get_info_str("Step 1a: Analyzing pitch range of separated vocals..."), gr.update(visible=False)
+            pitch_info = analyze_pitch_range(vocal_files, progress)
+            if pitch_info:
+                yield get_info_str(f"Pitch Analysis Results:"), gr.update(visible=False)
+                yield get_info_str(f"Min Pitch: {pitch_info['min_pitch']:.2f} Hz"), gr.update(visible=False)
+                yield get_info_str(f"Max Pitch: {pitch_info['max_pitch']:.2f} Hz"), gr.update(visible=False)
+                yield get_info_str(f"Average Pitch: {pitch_info['avg_pitch']:.2f} Hz"), gr.update(visible=False)
+                yield get_info_str(f"Pitch Range: {pitch_info['pitch_range']:.2f} Hz"), gr.update(visible=False)
 
             # Process each file
             for index, f in enumerate(vocal_files):
@@ -745,6 +745,7 @@ def resume_training(
         save_weights_every,
         project_version,
         gpus_rmvpe,
+        separate_bg_vocals=True,
         progress=gr.Progress()
 ):
     if (not project_name or project_name == "") and (not existing_project_name or existing_project_name == ""):
@@ -779,6 +780,7 @@ def resume_training(
             save_weights_every,
             project_version,
             gpus_rmvpe,
+            separate_bg_vocals,
             False,  # pause_after_separation
             progress
     ):
@@ -900,6 +902,11 @@ def render():
                     elem_classes="hintitem", elem_id="rvc_pause_after_separation"
                 )
                 with gr.Accordion(label="Advanced", open=False):
+                    separate_bg_vocals = gr.Checkbox(
+                        label="Separate Background Vocals",
+                        value=True,
+                        elem_classes="hintitem", elem_id="rvc_separate_bg_vocals"
+                    )
                     sample_rate = gr.Radio(
                         label="Target Sampling Rate",
                         choices=["40k", "48k"],
@@ -1102,6 +1109,7 @@ def render():
                         save_weights_each_ckpt,
                         model_version,
                         gpus_rmvpe,
+                        separate_bg_vocals,
                         pause_after_separation
                     ],
                     [info3, resume_train],
@@ -1127,7 +1135,8 @@ def render():
                         cache_dataset_to_gpu,
                         save_weights_each_ckpt,
                         model_version,
-                        gpus_rmvpe
+                        gpus_rmvpe,
+                        separate_bg_vocals
                     ],
                     [info3, resume_train],
                 )
@@ -1178,6 +1187,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "total_epochs": "Set the total number of training epochs. More epochs generally improve quality.",
         "train_batch_size": "Adjust the batch size per GPU. Higher values require more VRAM but train faster.",
         "separate_vocals": "Check this box to separate vocals from instrumentals before training.",
+        "separate_bg_vocals": "Check this box to separate background vocals from main vocals during preprocessing.",
         "pause_after_separation": "Check this box to pause processing after vocal separation is complete. Useful if you need to further refine the vocal tracks before training.",
         "sample_rate": "Select the target sample rate for the model (40k or 48k).",
         "pitch_guidance": "Choose whether to use pitch guidance for training. Helps with vocal accuracy.",
@@ -1700,6 +1710,17 @@ def register_api_endpoints(api):
         except Exception as e:
             logger.exception(f"Error analyzing project:")
             raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
+
+class StatusUpdater:
+    """Mock gradio.Progress for background tasks"""
+    def __init__(self, update_callback):
+        self.update_callback = update_callback
+    
+    def __call__(self, progress, desc=None):
+        """Update progress with optional description"""
+        message = desc if desc else f"Progress: {progress*100:.1f}%"
+        self.update_callback("training", progress, message)
+
 
 def run_train_job(
         job_id, project_name, audio_files, sample_rate, use_pitch_guidance,

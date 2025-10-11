@@ -69,7 +69,9 @@ class LossTracker:
                  plateau_patience_steps: int = 4000,
                  min_save_interval: int = 5,  # Minimum epochs between best-model saves
                  significant_improvement_threshold: float = 0.05,  # 5% improvement required
-                 max_best_saves: int = 3):  # Keep only the best N saves
+                 max_best_saves: int = 3,  # Keep only the best N saves
+                 total_epochs: int = 100,  # Total training epochs for warmup calculation
+                 warmup_ratio: float = 0.25):  # Warmup period as ratio of total epochs
         self.ema_alpha = float(ema_alpha)
         self.min_delta = float(min_delta)
         self.zero_threshold = float(zero_threshold)
@@ -80,6 +82,8 @@ class LossTracker:
         self.min_save_interval = int(min_save_interval)
         self.significant_improvement_threshold = float(significant_improvement_threshold)
         self.max_best_saves = int(max_best_saves)
+        self.total_epochs = int(total_epochs)
+        self.warmup_epochs = int(total_epochs * warmup_ratio)  # 25% of total epochs by default
 
         self.ema_gen = None
         self.ema_disc = None
@@ -116,7 +120,7 @@ class LossTracker:
         self.gen_hist.append(self.ema_gen)
         self.steps_since_last_save += 1
         self.steps_since_best += 1
-        self.epochs_since_best_save += 1
+        # NOTE: epochs_since_best_save is now incremented in on_epoch_end()
 
         # Track upslope
         if self.ema_gen > (self.best_gen + self.min_delta):
@@ -134,6 +138,11 @@ class LossTracker:
             else:
                 # decay plateau counter if we see movement
                 self.plateau_counter = max(0, self.plateau_counter - self.gen_hist.maxlen)
+    
+    def on_epoch_end(self, epoch: int):
+        """Called at the end of each epoch to update epoch-based tracking"""
+        self.current_epoch = epoch
+        self.epochs_since_best_save += 1
 
     def should_save_best(self) -> bool:
         if self.ema_gen is None:
@@ -147,14 +156,19 @@ class LossTracker:
     def should_save_intelligent_best(self, current_epoch: int) -> tuple[bool, str]:
         """
         Intelligently decide if we should save a best model based on:
-        1. Minimum interval between saves
-        2. Significant improvement threshold
-        3. Maximum number of best saves to keep
+        1. Warmup period (no saves during initial 25% of training)
+        2. Minimum interval between saves
+        3. Significant improvement threshold
+        4. Maximum number of best saves to keep
 
         Returns: (should_save, reason)
         """
         if self.ema_gen is None:
             return False, "No loss data"
+
+        # Don't save during warmup period
+        if current_epoch < self.warmup_epochs:
+            return False, f"Still in warmup period (epoch {current_epoch}/{self.warmup_epochs})"
 
         # Check if enough epochs have passed since last best save
         if self.epochs_since_best_save < self.min_save_interval:
@@ -617,6 +631,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 min_save_interval=5,  # Save best models every 5 epochs minimum
                 significant_improvement_threshold=0.03,  # 3% improvement required
                 max_best_saves=3,  # Keep only 3 best saves
+                total_epochs=hps.train.epochs,  # Total training epochs for warmup
+                warmup_ratio=0.25,  # 25% warmup period
             )
         if rank == 0 and loss_tracker is not None:
             loss_tracker.update(
@@ -645,6 +661,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         global_step += 1
 
     if rank == 0:
+        # Update epoch tracking at the end of each epoch
+        if loss_tracker is not None:
+            loss_tracker.on_epoch_end(epoch)
+        
         # Save model if it's time for a periodic save or if training is complete
         should_save = (epoch % hps.save_epoch_frequency == 0) or (epoch >= hps.train.epochs)
 
