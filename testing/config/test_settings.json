@@ -1,0 +1,55 @@
+{
+  "test_environment": {
+    "test_data_root": "testing/config",
+    "temp_dir_prefix": "audiolab_test_",
+    "audio_sample_rate": 22050,
+    "max_test_duration_seconds": 30,
+    "cleanup_temp_files": true,
+    "enable_gpu_tests": false,
+    "mock_external_apis": true,
+    "test_timeout_seconds": 60
+  },
+  "audio_validation": {
+    "tolerance_snr_db": 20.0,
+    "tolerance_rmse": 0.1,
+    "tolerance_pesq": 2.5,
+    "min_audio_duration_seconds": 0.5,
+    "max_audio_duration_seconds": 300,
+    "supported_formats": ["wav", "mp3", "flac", "ogg"],
+    "supported_sample_rates": [8000, 16000, 22050, 44100, 48000]
+  },
+  "model_testing": {
+    "mock_model_loading": true,
+    "use_lightweight_models": true,
+    "max_model_size_mb": 100,
+    "inference_timeout_seconds": 30,
+    "batch_size_small": 1,
+    "batch_size_medium": 4,
+    "batch_size_large": 16
+  },
+  "performance_benchmarks": {
+    "max_memory_mb": 2048,
+    "max_execution_time_seconds": 300,
+    "min_throughput_items_per_second": 1.0,
+    "enable_profiling": false
+  },
+  "test_discovery": {
+    "scan_patterns": [
+      "test_*.py",
+      "*_test.py"
+    ],
+    "ignore_patterns": [
+      "__pycache__",
+      "*.pyc",
+      ".git",
+      "node_modules"
+    ]
+  },
+  "reporting": {
+    "coverage_threshold_unit": 90.0,
+    "coverage_threshold_integration": 80.0,
+    "coverage_threshold_overall": 85.0,
+    "report_formats": ["html", "xml", "json"],
+    "fail_under_threshold": true
+  }
+}

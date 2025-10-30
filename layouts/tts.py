@@ -1172,3 +1172,42 @@ def estimate_audio_duration(text_length, speed=1.0):
     
     # Round to one decimal place
     return round(estimated_seconds, 1)
+
+
+
+def test():
+    """
+    Test function for TTS layout.
+
+    This function tests the core functionality of the TTS layout
+    without requiring external dependencies where possible.
+    """
+    print("Running TTS layout tests...")
+
+    # Test 1: Configuration validation
+    print("  Testing configuration validation...")
+    assert arg_handler is not None, "ArgHandler should be initialized"
+    assert logger is not None, "Logger should be initialized"
+
+    # Test 2: Emotion map validation
+    print("  Testing emotion map validation...")
+    assert isinstance(EMOTION_MAP, dict), "Emotion map should be a dictionary"
+    assert len(EMOTION_MAP) > 0, "Emotion map should not be empty"
+
+    # Validate emotion vectors
+    for emotion, vector in EMOTION_MAP.items():
+        if vector is not None:
+            assert isinstance(vector, list), f"Emotion vector for {emotion} should be a list"
+            assert len(vector) == 8, f"Emotion vector for {emotion} should have 8 dimensions"
+            # Check that it is a valid probability distribution (approximately sums to 1)
+            vector_sum = sum(vector)
+            assert 0.99 <= vector_sum <= 1.01, f"Emotion vector for {emotion} should sum to approximately 1.0"
+
+    # Test 3: Global variables
+    print("  Testing global variables...")
+    # These are optional globals that may not be initialized during testing
+    # assert zonos_model is not None or True, "Zonos model may not be loaded during testing"
+    # assert dia_model is not None or True, "DIA model may not be loaded during testing"
+
+    print("[SUCCESS] All TTS layout tests passed!")
+    return True

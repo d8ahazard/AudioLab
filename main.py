@@ -25,6 +25,7 @@ from layouts.music import render as render_music, register_descriptions as music
 from layouts.process import render as render_process, register_descriptions as process_register_descriptions, \
     listen as process_listen
 from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
+from layouts.rvc_v3 import create_rvc_v3_tab
 from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
 from layouts.stable_audio import render as render_stable_audio, \
     register_descriptions as stable_audio_register_descriptions, \
@@ -169,6 +170,8 @@ if __name__ == '__main__':
                         render_process(arg_handler)
                     with gr.Tab(label="Train RVC", id="train"):
                         rvc_render()
+                    with gr.Tab(label="RVC V3", id="rvc_v3"):
+                        create_rvc_v3_tab()
                     with gr.Tab(label="Music", id="music"):
                         with gr.Tab(label='ACE-Step', id="acestep"):
                             render_acestep(arg_handler)                    

@@ -14,6 +14,9 @@ from torch.distributed.distributed_c10d import is_initialized
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import shutil
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
 
 from modules.rvc.infer.lib.infer_pack import commons
 from modules.rvc.infer.lib.train import utils
@@ -58,51 +61,62 @@ class LossTracker:
     """
     Tracks moving averages and trends of losses to detect overtraining/plateaus
     and decide on auto-saving and early stopping with intelligent save controls.
+    
+    Key metrics for decisions:
+    - PRIMARY: ema_mel (log-mel reconstruction loss) - tracks intelligibility/timbre
+    - SECONDARY: ema_fm (feature-matching loss) - tracks naturalness/artifacts
+    - COMPOSITE: mel + 0.3 × fm - combined quality metric
+    - IGNORE for plateau: loss_gen, loss_disc (adversarial signals that oscillate)
+    - MONITOR for health: ema_kl (avoid posterior collapse, but don't use for stopping)
     """
     def __init__(self,
                  ema_alpha: float = 0.05,
                  min_delta: float = 1e-4,
-                 zero_threshold: float = 0.02,
-                 slope_window: int = 200,
-                 slope_min: float = 1e-5,
-                 upslope_patience_steps: int = 2000,
-                 plateau_patience_steps: int = 4000,
                  min_save_interval: int = 5,  # Minimum epochs between best-model saves
-                 significant_improvement_threshold: float = 0.05,  # 5% improvement required
+                 significant_improvement_threshold: float = 0.01,  # 1% improvement required
                  max_best_saves: int = 3,  # Keep only the best N saves
                  total_epochs: int = 100,  # Total training epochs for warmup calculation
-                 warmup_ratio: float = 0.25):  # Warmup period as ratio of total epochs
+                 warmup_ratio: float = 0.25,  # Warmup period as ratio of total epochs
+                 plateau_patience_epochs: int = 10,  # Epochs to check for plateau
+                 composite_weight_fm: float = 0.3):  # Weight for FM in composite score
         self.ema_alpha = float(ema_alpha)
         self.min_delta = float(min_delta)
-        self.zero_threshold = float(zero_threshold)
-        self.slope_window = int(max(10, slope_window))
-        self.slope_min = float(slope_min)
-        self.upslope_patience_steps = int(upslope_patience_steps)
-        self.plateau_patience_steps = int(plateau_patience_steps)
         self.min_save_interval = int(min_save_interval)
         self.significant_improvement_threshold = float(significant_improvement_threshold)
         self.max_best_saves = int(max_best_saves)
         self.total_epochs = int(total_epochs)
         self.warmup_epochs = int(total_epochs * warmup_ratio)  # 25% of total epochs by default
+        self.plateau_patience_epochs = int(plateau_patience_epochs)
+        self.composite_weight_fm = float(composite_weight_fm)
 
+        # EMA tracking for all losses (for logging/monitoring)
         self.ema_gen = None
         self.ema_disc = None
         self.ema_mel = None
         self.ema_kl = None
         self.ema_fm = None
 
-        self.best_gen = float('inf')
+        # PRIMARY: Track best mel and composite scores (NOT gen loss)
+        self.best_mel = float('inf')
+        self.best_composite = float('inf')
         self.steps_since_best = 0
         self.steps_since_last_save = 0
-        self.gen_hist = deque(maxlen=self.slope_window)
-
-        self.upslope_counter = 0
-        self.plateau_counter = 0
+        
+        # Rolling window tracking for plateau detection (track mel over epochs)
+        self.mel_history = deque(maxlen=self.plateau_patience_epochs)
+        self.composite_history = deque(maxlen=self.plateau_patience_epochs)
+        
+        # Track validation trend for overfitting detection
+        self.mel_uptrend_epochs = 0  # Count epochs where mel is increasing
+        self.max_uptrend_patience = 5  # Stop if mel rises for 5+ epochs
 
         # Intelligent save tracking
         self.epochs_since_best_save = 0  # Track epochs since last best save
         self.best_saves_history = []  # Keep track of best saves for cleanup
         self.current_epoch = 0  # Track current epoch
+        
+        # Loss history for plotting (store epoch-level averages)
+        self.epoch_history = []  # List of dicts with epoch number and losses
 
     def _ema(self, prev, val):
         if prev is None:
@@ -110,45 +124,74 @@ class LossTracker:
         a = self.ema_alpha
         return (1.0 - a) * float(prev) + a * float(val)
 
+    def compute_composite(self):
+        """
+        Compute composite quality score: mel + 0.3 × fm
+        This combines intelligibility (mel) with naturalness (fm)
+        """
+        if self.ema_mel is None or self.ema_fm is None:
+            return None
+        return self.ema_mel + self.composite_weight_fm * self.ema_fm
+
     def update(self, loss_gen_all, loss_disc, loss_mel, loss_kl, loss_fm):
+        """Update EMA for all losses (step-level tracking)"""
         self.ema_gen = self._ema(self.ema_gen, loss_gen_all)
         self.ema_disc = self._ema(self.ema_disc, loss_disc)
         self.ema_mel = self._ema(self.ema_mel, loss_mel)
         self.ema_kl = self._ema(self.ema_kl, loss_kl)
         self.ema_fm = self._ema(self.ema_fm, loss_fm)
 
-        self.gen_hist.append(self.ema_gen)
         self.steps_since_last_save += 1
         self.steps_since_best += 1
         # NOTE: epochs_since_best_save is now incremented in on_epoch_end()
-
-        # Track upslope
-        if self.ema_gen > (self.best_gen + self.min_delta):
-            self.upslope_counter += 1
-        else:
-            self.upslope_counter = 0
-
-        # Track plateau via simple slope across window
-        if len(self.gen_hist) >= self.gen_hist.maxlen:
-            start = self.gen_hist[0]
-            end = self.gen_hist[-1]
-            slope = (end - start) / float(self.gen_hist.maxlen)
-            if abs(slope) < self.slope_min:
-                self.plateau_counter += self.gen_hist.maxlen
-            else:
-                # decay plateau counter if we see movement
-                self.plateau_counter = max(0, self.plateau_counter - self.gen_hist.maxlen)
     
     def on_epoch_end(self, epoch: int):
-        """Called at the end of each epoch to update epoch-based tracking"""
+        """
+        Called at the end of each epoch to update epoch-based tracking.
+        Tracks mel and composite score history for plateau detection.
+        """
         self.current_epoch = epoch
         self.epochs_since_best_save += 1
+        
+        # Add current mel and composite to history for rolling window tracking
+        if self.ema_mel is not None:
+            self.mel_history.append(self.ema_mel)
+        
+        composite = self.compute_composite()
+        if composite is not None:
+            self.composite_history.append(composite)
+        
+        # Track if mel is trending upward (potential overfitting)
+        if len(self.mel_history) >= 2:
+            if self.mel_history[-1] > self.mel_history[-2]:
+                self.mel_uptrend_epochs += 1
+            else:
+                self.mel_uptrend_epochs = 0
+        
+        # Store epoch-level loss snapshot for plotting
+        if all(x is not None for x in [self.ema_mel, self.ema_fm, self.ema_gen, self.ema_disc, self.ema_kl]):
+            self.epoch_history.append({
+                'epoch': epoch,
+                'mel': float(self.ema_mel),
+                'fm': float(self.ema_fm),
+                'composite': float(composite) if composite is not None else None,
+                'gen': float(self.ema_gen),
+                'disc': float(self.ema_disc),
+                'kl': float(self.ema_kl)
+            })
 
     def should_save_best(self) -> bool:
-        if self.ema_gen is None:
+        """
+        Check if current model should be saved based on mel loss (PRIMARY metric).
+        Uses mel reconstruction loss as the key indicator of model quality.
+        """
+        if self.ema_mel is None:
             return False
-        if self.ema_gen + self.min_delta < self.best_gen:
-            self.best_gen = self.ema_gen
+        if self.ema_mel + self.min_delta < self.best_mel:
+            self.best_mel = self.ema_mel
+            composite = self.compute_composite()
+            if composite is not None:
+                self.best_composite = composite
             self.steps_since_best = 0
             return True
         return False
@@ -158,12 +201,15 @@ class LossTracker:
         Intelligently decide if we should save a best model based on:
         1. Warmup period (no saves during initial 25% of training)
         2. Minimum interval between saves
-        3. Significant improvement threshold
+        3. Significant improvement threshold (≥1% improvement in mel or composite)
         4. Maximum number of best saves to keep
+
+        PRIMARY: Uses mel reconstruction loss
+        SECONDARY: Uses composite score (mel + 0.3 × fm)
 
         Returns: (should_save, reason)
         """
-        if self.ema_gen is None:
+        if self.ema_mel is None:
             return False, "No loss data"
 
         # Don't save during warmup period
@@ -174,17 +220,20 @@ class LossTracker:
         if self.epochs_since_best_save < self.min_save_interval:
             return False, f"Only {self.epochs_since_best_save}/{self.min_save_interval} epochs since last best save"
 
-        # Check if this is a significant improvement
-        if self.best_gen != float('inf'):
-            improvement_ratio = (self.best_gen - self.ema_gen) / self.best_gen
+        # Check if this is a significant improvement in mel loss
+        if self.best_mel != float('inf'):
+            improvement_ratio = (self.best_mel - self.ema_mel) / self.best_mel
             if improvement_ratio < self.significant_improvement_threshold:
-                return False, f"Improvement {improvement_ratio:.3f} < threshold {self.significant_improvement_threshold}"
+                return False, f"Mel improvement {improvement_ratio:.3f} < threshold {self.significant_improvement_threshold}"
 
-        # Check if we should update best and save
-        if self.ema_gen + self.min_delta < self.best_gen:
-            self.best_gen = self.ema_gen
+        # Check if we should update best and save (based on mel)
+        if self.ema_mel + self.min_delta < self.best_mel:
+            self.best_mel = self.ema_mel
+            composite = self.compute_composite()
+            if composite is not None:
+                self.best_composite = composite
             self.steps_since_best = 0
-            return True, "New best loss achieved"
+            return True, f"New best mel loss achieved: {self.ema_mel:.4f}"
 
         return False, "No significant improvement"
 
@@ -197,14 +246,37 @@ class LossTracker:
         self.epochs_since_best_save = 0
 
     def near_zero(self) -> bool:
-        return (self.ema_gen is not None) and (self.ema_gen <= self.zero_threshold)
+        """Check if mel loss is near zero (exceptional case for early completion)"""
+        return (self.ema_mel is not None) and (self.ema_mel <= 0.01)
 
     def should_early_stop(self) -> bool:
-        # Early stop if consistent upslope or long plateau
-        if self.upslope_counter >= self.upslope_patience_steps:
+        """
+        Decide if training should stop early based on mel loss plateau or overfitting.
+        
+        Stop conditions:
+        1. Mel hasn't improved by ≥1% over last 8-10 epochs (plateau)
+        2. Mel is trending upward for ≥5 consecutive epochs (overfitting)
+        3. Composite score shows no improvement
+        
+        IGNORES: gen/disc losses (they oscillate and aren't reliable)
+        """
+        # Need enough history to make a decision
+        if len(self.mel_history) < 8:
+            return False
+        
+        # Check 1: Plateau detection - mel hasn't improved by ≥1% over rolling window
+        oldest_mel = self.mel_history[0]
+        current_mel = self.mel_history[-1]
+        improvement_ratio = (oldest_mel - current_mel) / oldest_mel if oldest_mel > 0 else 0
+        
+        if improvement_ratio < self.significant_improvement_threshold:
+            # Mel hasn't improved enough - potential plateau
             return True
-        if self.plateau_counter >= self.plateau_patience_steps:
+        
+        # Check 2: Overfitting detection - mel trending upward for too long
+        if self.mel_uptrend_epochs >= self.max_uptrend_patience:
             return True
+        
         return False
 
     def reset_after_save(self):
@@ -229,13 +301,98 @@ class LossTracker:
             self.best_saves_history = self.best_saves_history[-self.max_best_saves:]
 
     def status_str(self) -> str:
+        """
+        Status string highlighting PRIMARY metrics (mel/fm/composite) over gen/disc.
+        """
+        composite = self.compute_composite()
+        composite_str = f"{composite:.4f}" if composite is not None else "N/A"
+        
+        # Calculate improvement over rolling window
+        improvement_str = "N/A"
+        if len(self.mel_history) >= 8:
+            oldest_mel = self.mel_history[0]
+            current_mel = self.mel_history[-1]
+            improvement_pct = ((oldest_mel - current_mel) / oldest_mel * 100) if oldest_mel > 0 else 0
+            improvement_str = f"{improvement_pct:.2f}%"
+        
         return (
-            f"EMA(gen={self.ema_gen:.4f} disc={self.ema_disc:.4f} mel={self.ema_mel:.4f} "
-            f"kl={self.ema_kl:.4f} fm={self.ema_fm:.4f}), "
-            f"best_gen={self.best_gen:.4f}, steps_since_save={self.steps_since_last_save}, "
-            f"epochs_since_best_save={self.epochs_since_best_save}, "
-            f"upslope={self.upslope_counter}, plateau={self.plateau_counter}"
+            f"EMA(mel={self.ema_mel:.4f} [best={self.best_mel:.4f}], "
+            f"fm={self.ema_fm:.4f}, composite={composite_str} [best={self.best_composite:.4f}]) | "
+            f"gen={self.ema_gen:.4f} disc={self.ema_disc:.4f} kl={self.ema_kl:.4f} | "
+            f"improvement_over_{len(self.mel_history)}ep={improvement_str}, "
+            f"uptrend_epochs={self.mel_uptrend_epochs}, "
+            f"epochs_since_best_save={self.epochs_since_best_save}"
         )
+    
+    def plot_losses(self, save_path: str, project_name: str = "RVC"):
+        """
+        Plot and save loss curves with PRIMARY metrics (mel/fm/composite) prominent.
+        
+        Args:
+            save_path: Path to save the plot image
+            project_name: Name of the project for the plot title
+        """
+        if len(self.epoch_history) < 2:
+            return  # Not enough data to plot
+        
+        try:
+            # Extract data
+            epochs = [h['epoch'] for h in self.epoch_history]
+            mel_losses = [h['mel'] for h in self.epoch_history]
+            fm_losses = [h['fm'] for h in self.epoch_history]
+            composite_losses = [h['composite'] for h in self.epoch_history if h['composite'] is not None]
+            gen_losses = [h['gen'] for h in self.epoch_history]
+            disc_losses = [h['disc'] for h in self.epoch_history]
+            kl_losses = [h['kl'] for h in self.epoch_history]
+            
+            # Create figure with 2 subplots
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+            fig.suptitle(f'Training Losses - {project_name}', fontsize=16, fontweight='bold')
+            
+            # Top plot: PRIMARY metrics (mel, fm, composite)
+            ax1.set_title('PRIMARY Metrics (mel/fm/composite) - Use for Quality Assessment', fontweight='bold')
+            ax1.plot(epochs, mel_losses, 'b-', linewidth=2, label='MEL (log-mel reconstruction)', marker='o', markersize=3)
+            ax1.plot(epochs, fm_losses, 'g-', linewidth=2, label='FM (feature matching)', marker='s', markersize=3)
+            if len(composite_losses) == len(epochs):
+                ax1.plot(epochs, composite_losses, 'purple', linewidth=2.5, label='COMPOSITE (mel + 0.3×fm)', marker='D', markersize=3, linestyle='--')
+            
+            # Mark best mel
+            if self.best_mel != float('inf'):
+                best_mel_epoch = min(range(len(mel_losses)), key=lambda i: mel_losses[i])
+                ax1.axhline(y=self.best_mel, color='b', linestyle=':', alpha=0.5, label=f'Best MEL: {self.best_mel:.4f}')
+                ax1.plot(epochs[best_mel_epoch], mel_losses[best_mel_epoch], 'b*', markersize=15, label='Best MEL checkpoint')
+            
+            ax1.set_xlabel('Epoch')
+            ax1.set_ylabel('Loss Value')
+            ax1.legend(loc='best')
+            ax1.grid(True, alpha=0.3)
+            ax1.set_xlim(left=1)
+            
+            # Bottom plot: SECONDARY metrics (gen, disc, kl) - for monitoring only
+            ax2.set_title('SECONDARY Metrics (gen/disc/kl) - For Monitoring Only (NOT for decisions)', fontweight='bold', color='gray')
+            ax2.plot(epochs, gen_losses, 'r-', linewidth=1.5, label='Generator Loss', alpha=0.7, marker='.')
+            ax2.plot(epochs, disc_losses, 'orange', linewidth=1.5, label='Discriminator Loss', alpha=0.7, marker='.')
+            ax2.plot(epochs, kl_losses, 'brown', linewidth=1.5, label='KL Divergence', alpha=0.7, marker='.')
+            
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Loss Value')
+            ax2.legend(loc='best')
+            ax2.grid(True, alpha=0.3)
+            ax2.set_xlim(left=1)
+            
+            # Add text annotation
+            fig.text(0.5, 0.02, 
+                    'Watch MEL (primary) and FM (secondary) for quality. Ignore GEN/DISC oscillations.',
+                    ha='center', fontsize=10, style='italic', color='darkblue')
+            
+            plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            
+        except Exception as e:
+            print(f"Error plotting losses: {e}")
+            # Don't fail training if plotting fails
+            pass
 
 
 class EpochRecorder:
@@ -619,20 +776,17 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         # Update global loss tracker and possibly log/save
         global loss_tracker
         if loss_tracker is None and rank == 0:
-            # Initialize with intelligent save controls
+            # Initialize with mel-based tracking (PRIMARY metrics: mel/fm, IGNORE: gen/disc)
             loss_tracker = LossTracker(
                 ema_alpha=0.05,
                 min_delta=1e-4,
-                zero_threshold=0.02,
-                slope_window=200,
-                slope_min=1e-5,
-                upslope_patience_steps=2000,
-                plateau_patience_steps=4000,
                 min_save_interval=5,  # Save best models every 5 epochs minimum
-                significant_improvement_threshold=0.03,  # 3% improvement required
+                significant_improvement_threshold=0.01,  # 1% improvement required in mel
                 max_best_saves=3,  # Keep only 3 best saves
                 total_epochs=hps.train.epochs,  # Total training epochs for warmup
                 warmup_ratio=0.25,  # 25% warmup period
+                plateau_patience_epochs=10,  # 10 epoch rolling window for plateau detection
+                composite_weight_fm=0.3,  # Weight for FM in composite score (mel + 0.3*fm)
             )
         if rank == 0 and loss_tracker is not None:
             loss_tracker.update(
@@ -645,18 +799,12 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             if global_step % hps.train.log_interval == 0:
                 logger.info(f"[Tracker] {loss_tracker.status_str()}")
 
-            # Early stop if sustained upslope or long plateau after at least one save
+            # Early stop based on mel loss plateau or overfitting (IGNORES gen/disc)
             if loss_tracker.should_early_stop():
                 if rank == 0:
-                    logger.info("[Tracker] Early stopping: sustained upslope or plateau detected.")
+                    logger.info("[Tracker] Early stopping: mel loss plateau (<1% improvement over 10 epochs) or overfitting detected.")
                 # Break out of batch loop; outer loop will handle termination
                 break
-
-        if rank == 0 and global_step % hps.train.log_interval == 0:
-            lr = optim_g.param_groups[0]["lr"]
-            logger.info("Train Epoch: {} [{:.0f}%]".format(epoch, 100.0 * batch_idx / len(train_loader)))
-            logger.info([global_step, lr])
-            logger.info(f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}, loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}")
 
         global_step += 1
 
@@ -675,10 +823,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 should_save = True
                 logger.info(f"[Tracker] Auto-saving at epoch boundary: {reason}")
 
-            # Also save if near zero loss (exceptional case)
+            # Also save if near zero mel loss (exceptional case - perfect reconstruction)
             if loss_tracker.near_zero():
                 should_save = True
-                logger.info("[Tracker] Auto-saving at epoch boundary due to near-zero gen loss.")
+                logger.info("[Tracker] Auto-saving at epoch boundary due to near-zero mel loss (excellent reconstruction).")
         
         if should_save:
             # If save_latest_only is True and we have a previous save, clean up old checkpoints
@@ -737,6 +885,20 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
             # Update last_saved_epoch for next cleanup
             last_saved_epoch = epoch
+            
+            # Generate and save loss plot
+            if loss_tracker is not None:
+                plot_save_path = os.path.join(hps.model_dir, f"loss_plot_epoch{epoch}.png")
+                loss_tracker.plot_losses(plot_save_path, project_name=hps.name)
+                logger.info(f"Saved loss plot to {plot_save_path}")
+                
+                # Also save a copy to the trained directory with the model
+                trained_plot_path = os.path.join(model_path, "trained", f"{model_name}_losses.png")
+                try:
+                    shutil.copy2(plot_save_path, trained_plot_path)
+                    logger.info(f"Copied loss plot to {trained_plot_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to copy loss plot to trained directory: {e}")
 
             # Reset loss tracker after saving
             if loss_tracker is not None:
