@@ -1,11 +1,78 @@
 import os
 import re
 import yt_dlp
+import requests
 from typing import Optional, List, Tuple
-from handlers.config import output_path
+from handlers.config import output_path, model_path
+from tqdm import tqdm
 import gradio as gr
 import logging
 logger = logging.getLogger(__name__)
+
+def download_hubert_model() -> str:
+    """
+    Download HuBERT base model from HuggingFace if not already present.
+    
+    Returns:
+        Path to the HuBERT model file
+        
+    Raises:
+        RuntimeError: If download fails
+    """
+    hubert_dir = os.path.join(model_path, "rvc")
+    os.makedirs(hubert_dir, exist_ok=True)
+    
+    hubert_path = os.path.join(hubert_dir, "hubert_base.pt")
+    
+    # Check if already downloaded
+    if os.path.exists(hubert_path) and os.path.getsize(hubert_path) > 100_000_000:  # > 100MB
+        logger.info(f"HuBERT model already exists at {hubert_path}")
+        return hubert_path
+    
+    # HuBERT model URL from official RVC repository
+    hubert_url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt"
+    
+    try:
+        logger.info(f"Downloading HuBERT model from {hubert_url}...")
+        logger.info(f"This may take a few minutes (file size: ~189MB)")
+        
+        response = requests.get(hubert_url, stream=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 8192
+        
+        progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True, desc="Downloading HuBERT")
+        
+        with open(hubert_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=block_size):
+                if chunk:
+                    progress_bar.update(len(chunk))
+                    f.write(chunk)
+        
+        progress_bar.close()
+        
+        # Verify download
+        if total_size > 0 and os.path.getsize(hubert_path) < total_size * 0.95:
+            raise RuntimeError("Downloaded file size doesn't match expected size")
+        
+        logger.info(f"HuBERT model downloaded successfully to {hubert_path}")
+        return hubert_path
+        
+    except Exception as e:
+        # Clean up partial download
+        if os.path.exists(hubert_path):
+            os.remove(hubert_path)
+        
+        error_msg = (
+            f"Failed to download HuBERT model: {str(e)}\n\n"
+            "Please manually download from:\n"
+            f"{hubert_url}\n"
+            f"And save to: {hubert_path}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
 
 def convert_vtt_to_lrc(vtt_path: str, lrc_path: str) -> bool:
     """Convert VTT subtitles to LRC format

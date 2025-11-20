@@ -49,10 +49,17 @@ class HuBERTEncoder:
     def _load_model(self):
         """Load HuBERT model."""
         if not os.path.exists(self.model_path):
-            raise FileNotFoundError(
-                f"HuBERT model not found: {self.model_path}. "
-                "Please download from https://huggingface.co/lj1995/VoiceConversionWebUI"
-            )
+            logger.warning(f"HuBERT model not found at {self.model_path}. Attempting automatic download...")
+            try:
+                from handlers.download import download_hubert_model
+                self.model_path = download_hubert_model()
+                logger.info(f"HuBERT model downloaded successfully to {self.model_path}")
+            except Exception as e:
+                raise FileNotFoundError(
+                    f"HuBERT model not found: {self.model_path}. "
+                    f"Automatic download failed: {str(e)}\n"
+                    "Please manually download from https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt"
+                )
         
         models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
             [self.model_path],

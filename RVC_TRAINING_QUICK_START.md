@@ -5,6 +5,16 @@
 ### The One Thing to Remember
 **Watch the MEL loss (blue line).** Everything else is secondary.
 
+### Model Version Selection
+
+- **V1**: Legacy 256-dim features (40k/48k only)
+- **V2**: Standard 768-dim features (32k/40k/48k) - Most commonly used
+- **V3**: Enhanced architecture with text conditioning - Better quality, requires pretrained models
+  - Automatically uses V2 weights as initialization
+  - Larger model with cross-attention
+  - Recommended for 48k sample rate
+  - Best quality but requires more VRAM
+
 ### Quick Status Check During Training
 ```
 [Tracker] EMA(mel=22.38 [best=21.50], ...)
@@ -40,7 +50,7 @@
 - `disc` - Will oscillate, this is normal
 - `kl` - Just monitoring, don't worry about it
 
-## Reading the Graph
+## Reading the Graph    
 
 ### Find Your Graph
 After training, look for:

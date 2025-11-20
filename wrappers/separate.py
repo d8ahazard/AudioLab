@@ -30,6 +30,31 @@ class Separate(BaseWrapper):
     file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
+        "separation_profile": TypedInput(
+            default="v2",
+            description="Separation quality profile. v2 uses a larger ensemble of newer models for maximum fidelity (slower but best quality). v1 is faster with solid quality.",
+            type=str,
+            choices=["v2", "v1"],
+            gradio_type="Dropdown"
+        ),
+        "ensemble_size": TypedInput(
+            default=None,
+            le=7,
+            ge=1,
+            description="Number of models to use in ensemble (advanced). Leave empty to use profile defaults.",
+            type=int,
+            gradio_type="Slider",
+            render=False
+        ),
+        "residual_fill": TypedInput(
+            default=None,
+            le=0.60,
+            ge=0.0,
+            description="Amount of residual to blend into instrumental to fill gaps (advanced). Leave empty to use profile defaults.",
+            type=float,
+            gradio_type="Slider",
+            render=False
+        ),
 		"delete_extra_stems": TypedInput(
 			default=True,
             description="Automatically delete intermediate stem files after processing.",
@@ -273,6 +298,9 @@ class Separate(BaseWrapper):
 
             current_config = {
                 "file": project.src_file,
+                "separation_profile": filtered_kwargs.get("separation_profile", "v2"),
+                "ensemble_size": filtered_kwargs.get("ensemble_size", None),
+                "residual_fill": filtered_kwargs.get("residual_fill", None),
                 "vocals_only": filtered_kwargs.get("vocals_only", True),
                 "separate_drums": filtered_kwargs.get("separate_drums", False),
                 "separate_woodwinds": filtered_kwargs.get("separate_woodwinds", False),

@@ -154,28 +154,73 @@ def change_sr2(sr2, if_f0_3, version19):
 
 
 def change_version19(sr2, if_f0_3, version19):
-    path_str = "" if version19 == "v1" else "_v2"
+    if version19 == "v1":
+        path_str = ""
+    elif version19 == "v3":
+        path_str = "_v3"
+    else:  # v2
+        path_str = "_v2"
+    
     if sr2 == "32k" and version19 == "v1":
         sr2 = "40k"
+    
     to_return_sr2 = (
         {"choices": ["40k", "48k"], "__type__": "update", "value": sr2}
         if version19 == "v1"
         else {"choices": ["40k", "48k", "32k"], "__type__": "update", "value": sr2}
     )
     f0_str = "f0" if if_f0_3 else ""
-    return (
-        *get_pretrained_models(path_str, f0_str, sr2),
-        to_return_sr2,
-    )
+    
+    # For v3, try v3 pretrains first, fallback to v2
+    if version19 == "v3":
+        try:
+            return (
+                *get_pretrained_models(path_str, f0_str, sr2),
+                to_return_sr2,
+            )
+        except FileNotFoundError:
+            logger.info("V3 pretrained not found, will use v2 and expand at training time")
+            # Fallback to v2
+            return (
+                *get_pretrained_models("_v2", f0_str, sr2),
+                to_return_sr2,
+            )
+    else:
+        return (
+            *get_pretrained_models(path_str, f0_str, sr2),
+            to_return_sr2,
+        )
 
 
 def change_f0(if_f0_3, sr2, version19):  # f0method8,pretrained_G14,pretrained_D15
-    path_str = "" if version19 == "v1" else "_v2"
-    return (
-        {"visible": if_f0_3, "__type__": "update"},
-        {"visible": if_f0_3, "__type__": "update"},
-        *get_pretrained_models(path_str, "f0" if if_f0_3 else "", sr2),
-    )
+    if version19 == "v1":
+        path_str = ""
+    elif version19 == "v3":
+        path_str = "_v3"
+    else:  # v2
+        path_str = "_v2"
+    
+    # For v3, try v3 pretrains first, fallback to v2
+    if version19 == "v3":
+        try:
+            return (
+                {"visible": if_f0_3, "__type__": "update"},
+                {"visible": if_f0_3, "__type__": "update"},
+                *get_pretrained_models(path_str, "f0" if if_f0_3 else "", sr2),
+            )
+        except FileNotFoundError:
+            # Fallback to v2
+            return (
+                {"visible": if_f0_3, "__type__": "update"},
+                {"visible": if_f0_3, "__type__": "update"},
+                *get_pretrained_models("_v2", "f0" if if_f0_3 else "", sr2),
+            )
+    else:
+        return (
+            {"visible": if_f0_3, "__type__": "update"},
+            {"visible": if_f0_3, "__type__": "update"},
+            *get_pretrained_models(path_str, "f0" if if_f0_3 else "", sr2),
+        )
 
 
 def change_f0_method(f0method8):
@@ -437,7 +482,16 @@ def click_train(
         hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
 
         logger.info(f"Training with hparams: {hparams}")
-        train_main(hparams, progress)
+        
+        # Route to appropriate training function based on model version
+        if model_version == "v3":
+            logger.info("Using RVC V3 training pipeline")
+            from modules.rvc_v3.training.train_wrapper import train_rvc_v3
+            train_rvc_v3(hparams, progress)
+        else:
+            logger.info(f"Using RVC V{model_version} training pipeline")
+            train_main(hparams, progress)
+        
         return "Training complete."
     except Exception as e:
         error_msg = f"Error during training: {str(e)}"
@@ -923,7 +977,7 @@ def render():
                     )
                     model_version = gr.Radio(
                         label="Model Version",
-                        choices=["v1", "v2"],
+                        choices=["v1", "v2", "v3"],
                         value="v2",
                         interactive=True,
                         visible=True,
@@ -1191,7 +1245,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "pause_after_separation": "Check this box to pause processing after vocal separation is complete. Useful if you need to further refine the vocal tracks before training.",
         "sample_rate": "Select the target sample rate for the model (40k or 48k).",
         "pitch_guidance": "Choose whether to use pitch guidance for training. Helps with vocal accuracy.",
-        "model_version": "Select the RVC model version (v1 or v2).",
+        "model_version": "Select the RVC model version. V1: legacy 256-dim. V2: 768-dim standard. V3: Enhanced architecture with text conditioning, larger model, better quality (recommended for 48k+).",
         "num_cpu": "Specify the number of CPU processes for data processing and pitch extraction.",
         "speaker_id": "Set the speaker ID to use during training. Some datasets require this.",
         "pitch_extraction": "Select the pitch extraction method to use. RMVPE generally provides the best results.",

@@ -39,7 +39,7 @@ class SongDownloader:
         """Check if yt-dlp is installed."""
         try:
             result = subprocess.run(
-                ["yt-dlp", "--version"],
+                ["python", "-m", "yt_dlp", "--version"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -81,11 +81,12 @@ class SongDownloader:
         
         # yt-dlp command options
         cmd = [
-            "yt-dlp",
+            "python", "-m", "yt_dlp",
             url,
             "-o", output_template,
             "--no-playlist",
             "--write-info-json",
+            "--remote-components", "ejs:github"
         ]
         
         if extract_audio:

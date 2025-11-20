@@ -309,4 +309,148 @@ class RVCV3Trainer:
         self.optim_d.load_state_dict(checkpoint['optim_d'])
         
         logger.info(f"Checkpoint loaded from {checkpoint_path}")
+    
+    def load_pretrained(self, pretrain_g: str, pretrain_d: str, sample_rate: int = 48000, if_f0: bool = True):
+        """
+        Load pretrained v2 or v3 weights.
+        
+        If v3 weights exist, load them directly.
+        If only v2 weights exist, expand them on-the-fly.
+              
+        Args:
+            pretrain_g: Path to pretrained generator (v2 or v3)
+            pretrain_d: Path to pretrained discriminator (v2 or v3)
+            sample_rate: Sample rate for the model
+            if_f0: Whether model uses F0
+        """
+        from handlers.config import model_path
+        
+        # Check if v3 pretrained weights exist
+        v3_pretrain_dir = os.path.join(model_path, "rvc", "pretrained_v3")
+        f0_str = 'f0' if if_f0 else ''
+        sr_str = f"{sample_rate // 1000}k"
+        
+        v3_g_path = os.path.join(v3_pretrain_dir, f"{f0_str}G{sr_str}.pth")
+        v3_d_path = os.path.join(v3_pretrain_dir, f"{f0_str}D{sr_str}.pth")
+        
+        # Try to load v3 weights first
+        if os.path.exists(v3_g_path) and os.path.exists(v3_d_path):
+            logger.info(f"Loading v3 pretrained weights from {v3_pretrain_dir}")
+            self._load_v3_pretrained(v3_g_path, v3_d_path)
+        elif os.path.exists(pretrain_g) and os.path.exists(pretrain_d):
+            # Check if provided paths are v3 or v2
+            logger.info(f"Checking pretrained weights: {pretrain_g}")
+            checkpoint = torch.load(pretrain_g, map_location='cpu')
+            
+            if 'version' in checkpoint and checkpoint['version'] == 'v3':
+                logger.info("Loading v3 weights directly")
+                self._load_v3_pretrained(pretrain_g, pretrain_d)
+            else:
+                logger.info("Detected v2 weights, expanding to v3 architecture...")
+                self._expand_and_load_v2(pretrain_g, pretrain_d, sample_rate, if_f0)
+        else:
+            logger.warning("No pretrained weights found, training from scratch")
+    
+    def _load_v3_pretrained(self, g_path: str, d_path: str):
+        """Load v3 pretrained weights directly."""
+        g_checkpoint = torch.load(g_path, map_location=self.device)
+        d_checkpoint = torch.load(d_path, map_location=self.device)
+        
+        # Load generator
+        g_state = g_checkpoint['model']
+        gen_state_dict = self.generator.state_dict()
+        
+        loaded = 0
+        not_loaded = 0
+        
+        for k in gen_state_dict.keys():
+            if k in g_state:
+                if gen_state_dict[k].shape == g_state[k].shape:
+                    gen_state_dict[k] = g_state[k]
+                    loaded += 1
+                else:
+                    logger.warning(f"Shape mismatch for generator {k}")
+                    not_loaded += 1
+            else:
+                not_loaded += 1
+        
+        self.generator.load_state_dict(gen_state_dict, strict=False)
+        logger.info(f"Generator: loaded {loaded} layers, {not_loaded} randomly initialized")
+        
+        # Load text encoder if present
+        if 'text_encoder' in g_checkpoint:
+            text_state = g_checkpoint['text_encoder']
+            text_state_dict = self.text_encoder.state_dict()
+            
+            text_loaded = 0
+            text_not_loaded = 0
+            
+            for k in text_state_dict.keys():
+                if k in text_state:
+                    if text_state_dict[k].shape == text_state[k].shape:
+                        text_state_dict[k] = text_state[k]
+                        text_loaded += 1
+                    else:
+                        text_not_loaded += 1
+                else:
+                    text_not_loaded += 1
+            
+            self.text_encoder.load_state_dict(text_state_dict, strict=False)
+            logger.info(f"Text encoder: loaded {text_loaded} layers, {text_not_loaded} randomly initialized")
+        
+        # Load discriminator
+        d_state = d_checkpoint['model']
+        disc_state_dict = self.discriminator.state_dict()
+        
+        d_loaded = 0
+        d_not_loaded = 0
+        
+        for k in disc_state_dict.keys():
+            if k in d_state:
+                if disc_state_dict[k].shape == d_state[k].shape:
+                    disc_state_dict[k] = d_state[k]
+                    d_loaded += 1
+                else:
+                    d_not_loaded += 1
+            else:
+                d_not_loaded += 1
+        
+        self.discriminator.load_state_dict(disc_state_dict, strict=False)
+        logger.info(f"Discriminator: loaded {d_loaded} layers, {d_not_loaded} randomly initialized")
+    
+    def _expand_and_load_v2(self, v2_g_path: str, v2_d_path: str, sample_rate: int, if_f0: bool):
+        """Expand v2 weights and load them."""
+        from modules.rvc_v3.training.expand_weights import expand_v2_to_v3
+        from handlers.config import model_path
+        import tempfile
+        
+        # Create temporary directory for expanded weights
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info("Expanding v2 weights to v3 architecture...")
+            v3_g_path, v3_d_path = expand_v2_to_v3(
+                v2_g_path,
+                v2_d_path,
+                temp_dir,
+                sample_rate=sample_rate,
+                if_f0=if_f0
+            )
+            
+            # Load the expanded weights
+            self._load_v3_pretrained(v3_g_path, v3_d_path)
+            
+            # Optionally save to pretrained_v3 directory for future use
+            v3_pretrain_dir = os.path.join(model_path, "rvc", "pretrained_v3")
+            os.makedirs(v3_pretrain_dir, exist_ok=True)
+            
+            f0_str = 'f0' if if_f0 else ''
+            sr_str = f"{sample_rate // 1000}k"
+            
+            final_g_path = os.path.join(v3_pretrain_dir, f"{f0_str}G{sr_str}.pth")
+            final_d_path = os.path.join(v3_pretrain_dir, f"{f0_str}D{sr_str}.pth")
+            
+            import shutil
+            shutil.copy(v3_g_path, final_g_path)
+            shutil.copy(v3_d_path, final_d_path)
+            
+            logger.info(f"Expanded weights saved to {v3_pretrain_dir} for future use")
 

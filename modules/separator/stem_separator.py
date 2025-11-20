@@ -15,6 +15,11 @@ from audio_separator.separator import Separator
 from handlers.config import app_path, output_path
 from handlers.patch_separate import patch_separator
 from handlers.reverb import extract_reverb
+from modules.separator.separation_profiles import (
+    SeparationProfile,
+    get_profile_models,
+    get_profile_defaults
+)
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
@@ -105,6 +110,30 @@ class EnsembleDemucsMDXMusicSeparationModel:
             invert_using_spec=True,
             use_autocast=True
         )
+        
+        # Separation profile (v1 = Standard, v2 = High Quality)
+        # Default to v2 for best quality
+        profile_str = options.get("separation_profile", "v2")
+        try:
+            self.separation_profile = SeparationProfile(profile_str)
+        except ValueError:
+            logger.warning(f"Invalid separation profile '{profile_str}', defaulting to v2")
+            self.separation_profile = SeparationProfile.V2_HIGH_QUALITY
+        
+        # Get profile defaults
+        profile_defaults = get_profile_defaults(self.separation_profile)
+        
+        # Use profile defaults if values are None or not provided
+        ensemble_size_opt = options.get("ensemble_size")
+        residual_fill_opt = options.get("residual_fill")
+        
+        self.ensemble_strength = ensemble_size_opt if ensemble_size_opt is not None else profile_defaults["ensemble_size"]
+        self.residual_blend_pct = residual_fill_opt if residual_fill_opt is not None else profile_defaults["residual_fill_pct"]
+        self.bleed_guard_multiplier = profile_defaults["bleed_guard_multiplier"]
+        
+        logger.info(f"Using separation profile: {self.separation_profile.value} "
+                   f"(ensemble_size={self.ensemble_strength}, residual_blend={self.residual_blend_pct:.2f})")
+        
         # Download all required models
         self.model_list = [
             "htdemucs_ft.yaml", "htdemucs.yaml", "hdemucs_mmi.yaml", "htdemucs_6s.yaml",
@@ -150,7 +179,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.separate_bg_vocals = options.get("separate_bg_vocals", True)
         self.bg_vocal_layers = options.get("bg_vocal_layers", 1)
         self.store_reverb_ir = options.get("store_reverb_ir", False)
-        self.ensemble_strength = options.get("ensemble_strength", 1)
 
         # Progress tracking
         self.global_step = 0
@@ -376,19 +404,21 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 "i_weights": [],
                 "output_folder": file["output_folder"]
             }
+        
+        # Get models from the separation profile
+        profile_models = get_profile_models(self.separation_profile, self.ensemble_strength)
         models_with_weights = [
-            ("vocals_mel_band_roformer.ckpt", 8.6, 16.0),
-            ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),
-            ("melband_roformer_big_beta4.ckpt", 8.5, 16.0),
-            ("MDX23C-8KFFT-InstVoc_HQ.ckpt", 7.2, 14.9),
-            ("UVR-MDX-NET-Voc_FT.onnx", 6.9, 14.9),
-            ("Kim_Vocal_2.onnx", 6.9, 14.9),
-            ("Kim_Vocal_1.onnx", 6.8, 14.9),
+            (spec.id, spec.vocal_weight, spec.inst_weight)
+            for spec in profile_models
         ]
-        # Avoid over-aggressive blending for very small ensembles which can leak vocals
+        
+        logger.info(f"Using {len(models_with_weights)} models for {self.separation_profile.value} separation")
+        
+        # Adjust residual blend for small ensembles to avoid vocal leakage
         if self.ensemble_strength <= 2:
-            self.options["residual_blend"] = min(float(self.options.get("residual_blend", 0.4)), 0.2)
-        models_with_weights = models_with_weights[:self.ensemble_strength]
+            self.options["residual_blend"] = min(float(self.residual_blend_pct), 0.2)
+        else:
+            self.options["residual_blend"] = float(self.residual_blend_pct)
 
         for model_name, v_wt, i_wt in models_with_weights:
             self.separator.load_model(model_name)
@@ -429,8 +459,18 @@ class EnsembleDemucsMDXMusicSeparationModel:
                         return float(abs(np.dot(a_flat, b_flat)) / denom)
                     sim_inst = cosine_abs(inst, voc_np[:, :min_len])
                     sim_resid = cosine_abs(resid, voc_np[:, :min_len])
+                    
+                    # Apply profile-specific bleed guard threshold
+                    safe_cos_threshold = 0.12 * self.bleed_guard_multiplier
+                    
                     if sim_resid + 1e-6 < sim_inst - 0.01:  # requires a small but real improvement
                         blend = float(self.options.get("residual_blend", 0.4))
+                        
+                        # Adjust blend factor based on cosine similarity (vocal bleed detection)
+                        if sim_resid > safe_cos_threshold:
+                            damp = min(1.0, (sim_resid / safe_cos_threshold))
+                            blend = blend * (1.0 / (1.0 + 2.0 * (damp - 1.0)))
+                        
                         blend = 0.0 if blend < 0 else (1.0 if blend > 1.0 else blend)
                         inst_refined = (1.0 - blend) * inst + blend * resid
                         # Peak safety
@@ -975,6 +1015,9 @@ def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, 
     options = {
         "input_dict": input_dict,
         "cpu": kwargs.get("cpu", False),
+        "separation_profile": kwargs.get("separation_profile", "v2"),
+        "ensemble_size": kwargs.get("ensemble_size", None),
+        "residual_fill": kwargs.get("residual_fill", None),
         "vocals_only": kwargs.get("vocals_only", True),
         "use_VOCFT": kwargs.get("use_VOCFT", False),
         "separate_drums": kwargs.get("separate_drums", False),
