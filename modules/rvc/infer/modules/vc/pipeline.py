@@ -103,6 +103,129 @@ def debug_clone_audio(audio_data, sr, step_name):
     DEBUG_STEP_NO += 1
 
 
+def extract_non_silent_audio(audio_data, sr, threshold=-40.0):
+    """
+    Extract non-silent portions from audio data using RMS-based detection.
+    
+    Args:
+        audio_data: Audio data as numpy array (channels, samples) or (samples,)
+        sr: Sample rate
+        threshold: RMS threshold in dB for silence detection
+        
+    Returns:
+        numpy array with only non-silent portions concatenated
+    """
+    from modules.rvc.infer.lib.slicer2 import Slicer
+    
+    try:
+        # Create slicer instance
+        slicer = Slicer(
+            sr=sr,
+            threshold=threshold,
+            min_length=100,  # Very short minimum to capture most audio
+            min_interval=50,
+            hop_size=10,
+            max_sil_kept=100
+        )
+        
+        # Get non-silent chunks
+        chunks = slicer.slice(audio_data)
+        
+        if not chunks:
+            return audio_data
+        
+        # Concatenate all non-silent chunks
+        if len(audio_data.shape) == 2:
+            # Stereo audio
+            non_silent = np.concatenate([chunk for chunk in chunks], axis=1)
+        else:
+            # Mono audio
+            non_silent = np.concatenate([chunk for chunk in chunks], axis=0)
+        
+        return non_silent
+    except Exception as e:
+        logger.warning(f"Failed to extract non-silent audio: {e}, using original audio")
+        return audio_data
+
+
+def prepare_warmup_audio(audio_data, sr, warmup_duration=10.0):
+    """
+    Extract the first N seconds of non-silent audio for model warmup.
+    
+    Args:
+        audio_data: Audio data as numpy array
+        sr: Sample rate
+        warmup_duration: Duration in seconds to extract
+        
+    Returns:
+        Tuple of (warmup_audio, warmup_samples_count)
+    """
+    try:
+        # First extract non-silent portions
+        non_silent = extract_non_silent_audio(audio_data, sr)
+        
+        # Calculate desired samples
+        warmup_samples = int(warmup_duration * sr)
+        
+        # Handle case where audio is shorter than requested warmup
+        if len(non_silent.shape) == 2:
+            # Stereo
+            available_samples = non_silent.shape[1]
+        else:
+            # Mono
+            available_samples = len(non_silent)
+        
+        if available_samples <= warmup_samples:
+            # Use all available non-silent audio
+            logger.info(f"Audio shorter than warmup duration, using {available_samples/sr:.2f}s for warmup")
+            return non_silent, available_samples
+        
+        # Extract first N seconds
+        if len(non_silent.shape) == 2:
+            # Stereo
+            warmup_audio = non_silent[:, :warmup_samples]
+        else:
+            # Mono
+            warmup_audio = non_silent[:warmup_samples]
+        
+        logger.info(f"Prepared {warmup_samples/sr:.2f}s warmup audio from non-silent segments")
+        return warmup_audio, warmup_samples
+    except Exception as e:
+        logger.error(f"Failed to prepare warmup audio: {e}")
+        return None, 0
+
+
+def concatenate_with_warmup(audio_data, warmup_audio):
+    """
+    Prepend warmup audio to the original audio.
+    
+    Args:
+        audio_data: Original audio data
+        warmup_audio: Warmup audio to prepend
+        
+    Returns:
+        Concatenated audio with warmup prepended
+    """
+    try:
+        if warmup_audio is None:
+            return audio_data
+        
+        # Ensure both have the same number of channels
+        if len(audio_data.shape) == 2 and len(warmup_audio.shape) == 2:
+            # Both stereo
+            return np.concatenate([warmup_audio, audio_data], axis=1)
+        elif len(audio_data.shape) == 1 and len(warmup_audio.shape) == 1:
+            # Both mono
+            return np.concatenate([warmup_audio, audio_data], axis=0)
+        else:
+            # Shape mismatch, return original
+            logger.warning("Warmup and audio shape mismatch, skipping warmup")
+            return audio_data
+    except Exception as e:
+        logger.error(f"Failed to concatenate warmup: {e}")
+        return audio_data
+
+
 class Pipeline(object):
     def __init__(self, tgt_sr, config, downsample_pipeline, processing_sr=None):
         """
@@ -436,7 +559,8 @@ class VC:
                   index_rate=0.0, filter_radius=3, rms_mix_rate=1.0,
                   protect=0.33, pitch_correction=False, pitch_correction_humanize=False,
                   merge_type="median", crepe_hop_length=160, f0_autotune=False,
-                  rmvpe_onnx=False, clone_stereo=False, callback=None):
+                  rmvpe_onnx=False, clone_stereo=False, callback=None,
+                  use_model_warmup=True, warmup_duration=10.0):
 
         """
         Run voice conversion on a single audio file.
@@ -457,6 +581,23 @@ class VC:
                 f0_up_key = 0  # ensure no further pitch shifting downstream
             except Exception as e:
                 logger.warning(f"[RVC] Pitch shift failed, proceeding without shift: {e}")
+        
+        # Apply model warmup preprocessing
+        warmup_audio = None
+        warmup_samples = 0
+        if use_model_warmup:
+            try:
+                logger.info(f"[RVC] Preparing {warmup_duration}s warmup audio")
+                warmup_audio, warmup_samples = prepare_warmup_audio(audio_float, og_sr, warmup_duration)
+                if warmup_audio is not None and warmup_samples > 0:
+                    audio_float = concatenate_with_warmup(audio_float, warmup_audio)
+                    logger.info(f"[RVC] Added {warmup_samples/og_sr:.2f}s warmup segment to input audio")
+                else:
+                    logger.info(f"[RVC] No warmup audio prepared, proceeding without warmup")
+            except Exception as e:
+                logger.warning(f"[RVC] Warmup preparation failed: {e}, proceeding without warmup")
+                warmup_samples = 0
+        
         try:
             sr_rvc = 16000  # Always process at 16kHz for Hubert
             if not self.downsample_pipeline:
@@ -522,6 +663,32 @@ class VC:
             # final_audio = restore_silence(audio_float, final_audio, og_sr, proc_sr)
             debug_clone_audio(final_audio, proc_sr, "vc_single_final_audio")
             final_float = final_audio
+            
+            # Remove warmup segment from processed audio
+            if use_model_warmup and warmup_samples > 0:
+                try:
+                    # Calculate warmup samples in processed sample rate
+                    warmup_samples_proc = int(warmup_samples * (proc_sr / og_sr))
+                    logger.info(f"[RVC] Removing {warmup_samples_proc} warmup samples from output")
+                    
+                    # Remove warmup from start of audio
+                    if final_float.ndim == 2:
+                        # Stereo: shape is (samples, channels)
+                        if final_float.shape[0] > warmup_samples_proc:
+                            final_float = final_float[warmup_samples_proc:, :]
+                            logger.info(f"[RVC] Successfully removed warmup segment, remaining duration: {final_float.shape[0]/proc_sr:.2f}s")
+                        else:
+                            logger.warning(f"[RVC] Output too short to remove warmup, keeping full output")
+                    else:
+                        # Mono: shape is (samples,)
+                        if len(final_float) > warmup_samples_proc:
+                            final_float = final_float[warmup_samples_proc:]
+                            logger.info(f"[RVC] Successfully removed warmup segment, remaining duration: {len(final_float)/proc_sr:.2f}s")
+                        else:
+                            logger.warning(f"[RVC] Output too short to remove warmup, keeping full output")
+                except Exception as e:
+                    logger.error(f"[RVC] Failed to remove warmup segment: {e}, keeping full output")
+            
             visualizer = F0Visualizer()
             output_file = os.path.join(output_path, "spec.png")
             visualizer.visualize(output_file, sr=proc_sr, hop_length=crepe_hop_length)
@@ -554,6 +721,8 @@ class VC:
             pitch_correction_humanize,
             project_dir,
             callback=None,
+            use_model_warmup=True,
+            warmup_duration=10.0,
     ):
         clone_params = {
             "model": model,
@@ -570,7 +739,9 @@ class VC:
             "rmvpe_onnx": rmvpe_onnx,
             "clone_stereo": clone_stereo,
             "pitch_correction": pitch_correction,
-            "pitch_correction_humanize": pitch_correction_humanize
+            "pitch_correction_humanize": pitch_correction_humanize,
+            "use_model_warmup": use_model_warmup,
+            "warmup_duration": warmup_duration
         }
         outputs = []
         global DEBUG_STEP_NO
@@ -635,6 +806,8 @@ class VC:
                     rmvpe_onnx,
                     clone_stereo,
                     callback=callback,
+                    use_model_warmup=use_model_warmup,
+                    warmup_duration=warmup_duration,
                 )
                 if "Success" in info:
                     try:

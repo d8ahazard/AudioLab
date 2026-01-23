@@ -277,6 +277,25 @@ class Clone(BaseWrapper):
             gradio_type="Checkbox",
             render=True,
             group_name="Advanced RVC Options"
+        ),
+        "use_model_warmup": TypedInput(
+            default=True,
+            description="Prepend warmup audio to improve clone quality on initial segments.",
+            type=bool,
+            gradio_type="Checkbox",
+            render=True,
+            group_name="Advanced RVC Options"
+        ),
+        "warmup_duration": TypedInput(
+            default=10.0,
+            description="Duration in seconds of warmup audio to prepend (first N seconds of non-silent audio).",
+            type=float,
+            gradio_type="Slider",
+            ge=1.0,
+            le=30.0,
+            step=0.5,
+            render=True,
+            group_name="Advanced RVC Options"
         )
     }
 
@@ -333,6 +352,8 @@ class Clone(BaseWrapper):
             crepe_hop_length = filtered_kwargs.get("crepe_hop_length", 160)
             f0_autotune = filtered_kwargs.get("f0_autotune", False)
             rmvpe_onnx = filtered_kwargs.get("rmvpe_onnx", False)
+            use_model_warmup = filtered_kwargs.get("use_model_warmup", True)
+            warmup_duration = filtered_kwargs.get("warmup_duration", 10.0)
 
             total_steps = len(inputs)
             if clone_bg_vocals:
@@ -434,7 +455,9 @@ class Clone(BaseWrapper):
                                 pitch_correction=pitch_correction,
                                 pitch_correction_humanize=pitch_correction_humanize,
                                 project_dir=project.project_dir,
-                                callback=project_callback
+                                callback=project_callback,
+                                use_model_warmup=use_model_warmup,
+                                warmup_duration=warmup_duration
                             )
                             clone_outputs.extend(file_outputs)
                             

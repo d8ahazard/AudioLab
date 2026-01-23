@@ -911,15 +911,9 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
 
     # Pre-calculate total steps for accurate progress tracking.
     N = len(files_data)
-    ensemble_models = [
-        ("vocals_mel_band_roformer.ckpt", 8.6, 16.0),
-        ("model_bs_roformer_ep_368_sdr_12.9628.ckpt", 8.4, 16.0),
-        ("melband_roformer_big_beta4.ckpt", 8.5, 16.0),
-        ("MDX23C-8KFFT-InstVoc_HQ.ckpt", 7.2, 14.9),
-        ("UVR-MDX-NET-Voc_FT.onnx", 6.9, 14.9),
-    ]
-    ensemble_models = ensemble_models[:model.ensemble_strength]
-    ensemble_steps = len(ensemble_models) * N
+    # Get actual ensemble models from the separation profile
+    profile_models = get_profile_models(model.separation_profile, model.ensemble_strength)
+    ensemble_steps = len(profile_models) * N
     bg_steps = N if model.separate_bg_vocals else 0
     # Compute transformation steps per file based on settings.
     trans_opts = [model.reverb_removal, model.crowd_removal, model.noise_removal]
