@@ -1,0 +1,84 @@
+# AudioLab CPU-Only Docker Image
+# ===============================
+# Smaller image without CUDA for systems without GPU
+#
+# Build:
+#   docker build -f Dockerfile.cpu -t audiolab:cpu .
+#
+# Run:
+#   docker run -p 7860:7860 audiolab:cpu
+
+FROM python:3.10-slim-bookworm
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    wget \
+    ffmpeg \
+    libsndfile1 \
+    libsndfile1-dev \
+    libportaudio2 \
+    libportaudiocpp0 \
+    portaudio19-dev \
+    espeak-ng \
+    libespeak-ng-dev \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libglib2.0-0 \
+    libgl1-mesa-glx \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Upgrade pip
+RUN pip install --upgrade pip wheel setuptools
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV CUDA_VISIBLE_DEVICES=""
+
+WORKDIR /app
+
+# Copy requirements files
+COPY requirements.txt requirements-core.txt requirements-wheels.txt ./
+COPY wheels/ ./wheels/
+
+# Install PyTorch CPU-only
+RUN pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install custom wheels
+RUN pip install -r requirements-wheels.txt || true
+
+# Install core dependencies (skip GPU-specific packages)
+RUN pip install -r requirements-core.txt || true
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/outputs /app/models /app/temp_uploads /app/logs
+
+# Set up model cache directories
+ENV HF_HOME=/app/models/hf
+ENV TRANSFORMERS_CACHE=/app/models/transformers
+ENV TTS_HOME=/app/models
+ENV COQUI_TOS_AGREED=1
+
+# Expose port
+EXPOSE 7860
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:7860/ || exit 1
+
+# Default command
+CMD ["python", "main.py", "--listen"]

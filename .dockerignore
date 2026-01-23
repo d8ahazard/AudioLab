@@ -1,0 +1,82 @@
+# Docker ignore file for AudioLab
+# ================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.eggs
+*.egg
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# Virtual environments
+venv
+.venv
+env
+.env
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+.cursor
+
+# Build artifacts
+build
+dist
+*.whl
+
+# Logs and outputs (will be mounted as volumes)
+logs
+outputs
+temp_uploads
+
+# Models (will be mounted as volumes)
+models
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+
+# Large media files
+*.mp3
+*.wav
+*.flac
+*.mp4
+*.avi
+*.mkv
+
+# Documentation
+docs
+*.md
+!README.md
+!CONTRIBUTING.md
+!CHANGELOG.md
+
+# Testing
+testing
+tests
+test_*.py
+*_test.py
+
+# Misc
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

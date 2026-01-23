@@ -1,0 +1,268 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audiolab"
+version = "2.0.0"
+description = "Open-source audio processing suite for voice cloning, separation, TTS, and music generation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10,<3.14"
+authors = [
+    {name = "D8ahazard", email = "d8ahazard@gmail.com"}
+]
+keywords = [
+    "audio", "voice-cloning", "tts", "text-to-speech", "audio-separation",
+    "rvc", "music-generation", "deep-learning", "ai", "machine-learning"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Core audio processing
+    "librosa>=0.11.0",
+    "soundfile>=0.13.1",
+    "pydub>=0.25.1",
+    "pyloudnorm>=0.1.1",
+    "praat-parselmouth>=0.4.5",
+    "pyworld",
+    "psola",
+    "torchcrepe",
+    "nnAudio",
+    "matchering>=2.0.6",
+    
+    # Deep learning core
+    "torch>=2.6.0",
+    "torchaudio>=2.6.0",
+    "torchvision>=0.21.0",
+    "pytorch_lightning>=2.5.1",
+    "accelerate>=0.34.2",
+    "transformers>=4.51.3",
+    "diffusers>=0.32.2",
+    "safetensors>=0.5.3",
+    "einops>=0.8.0",
+    "timm>=0.9.7",
+    "x-transformers>=2.3.1",
+    "torchdiffeq>=0.2.5",
+    "torchlibrosa>=0.1.0",
+    
+    # Audio separation
+    "audio-separator[gpu]>=0.32.0",
+    "demucs>=4.0.1",
+    
+    # ML utilities
+    "numpy>=2.0.2,<3.0.0",
+    "scipy>=1.15.0",
+    "scikit-learn>=1.5.0",
+    "faiss-cpu>=1.11.0",
+    "onnx>=1.16.0",
+    "onnxruntime-gpu>=1.21.1",
+    "onnxsim",
+    
+    # TTS dependencies
+    "phonemizer>=3.3.0",
+    "num2words>=0.5.14",
+    "unidecode>=1.3.8",
+    "pypinyin>=0.53.0",
+    "jieba",
+    "cutlet",
+    "fugashi[unidic-lite]",
+    "hangul-romanize>=0.1.0",
+    "cn2an",
+    "kanjize",
+    "sudachipy>=0.6.10",
+    "sudachidict-full>=20241021",
+    "chatterbox-tts",
+    
+    # Hugging Face ecosystem
+    "huggingface_hub>=0.27.1",
+    "datasets>=3.4.1",
+    "hf_xet",
+    
+    # Web framework
+    "gradio>=5.29.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "pydantic>=2.9.0",
+    
+    # Audio codecs
+    "descript-audio-codec==1.0.0",
+    "descript-audiotools==0.7.2",
+    
+    # Utilities
+    "tqdm>=4.66.0",
+    "rich>=13.9.0",
+    "click>=8.1.0",
+    "pyyaml>=6.0.0",
+    "omegaconf>=2.3.0",
+    "ml_collections",
+    "loguru>=0.7.3",
+    "chardet",
+    "ftfy>=6.3.1",
+    "mutagen>=1.47.0",
+    "xxhash",
+    "attributedict",
+    
+    # Media handling
+    "ffmpeg-python",
+    "ffmpeg_progress_yield",
+    "opencv-python>=4.10.0.84",
+    "matplotlib>=3.10.0",
+    "yt-dlp>=2025.5.22",
+    
+    # Language detection
+    "py3langid>=0.3.0",
+    
+    # Training utilities
+    "tensorboardX",
+    "wandb>=0.17.2",
+    
+    # DAW export
+    "reathon",
+    "webvtt-py",
+    
+    # Transcription
+    "whisperx>=3.3.4",
+    
+    # Audio quality metrics
+    "pesq",
+    
+    # Segmentation
+    "segmentation_models_pytorch>=0.3.4",
+    "thinc>=8.3.6",
+    
+    # Mamba/SSM (for Zonos)
+    "torchao",
+]
+
+[project.optional-dependencies]
+# CUDA-specific dependencies (installed separately based on platform)
+cuda = [
+    "triton>=3.0.0; sys_platform != 'win32'",
+    "triton-windows>=3.2.0; sys_platform == 'win32'",
+]
+
+# Windows-specific pre-built wheels
+windows = [
+    # These are installed via install.py due to complex platform requirements
+]
+
+# Development dependencies
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.7.0",
+    "mypy>=1.13.0",
+    "black>=24.10.0",
+    "pre-commit>=4.0.0",
+    "ipython>=8.29.0",
+]
+
+# Documentation
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.26.0",
+]
+
+# Audio recording (optional, requires system libraries)
+recording = [
+    "pyaudio",
+]
+
+[project.scripts]
+audiolab = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/d8ahazard/AudioLab"
+Documentation = "https://github.com/d8ahazard/AudioLab#readme"
+Repository = "https://github.com/d8ahazard/AudioLab"
+Issues = "https://github.com/d8ahazard/AudioLab/issues"
+
+[tool.setuptools]
+packages = ["handlers", "layouts", "modules", "util", "wrappers"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.yml", "*.css", "*.js"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+indent-width = 4
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without explicit strict parameter
+    "E731",   # do not assign a lambda expression
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["handlers", "layouts", "modules", "util", "wrappers"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = [
+    "modules/acestep/",
+    "modules/yue/",
+    "modules/wavetransfer/",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["testing"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+    | \.mypy_cache
+    | \.ruff_cache
+    | \.venv
+    | venv
+    | modules/acestep
+    | modules/yue
+    | modules/wavetransfer
+)/
+'''

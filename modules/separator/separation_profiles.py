@@ -27,19 +27,16 @@ BS Roformer will get significantly more weight in the instrumental blend.
 To view calculated weights for debugging:
 ```python
 from modules.separator.separation_profiles import SeparationProfile, print_model_weights
-print_model_weights(SeparationProfile.V2_HIGH_QUALITY)
+print_model_weights(SeparationProfile.V3_MAXIMUM)
 ```
 
 Output:
 ```
-=== V2 Profile Weights ===
+=== V3 Profile Weights ===
 Model                                              Vocal SDR    Vocal Weight   Inst SDR     Inst Weight
 ---------------------------------------------------------------------------------------------------------
-model_bs_roformer_ep_368_sdr_12.9628.ckpt          12.97        12.209         17.00        20.804
-melband_roformer_big_beta4.ckpt                    12.90        10.614         16.00        2.815
-MDX23C-8KFFT-InstVoc_HQ.ckpt                       11.80        1.176          15.00        0.381
----------------------------------------------------------------------------------------------------------
-TOTALS                                                          24.000                      24.000
+model_bs_roformer_ep_368_sdr_12.9628.ckpt          12.97        ...            17.00        ...
+...
 ```
 """
 
@@ -52,6 +49,16 @@ class SeparationProfile(str, Enum):
     """Quality profiles for audio separation."""
     V1_STANDARD = "v1"
     V2_HIGH_QUALITY = "v2"
+    V3_MAXIMUM = "v3"
+
+
+class SeparationPreset(str, Enum):
+    """Use-case specific presets for optimized separation."""
+    KARAOKE = "karaoke"           # Optimized for clean instrumental with no vocal bleed
+    REMIX = "remix"               # Balanced for DJ/remix use
+    PODCAST = "podcast"           # Optimized for voice isolation
+    ACAPPELLA = "acappella"       # Optimized for clean vocal extraction
+    INSTRUMENTAL = "instrumental"  # Optimized for clean instrumental
 
 
 @dataclass
@@ -60,63 +67,200 @@ class ModelSpec:
     
     SDR (Signal-to-Distortion Ratio) values should be provided from the model's
     published performance metrics. Weights will be auto-calculated from SDR if not provided.
+    
+    Attributes:
+        id: Model filename or identifier
+        vocal_sdr: Published vocal SDR in dB (higher = better vocal separation)
+        inst_sdr: Published instrumental SDR in dB (higher = better instrumental preservation)
+        vocal_weight: Override weight for vocal blending (auto-calculated if None)
+        inst_weight: Override weight for instrumental blending (auto-calculated if None)
+        description: Human-readable description of the model's strengths
+        kwargs: Additional model-specific parameters
     """
     id: str
-    vocal_sdr: Optional[float] = None  # Vocal SDR in dB (e.g., 12.97)
-    inst_sdr: Optional[float] = None   # Instrumental SDR in dB (e.g., 17.0)
-    vocal_weight: Optional[float] = None  # Auto-calculated if None
-    inst_weight: Optional[float] = None   # Auto-calculated if None
+    vocal_sdr: Optional[float] = None
+    inst_sdr: Optional[float] = None
+    vocal_weight: Optional[float] = None
+    inst_weight: Optional[float] = None
+    description: Optional[str] = None
     kwargs: Optional[Dict] = None
 
 
-# Model presets for each separation profile
-# These models are from the native AudioSeparate project and provide
-# the best quality for their respective profiles
+# =============================================================================
+# Model Definitions
+# =============================================================================
+# These models are sourced from the audio-separator project and represent
+# the current state-of-the-art in music source separation.
+
+# Core ensemble models
+MODELS = {
+    # BS-RoFormer variants (Band-Split RoFormer) - Best overall quality
+    "bs_roformer_ep368": ModelSpec(
+        id="model_bs_roformer_ep_368_sdr_12.9628.ckpt",
+        vocal_sdr=12.97,
+        inst_sdr=17.0,
+        description="Best overall separation, excellent for both vocals and instrumentals"
+    ),
+    
+    # Mel-Band RoFormer variants
+    "melband_big_beta4": ModelSpec(
+        id="melband_roformer_big_beta4.ckpt",
+        vocal_sdr=12.9,
+        inst_sdr=16.0,
+        description="Superior vocal clarity and harmonic handling"
+    ),
+    "melband_vocals": ModelSpec(
+        id="vocals_mel_band_roformer.ckpt",
+        vocal_sdr=12.3,
+        inst_sdr=15.5,
+        description="Balanced performance, good all-rounder"
+    ),
+    "melband_karaoke": ModelSpec(
+        id="mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+        vocal_sdr=10.2,
+        inst_sdr=16.8,
+        description="Optimized for karaoke - minimal vocal bleed in instrumental"
+    ),
+    
+    # MDX23C variants
+    "mdx23c_instvoc_hq": ModelSpec(
+        id="MDX23C-8KFFT-InstVoc_HQ.ckpt",
+        vocal_sdr=11.8,
+        inst_sdr=15.0,
+        description="Different architecture for ensemble diversity, reduces phase artifacts"
+    ),
+    
+    # Specialized models
+    "kim_vocal_1": ModelSpec(
+        id="Kim_Vocal_1.onnx",
+        vocal_sdr=11.5,
+        inst_sdr=14.5,
+        description="Fast ONNX model for quick processing"
+    ),
+    "kim_vocal_2": ModelSpec(
+        id="Kim_Vocal_2.onnx",
+        vocal_sdr=11.6,
+        inst_sdr=14.8,
+        description="Improved Kim vocal model"
+    ),
+    "uvr_voc_ft": ModelSpec(
+        id="UVR-MDX-NET-Voc_FT.onnx",
+        vocal_sdr=11.2,
+        inst_sdr=14.2,
+        description="UVR fine-tuned vocal model"
+    ),
+}
+
+
+# =============================================================================
+# Profile Presets
+# =============================================================================
+
 MODEL_PRESETS: Dict[SeparationProfile, List[ModelSpec]] = {
-    # v1 (Standard) - 2 models (fast, solid quality)
-    # Uses a smaller ensemble for faster processing while maintaining good quality
-    # Weights are auto-calculated from SDR performance metrics
+    # V1 (Standard) - 2 models (fast, solid quality)
+    # Best for quick processing where speed matters more than maximum quality
     SeparationProfile.V1_STANDARD: [
-        ModelSpec(
-            id="vocals_mel_band_roformer.ckpt",
-            vocal_sdr=12.3,  # Solid vocal separation
-            inst_sdr=15.5    # Good instrumental preservation
-        ),
-        ModelSpec(
-            id="MDX23C-8KFFT-InstVoc_HQ.ckpt",
-            vocal_sdr=11.8,  # High-quality MDX architecture
-            inst_sdr=15.0    # Strong instrumental performance
-        ),
+        MODELS["melband_vocals"],
+        MODELS["mdx23c_instvoc_hq"],
     ],
     
-    # v2 (High Quality) - 3 models (optimized for speed and quality)
-    # Uses the top-performing models from 2025:
-    # - BS Roformer (ViperX): Best overall separation (12.97 dB vocal SDR, 17.0 dB instrumental SDR)
-    # - Mel-Band Roformer Big Beta 4 (Unwa): Superior vocal clarity and harmonic handling (12.9 dB vocal SDR)
-    # - MDX23C: Different architecture for ensemble diversity, reduces phase artifacts
-    # Weights are auto-calculated from SDR performance metrics using exponential scaling
+    # V2 (High Quality) - 3 models (balanced speed and quality)
+    # Default profile for most use cases
     SeparationProfile.V2_HIGH_QUALITY: [
-        ModelSpec(
-            id="model_bs_roformer_ep_368_sdr_12.9628.ckpt",
-            vocal_sdr=12.97,  # Best overall, published metric
-            inst_sdr=17.0     # Exceptional instrumental preservation
-        ),
-        ModelSpec(
-            id="melband_roformer_big_beta4.ckpt",
-            vocal_sdr=12.9,   # Top-tier vocal clarity
-            inst_sdr=16.0     # Excellent instrumental quality
-        ),
-        ModelSpec(
-            id="MDX23C-8KFFT-InstVoc_HQ.ckpt",
-            vocal_sdr=11.8,   # Strong performance, different architecture
-            inst_sdr=15.0     # Solid instrumental separation
-        ),
+        MODELS["bs_roformer_ep368"],
+        MODELS["melband_big_beta4"],
+        MODELS["mdx23c_instvoc_hq"],
+    ],
+    
+    # V3 (Maximum Quality) - 5 models (best possible quality)
+    # For professional use where quality is paramount
+    SeparationProfile.V3_MAXIMUM: [
+        MODELS["bs_roformer_ep368"],
+        MODELS["melband_big_beta4"],
+        MODELS["melband_vocals"],
+        MODELS["mdx23c_instvoc_hq"],
+        MODELS["kim_vocal_2"],
     ],
 }
 
 
-# Default parameters for each profile
-PROFILE_DEFAULTS = {
+# =============================================================================
+# Use-Case Presets
+# =============================================================================
+
+PRESET_CONFIGS: Dict[SeparationPreset, Dict] = {
+    # Karaoke: Clean instrumental with minimal vocal bleed
+    SeparationPreset.KARAOKE: {
+        "models": [
+            MODELS["melband_karaoke"],
+            MODELS["bs_roformer_ep368"],
+            MODELS["mdx23c_instvoc_hq"],
+        ],
+        "ensemble_size": 3,
+        "residual_fill_pct": 0.50,  # Higher fill for cleaner instrumental
+        "bleed_guard_multiplier": 1.30,  # Aggressive bleed prevention
+        "description": "Optimized for karaoke - clean instrumentals with minimal vocal artifacts"
+    },
+    
+    # Remix: Balanced for DJ/production use
+    SeparationPreset.REMIX: {
+        "models": [
+            MODELS["bs_roformer_ep368"],
+            MODELS["melband_big_beta4"],
+        ],
+        "ensemble_size": 2,
+        "residual_fill_pct": 0.35,
+        "bleed_guard_multiplier": 1.10,
+        "description": "Balanced separation for remixing and DJ use"
+    },
+    
+    # Podcast: Optimized for voice isolation from background
+    SeparationPreset.PODCAST: {
+        "models": [
+            MODELS["bs_roformer_ep368"],
+            MODELS["melband_big_beta4"],
+            MODELS["kim_vocal_2"],
+        ],
+        "ensemble_size": 3,
+        "residual_fill_pct": 0.25,  # Less fill to preserve voice detail
+        "bleed_guard_multiplier": 1.00,
+        "description": "Optimized for isolating speech from background noise/music"
+    },
+    
+    # Acappella: Cleanest possible vocal extraction
+    SeparationPreset.ACAPPELLA: {
+        "models": [
+            MODELS["bs_roformer_ep368"],
+            MODELS["melband_big_beta4"],
+            MODELS["melband_vocals"],
+            MODELS["uvr_voc_ft"],
+        ],
+        "ensemble_size": 4,
+        "residual_fill_pct": 0.20,  # Minimal fill for pure vocals
+        "bleed_guard_multiplier": 0.90,  # Allow some instrumental to avoid vocal artifacts
+        "description": "Maximum vocal clarity for acappella extraction"
+    },
+    
+    # Instrumental: Cleanest possible instrumental
+    SeparationPreset.INSTRUMENTAL: {
+        "models": [
+            MODELS["melband_karaoke"],
+            MODELS["bs_roformer_ep368"],
+            MODELS["melband_big_beta4"],
+        ],
+        "ensemble_size": 3,
+        "residual_fill_pct": 0.55,  # High fill for clean instrumental
+        "bleed_guard_multiplier": 1.40,  # Very aggressive bleed prevention
+        "description": "Maximum instrumental purity for backing tracks"
+    },
+}
+
+
+# =============================================================================
+# Profile Defaults
+# =============================================================================
+
+PROFILE_DEFAULTS: Dict[SeparationProfile, Dict] = {
     SeparationProfile.V1_STANDARD: {
         "ensemble_size": 2,
         "residual_fill_pct": 0.40,
@@ -127,8 +271,17 @@ PROFILE_DEFAULTS = {
         "residual_fill_pct": 0.40,
         "bleed_guard_multiplier": 1.15,
     },
+    SeparationProfile.V3_MAXIMUM: {
+        "ensemble_size": 5,
+        "residual_fill_pct": 0.35,
+        "bleed_guard_multiplier": 1.20,
+    },
 }
 
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) -> List[ModelSpec]:
     """
@@ -144,13 +297,6 @@ def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) ->
     
     Returns:
         List of ModelSpec objects with calculated vocal_weight and inst_weight
-    
-    Algorithm:
-        1. Extract SDR values for vocals and instrumentals separately
-        2. Apply exponential scaling: exp(SDR / temperature)
-        3. Normalize to sum to N * 8.0 (where N = number of models)
-        4. This ensures weights are proportional to performance while maintaining
-           reasonable absolute values for blending
     """
     import math
     
@@ -162,8 +308,20 @@ def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) ->
     inst_sdrs = [m.inst_sdr for m in models if m.inst_sdr is not None]
     
     if not vocal_sdrs or not inst_sdrs:
-        # If no SDR data, use default weights
-        return models
+        # If no SDR data, use equal weights
+        n = len(models)
+        return [
+            ModelSpec(
+                id=m.id,
+                vocal_sdr=m.vocal_sdr,
+                inst_sdr=m.inst_sdr,
+                vocal_weight=8.0,
+                inst_weight=8.0,
+                description=m.description,
+                kwargs=m.kwargs
+            )
+            for m in models
+        ]
     
     # Calculate exponential-scaled weights (softmax-like)
     def calc_weights(sdrs: List[float], temp: float) -> List[float]:
@@ -186,6 +344,7 @@ def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) ->
             inst_sdr=model.inst_sdr,
             vocal_weight=model.vocal_weight if model.vocal_weight is not None else vocal_weights[i],
             inst_weight=model.inst_weight if model.inst_weight is not None else inst_weights[i],
+            description=model.description,
             kwargs=model.kwargs
         ))
     
@@ -203,7 +362,7 @@ def get_profile_models(profile: SeparationProfile, ensemble_size: Optional[int] 
     Returns:
         List of ModelSpec objects for the profile with calculated weights
     """
-    models = MODEL_PRESETS[profile]
+    models = list(MODEL_PRESETS.get(profile, MODEL_PRESETS[SeparationProfile.V2_HIGH_QUALITY]))
     
     if ensemble_size is not None:
         # Limit to requested ensemble size
@@ -213,6 +372,27 @@ def get_profile_models(profile: SeparationProfile, ensemble_size: Optional[int] 
     models = auto_calculate_weights(models)
     
     return models
+
+
+def get_preset_models(preset: SeparationPreset) -> List[ModelSpec]:
+    """
+    Get the list of models for a use-case preset with auto-calculated weights.
+    
+    Args:
+        preset: The use-case preset
+        
+    Returns:
+        List of ModelSpec objects for the preset with calculated weights
+    """
+    config = PRESET_CONFIGS.get(preset)
+    if not config:
+        return get_profile_models(SeparationProfile.V2_HIGH_QUALITY)
+    
+    models = list(config["models"])
+    ensemble_size = config.get("ensemble_size", len(models))
+    models = models[:ensemble_size]
+    
+    return auto_calculate_weights(models)
 
 
 def get_profile_defaults(profile: SeparationProfile) -> Dict:
@@ -225,7 +405,68 @@ def get_profile_defaults(profile: SeparationProfile) -> Dict:
     Returns:
         Dictionary of default parameters
     """
-    return PROFILE_DEFAULTS[profile].copy()
+    return PROFILE_DEFAULTS.get(profile, PROFILE_DEFAULTS[SeparationProfile.V2_HIGH_QUALITY]).copy()
+
+
+def get_preset_defaults(preset: SeparationPreset) -> Dict:
+    """
+    Get the default parameters for a use-case preset.
+    
+    Args:
+        preset: The use-case preset
+        
+    Returns:
+        Dictionary of default parameters
+    """
+    config = PRESET_CONFIGS.get(preset, {})
+    return {
+        "ensemble_size": config.get("ensemble_size", 3),
+        "residual_fill_pct": config.get("residual_fill_pct", 0.40),
+        "bleed_guard_multiplier": config.get("bleed_guard_multiplier", 1.15),
+    }
+
+
+def list_profiles() -> List[Dict]:
+    """
+    List all available separation profiles with their details.
+    
+    Returns:
+        List of profile information dictionaries
+    """
+    profiles = []
+    for profile in SeparationProfile:
+        defaults = get_profile_defaults(profile)
+        models = get_profile_models(profile)
+        profiles.append({
+            "id": profile.value,
+            "name": profile.name.replace("_", " ").title(),
+            "model_count": len(models),
+            "defaults": defaults,
+            "models": [m.id for m in models],
+        })
+    return profiles
+
+
+def list_presets() -> List[Dict]:
+    """
+    List all available use-case presets with their details.
+    
+    Returns:
+        List of preset information dictionaries
+    """
+    presets = []
+    for preset in SeparationPreset:
+        config = PRESET_CONFIGS.get(preset, {})
+        models = get_preset_models(preset)
+        presets.append({
+            "id": preset.value,
+            "name": preset.name.replace("_", " ").title(),
+            "description": config.get("description", ""),
+            "model_count": len(models),
+            "defaults": get_preset_defaults(preset),
+            "models": [m.id for m in models],
+        })
+    return presets
 
 
 def print_model_weights(profile: SeparationProfile) -> None:
@@ -245,12 +486,38 @@ def print_model_weights(profile: SeparationProfile) -> None:
     
     for model in models:
         model_name = model.id.split('/')[-1][:45]  # Truncate long names
-        print(f"{model_name:<50} {model.vocal_sdr:<12.2f} {model.vocal_weight:<14.3f} "
-              f"{model.inst_sdr:<12.2f} {model.inst_weight:<14.3f}")
+        v_sdr = model.vocal_sdr or 0.0
+        i_sdr = model.inst_sdr or 0.0
+        v_wt = model.vocal_weight or 0.0
+        i_wt = model.inst_weight or 0.0
+        print(f"{model_name:<50} {v_sdr:<12.2f} {v_wt:<14.3f} {i_sdr:<12.2f} {i_wt:<14.3f}")
     
-    total_v = sum(m.vocal_weight for m in models)
-    total_i = sum(m.inst_weight for m in models)
+    total_v = sum(m.vocal_weight or 0.0 for m in models)
+    total_i = sum(m.inst_weight or 0.0 for m in models)
     print("-" * 105)
     print(f"{'TOTALS':<50} {'':<12} {total_v:<14.3f} {'':<12} {total_i:<14.3f}")
     print()
 
+
+def print_preset_info(preset: SeparationPreset) -> None:
+    """
+    Debug utility: Print detailed information about a preset.
+    
+    Args:
+        preset: The preset to analyze
+    """
+    config = PRESET_CONFIGS.get(preset, {})
+    models = get_preset_models(preset)
+    defaults = get_preset_defaults(preset)
+    
+    print(f"\n=== {preset.value.upper()} Preset ===")
+    print(f"Description: {config.get('description', 'N/A')}")
+    print(f"Ensemble Size: {defaults['ensemble_size']}")
+    print(f"Residual Fill: {defaults['residual_fill_pct']:.0%}")
+    print(f"Bleed Guard: {defaults['bleed_guard_multiplier']:.2f}x")
+    print(f"\nModels ({len(models)}):")
+    for model in models:
+        print(f"  - {model.id}")
+        if model.description:
+            print(f"    {model.description}")
+    print()

@@ -1,0 +1,159 @@
+# AudioLab Docker Compose Configuration
+# ======================================
+#
+# Usage:
+#   docker-compose up -d              # Start AudioLab
+#   docker-compose up -d --build      # Rebuild and start
+#   docker-compose logs -f            # View logs
+#   docker-compose down               # Stop services
+#
+# For GPU support, ensure NVIDIA Container Toolkit is installed:
+#   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # Main AudioLab Application
+  # ==========================================================================
+  audiolab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: application
+    image: audiolab:latest
+    container_name: audiolab
+    restart: unless-stopped
+    
+    # GPU Support (requires NVIDIA Container Toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # Port mapping
+    ports:
+      - "7860:7860"    # Gradio UI
+      - "7861:7861"    # API (if separate)
+    
+    # Volume mounts for persistence
+    volumes:
+      - audiolab-models:/app/models          # ML models cache
+      - audiolab-outputs:/app/outputs        # Generated outputs
+      - audiolab-logs:/app/logs              # Application logs
+      - ./temp_uploads:/app/temp_uploads     # Temporary uploads (local)
+    
+    # Environment variables
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_HOME=/app/models/hf
+      - TRANSFORMERS_CACHE=/app/models/transformers
+      - TTS_HOME=/app/models
+      - COQUI_TOS_AGREED=1
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+      # Uncomment to enable Hugging Face token for gated models
+      # - HF_TOKEN=${HF_TOKEN}
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ==========================================================================
+  # Development Configuration (optional)
+  # ==========================================================================
+  audiolab-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    image: audiolab:dev
+    container_name: audiolab-dev
+    profiles:
+      - dev
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    ports:
+      - "7860:7860"
+    
+    volumes:
+      - .:/app                               # Mount source code for live reload
+      - audiolab-models:/app/models
+      - audiolab-outputs:/app/outputs
+      - audiolab-logs:/app/logs
+    
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - AUDIOLAB_ENV=development
+      - GRADIO_DEBUG=1
+
+  # ==========================================================================
+  # CPU-Only Configuration (no GPU required)
+  # ==========================================================================
+  audiolab-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: audiolab:cpu
+    container_name: audiolab-cpu
+    profiles:
+      - cpu
+    restart: unless-stopped
+    
+    ports:
+      - "7860:7860"
+    
+    volumes:
+      - audiolab-models:/app/models
+      - audiolab-outputs:/app/outputs
+      - audiolab-logs:/app/logs
+    
+    environment:
+      - CUDA_VISIBLE_DEVICES=""
+      - HF_HOME=/app/models/hf
+      - TRANSFORMERS_CACHE=/app/models/transformers
+      - TTS_HOME=/app/models
+      - COQUI_TOS_AGREED=1
+
+# ==========================================================================
+# Named Volumes
+# ==========================================================================
+volumes:
+  audiolab-models:
+    driver: local
+    name: audiolab-models
+  audiolab-outputs:
+    driver: local
+    name: audiolab-outputs
+  audiolab-logs:
+    driver: local
+    name: audiolab-logs
+
+# ==========================================================================
+# Networks (optional, for multi-service setups)
+# ==========================================================================
+networks:
+  default:
+    name: audiolab-network

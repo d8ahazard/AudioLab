@@ -32,10 +32,18 @@ class Separate(BaseWrapper):
     allowed_kwargs = {
         "separation_profile": TypedInput(
             default="v2",
-            description="Separation quality profile. v2 uses a larger ensemble of newer models for maximum fidelity (slower but best quality). v1 is faster with solid quality.",
+            description="Separation quality profile. v3 uses 5 models for maximum fidelity. v2 (recommended) balances quality and speed with 3 models. v1 is fastest with 2 models.",
             type=str,
-            choices=["v2", "v1"],
+            choices=["v3", "v2", "v1"],
             gradio_type="Dropdown"
+        ),
+        "separation_preset": TypedInput(
+            default=None,
+            description="Use-case specific preset. Overrides profile with optimized settings for: karaoke (clean instrumental), acappella (clean vocals), remix (balanced), podcast (voice isolation).",
+            type=str,
+            choices=[None, "karaoke", "acappella", "remix", "podcast", "instrumental"],
+            gradio_type="Dropdown",
+            render=False
         ),
         "ensemble_size": TypedInput(
             default=None,

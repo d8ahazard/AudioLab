@@ -1,0 +1,114 @@
+# AudioLab Core Requirements
+# This file contains the minimal dependencies needed to run AudioLab
+# Install with: pip install -r requirements-core.txt
+
+# Core audio processing
+librosa>=0.11.0
+soundfile>=0.13.1
+pydub>=0.25.1
+pyloudnorm>=0.1.1
+praat-parselmouth>=0.4.5
+pyworld
+psola
+torchcrepe
+nnAudio
+matchering>=2.0.6
+
+# Deep learning core (PyTorch installed separately for CUDA compatibility)
+pytorch_lightning>=2.5.1
+accelerate>=0.34.2
+transformers>=4.51.3
+diffusers>=0.32.2
+safetensors>=0.5.3
+einops>=0.8.0
+timm>=0.9.7
+x-transformers>=2.3.1
+torchdiffeq>=0.2.5
+torchlibrosa>=0.1.0
+
+# Audio separation
+audio-separator[gpu]>=0.32.0
+demucs>=4.0.1
+
+# ML utilities
+numpy>=2.0.2,<3.0.0
+scipy>=1.15.0
+faiss-cpu>=1.11.0
+onnx>=1.16.0
+onnxruntime-gpu>=1.21.1
+onnxsim
+
+# TTS dependencies
+phonemizer>=3.3.0
+num2words>=0.5.14
+unidecode>=1.3.8
+pypinyin>=0.53.0
+jieba
+cutlet
+fugashi[unidic-lite]
+hangul-romanize>=0.1.0
+cn2an
+kanjize
+sudachipy>=0.6.10
+sudachidict-full>=20241021
+chatterbox-tts
+
+# Hugging Face ecosystem
+huggingface_hub>=0.27.1
+datasets>=3.4.1
+hf_xet
+
+# Web framework
+gradio>=5.29.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.9.0
+
+# Audio codecs
+descript-audio-codec==1.0.0
+descript-audiotools==0.7.2
+
+# Utilities
+tqdm>=4.66.0
+rich>=13.9.0
+click>=8.1.0
+pyyaml>=6.0.0
+omegaconf>=2.3.0
+ml_collections
+loguru>=0.7.3
+chardet
+ftfy>=6.3.1
+mutagen>=1.47.0
+xxhash
+attributedict
+
+# Media handling
+ffmpeg-python
+ffmpeg_progress_yield
+opencv-python>=4.10.0.84
+matplotlib>=3.10.0
+yt-dlp>=2025.5.22
+
+# Language detection
+py3langid>=0.3.0
+
+# Training utilities
+tensorboardX
+wandb>=0.17.2
+
+# DAW export
+reathon
+webvtt-py
+
+# Transcription
+whisperx>=3.3.4
+
+# Audio quality metrics
+pesq
+
+# Segmentation
+segmentation_models_pytorch>=0.3.4
+thinc>=8.3.6
+
+# Mamba/SSM
+torchao

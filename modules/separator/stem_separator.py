@@ -436,7 +436,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 results[base_name]["instrumental_list"].append(istem)
                 results[base_name]["v_weights"].append(v_wt)
                 results[base_name]["i_weights"].append(i_wt)
-                self._advance_progress(f"Ensemble model '{model_name}' processed for {base_name}.")
+                # User-friendly progress message
+                model_idx = models_with_weights.index((model_name, v_wt, i_wt)) + 1
+                self._advance_progress(f"Separating with AI model {model_idx} of {len(models_with_weights)}...")
         for base_name, res in results.items():
             # Restore original, strict blending behavior
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
@@ -540,7 +542,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     res["other"] = arr
             if os.path.exists(tmp_mix_wav):
                 os.remove(tmp_mix_wav)
-            self._advance_progress(f"6-stem separation completed for {base_name}.")
+            self._advance_progress("Separated drums, bass, guitar, piano, and other instruments")
 
     def _alt_bass_separation_all(self, results: Dict[str, Dict]) -> None:
         """
@@ -569,7 +571,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     res["bass"] = arrb
             if os.path.exists(tmp_instru_wav):
                 os.remove(tmp_instru_wav)
-            self._advance_progress(f"Alternate bass separation done for {base_name}.")
+            self._advance_progress("Bass track isolated with enhanced model")
 
     def _advanced_drum_separation_all(self, results: Dict[str, Dict]) -> None:
         """
@@ -624,7 +626,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             if res.get("other") is None:
                 res["other"] = np.zeros_like(drums)
             res["drums_other"] = drums_other
-            self._advance_progress(f"Advanced drum separation done for {base_name}.")
+            self._advance_progress("Drum components separated (kick, snare, hi-hat, cymbals)")
 
     def _woodwinds_separation_all(self, results: Dict[str, Dict]) -> None:
         """
@@ -660,7 +662,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 leftover_other[:, :new_woodwinds.shape[-1]] = self._residual_subtract(leftover_other[:, :new_woodwinds.shape[-1]], new_woodwinds, sr)
             res["woodwinds"] = new_woodwinds
             res["other"] = leftover_other
-            self._advance_progress(f"Woodwinds separated for {base_name}.")
+            self._advance_progress("Woodwind instruments isolated")
 
     def _save_all_stems(self, results: Dict[str, Dict]) -> List[str]:
         """
@@ -672,7 +674,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         Returns:
             List[str]: List of output file paths.
         """
-        self._advance_progress("Saving all stems...")
+        self._advance_progress("Saving separated audio files...")
         output_files = []
         stem_names = {
             "vocals": "(Vocals)",
@@ -708,7 +710,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     output_path_file = os.path.join(output_folder, output_name)
                     sf.write(output_path_file, res[stem_key].T, sr, subtype="FLOAT")
                     output_files.append(output_path_file)
-            self._advance_progress(f"Stems saved for {base_name}.")
+            self._advance_progress("Audio files saved successfully")
         for base_name, res in results.items():
             output_folder = res["output_folder"]
             for temp_file in os.listdir(output_folder):
@@ -793,7 +795,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.separator.output_dir = output_folder
         self.separator.model_instance.output_dir = output_folder
         out_files = self.separator.separate(tmp_file)
-        self._advance_progress("Background vocal splitting executed.")
+        self._advance_progress("Background vocals separated from lead vocals")
         out_files = [os.path.join(output_folder, f) for f in out_files]
 
         bg = None
@@ -874,7 +876,15 @@ class EnsembleDemucsMDXMusicSeparationModel:
                             break
                 if chosen_file:
                     current_array, _ = librosa.load(chosen_file, sr=sr, mono=False)
-                self._advance_progress(f"TRANSFORM: {out_label} on {stem_label} for {base_name}")
+                # User-friendly transform message
+                transform_messages = {
+                    "No Reverb": "Reverb removed",
+                    "dry": "Echo/delay removed", 
+                    "No Crowd": "Crowd noise removed",
+                    "No Noise": "Background noise removed"
+                }
+                friendly_msg = transform_messages.get(out_label, f"{out_label} applied")
+                self._advance_progress(f"{friendly_msg} from {stem_label}")
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
         return current_array
@@ -1036,90 +1046,3 @@ def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, 
         "residual_blend": kwargs.get("residual_blend", 0.4)
     }
     return predict_with_model(options, callback)
-
-
-def debug_ensemble(tgt_file):
-    import time
-    model = EnsembleDemucsMDXMusicSeparationModel({}, None)
-    base_name = os.path.splitext(os.path.basename(tgt_file))[0]
-    loaded, sr = librosa.load(tgt_file, sr=44100, mono=False)
-
-    for i in range(1, 6):
-        out_dir = os.path.join(output_path, "ensemble_debug")
-        start = time.time()
-        model.ensemble_strength = i
-        out_dir = os.path.join(out_dir, str(model.ensemble_strength))
-        os.makedirs(out_dir, exist_ok=True)
-        file_data = {"base_name": base_name, "mix_np": loaded, "sr": sr, "output_folder": out_dir}
-        results = model._ensemble_separate_all([file_data])
-        model._save_all_stems(results)
-        print(f"Time taken for {i} models: {time.time() - start}")
-
-
-def debug_bg_sep(tgt_file):
-    import time
-    separator = Separator(
-        log_level=logging.ERROR,
-        model_file_dir=os.path.join(app_path, "models", "audio_separator"),
-        invert_using_spec=True,
-        use_autocast=True
-    )
-    bg_models = [
-        "MelBandRoformerSYHFT.ckpt",
-        "model_chorus_bs_roformer_ep_267_sdr_24.1275.ckpt",
-        "kuielab_a_other.onnx",
-        "kuielab_b_other.onnx",
-    ]
-    out_dir = os.path.join(output_path, "bg_sep_debug")
-    os.makedirs(out_dir, exist_ok=True)
-    separator.output_dir = out_dir
-    for bg_model in bg_models:
-        separator.load_model(bg_model)
-        start = time.time()
-        main, bg_vox = separator.separate(tgt_file)
-        print(f"Time taken for {bg_model}: {time.time() - start}")
-
-
-def debug_reverb(tgt_file):
-    reverb_models = [
-        ("UVR-De-Echo-Aggressive.pth", "No Echo", "Echo"),
-        ("UVR-De-Echo-Normal.pth", "No Echo", "Echo"),
-        ("UVR-DeEcho-DeReverb.pth", "No reverb", "Reverb"),
-        ("MDX23C-De-Reverb-aufr33-jarredou.ckpt", "dry", "No dry"),
-        ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", "noreverb", "reverb"),
-        ("dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt", "noreverb", "reverb"),
-        ("dereverb-echo_mel_band_roformer_sdr_10.0169.ckpt", "dry", "No dry"),
-        ("dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt", "dry", "No dry"),
-        ("Reverb_HQ_By_FoxJoy.onnx", "No Reverb", "Reverb"),
-    ]
-    import time
-    from audio_separator.separator import Separator
-    separator = Separator(
-        log_level=logging.ERROR,
-        model_file_dir=os.path.join(app_path, "models", "audio_separator"),
-        invert_using_spec=True,
-        use_autocast=True
-    )
-    output_dir = os.path.join(output_path, "reverb_debug")
-    os.makedirs(output_dir, exist_ok=True)
-    separator.output_dir = output_dir
-    # Delete all existing files in output_dir
-    for f in os.listdir(output_dir):
-        os.remove(os.path.join(output_dir, f))
-
-    for (model_file, dry_string, wet_string) in reverb_models:
-        print(f"Running reverb model: {model_file}")
-        separator.load_model(model_file)
-        start_time = time.time()
-        output_files = separator.separate(tgt_file)
-        output_files = [os.path.join(output_dir, f) for f in output_files]
-        dry_file = None
-        wet_file = None
-        for f in output_files:
-            if dry_string in f:
-                dry_file = os.path.join(output_dir, f)
-            if wet_string in f:
-                wet_file = os.path.join(output_dir, f)
-        if not dry_file or not wet_file:
-            print(f"Couldn't find files for {dry_string} and {wet_string} in {output_files}")
-        print(f"Time taken for {model_file}: {time.time() - start_time}")

@@ -1,5 +1,15 @@
+"""
+AudioLab Audio Track Module
+===========================
+
+Provides AudioTrack class for generating Ableton Live project XML elements
+and audio pitch shifting utilities.
+"""
+
+from __future__ import annotations
+
 import xml.etree.ElementTree as ET
-from typing import Union, Tuple
+from typing import Optional, Tuple, Union
 
 import numpy as np
 from pydub import AudioSegment

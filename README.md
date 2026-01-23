@@ -1,254 +1,416 @@
 # AudioLab
 
-![AudioLab Logo](./res/audiolab_lg.png)
+<p align="center">
+  <img src="./res/audiolab_lg.png" alt="AudioLab Logo" width="400">
+</p>
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![CUDA](https://img.shields.io/badge/CUDA-cu121-brightgreen)](https://developer.nvidia.com/cuda-downloads)
-[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen)](CONTRIBUTING.md)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/CUDA-12.4-brightgreen" alt="CUDA 12.4"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/contributions-welcome-brightgreen" alt="Contributions Welcome"></a>
+</p>
 
-> **Huge thanks to RunDiffusion for supporting this project!** 🎉
-
-AudioLab is an open-source powerhouse for voice-cloning and audio separation, built with modularity and extensibility in mind. Whether you're an audio engineer, researcher, or just a curious tinkerer, AudioLab has you covered.
-
----
-
-## 🌟 Features
-
-### 🎵 Audio Processing Capabilities
-- **🎼 Music Generation:** Create music from scratch or remix existing tracks using YuE.
-- **🎵 Song Generation:** Create full-length songs with vocals and instrumentals using DiffRhythm.
-- **🗣️ Zonos Text-to-Speech:** High-quality TTS with deep learning.
-- **📢 Text-to-Speech:** Clone voices and generate natural-sounding speech with Coqui TTS.
-- **🔊 Text-to-Audio:** Generate sound effects and ambient audio from text descriptions using Stable Audio.
-- **🎛️ Audio Separation:** Isolate vocals, drums, bass, and other components from a track.
-- **🎤 Vocal Isolation:** Distinguish lead vocals from background.
-- **🔇 Noise Removal:** Get rid of echo, crowd noise, and unwanted sounds.
-- **🧬 Voice Cloning:** Train high-quality voice models with just 30-60 minutes of data.
-- **🚀 Audio Super Resolution:** Enhance and clean up audio.
-- **🎚️ Remastering:** Apply spectral characteristics from a reference track.
-- **🎵 Timbre Transfer:** Transform instrument sounds while preserving musical content using WaveTransfer.
-- **🔄 Audio Conversion:** Convert between popular formats effortlessly.
-- **📜 Export to DAW:** Easily create Ableton Live and Reaper projects from separated stems.
-
-### 🤖 Automation Features
-- **Auto-preprocessing** for voice model training.
-- **Merge separated sources** back into a single file with ease.
+<p align="center">
+  <strong>Open-source audio processing suite for voice cloning, separation, TTS, and music generation</strong>
+</p>
 
 ---
 
-## 🛠️ Pre-requisites
+## Overview
 
-Before you dive in, make sure you have:
+AudioLab is a comprehensive audio processing application that combines state-of-the-art AI models for:
 
-1. **Python 3.10** – *Because match statements exist, and fairseq is allergic to 3.11.*
-2. **CUDA 12.4** – *Other versions? Maybe fine. Maybe not. Do you like surprises?*
-3. **Virtual Environment** – *Strongly recommended to avoid dependency chaos.*
-4. **Windows Users** – *You're in for an adventure! Zonos/Triton can be a pain. Make sure to install MSVC and add these paths to your environment variables:*
-   ```plaintext
-   C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64
-   C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx86\x86
+- **Audio Separation** — Isolate vocals, instruments, drums, and more from any audio track
+- **Voice Cloning** — Train custom voice models with RVC for high-quality voice conversion
+- **Text-to-Speech** — Generate natural speech with multiple TTS engines (Zonos, DIA, Chatterbox, Coqui)
+- **Music Generation** — Create original music with YuE, ACE-Step, and Stable Audio
+- **Audio Enhancement** — Super-resolution, remastering, noise removal, and format conversion
+
+Built with a modular architecture, AudioLab provides both a web-based UI (Gradio) and a comprehensive REST API (FastAPI).
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-Model Separation** | Ensemble-based separation using BS-RoFormer, Mel-Band Roformer, and MDX23C for maximum quality |
+| **RVC Voice Cloning** | Train custom voice models with 30-60 minutes of audio data |
+| **Advanced TTS** | Multiple engines: Zonos (emotional), DIA (dialogue), Chatterbox, Coqui XTTS |
+| **Music Generation** | Full-length song generation with lyrics support via YuE and ACE-Step |
+| **DAW Export** | Export stems directly to Ableton Live and Reaper project formats |
+| **REST API** | Complete programmatic access to all features |
+
+## Screenshots
+
+| Zonos TTS | Coqui TTS |
+|-----------|-----------|
+| ![Zonos](./res/img/ss1_zonos.png) | ![TTS](./res/img/ss2_tts.png) |
+
+| YuE Music | Process Tab |
+|-----------|-------------|
+| ![YuE](./res/img/ss3_yue.png) | ![Process](./res/img/ss4_process.png) |
+
+---
+
+## Requirements
+
+### System Requirements
+
+- **Python**: 3.10, 3.11, or 3.12 (3.10 recommended for best compatibility)
+- **CUDA**: 12.4 (for GPU acceleration)
+- **RAM**: 16 GB minimum, 32 GB recommended
+- **VRAM**: 8 GB minimum for GPU inference, 12+ GB for training
+- **Storage**: 20 GB for models and dependencies
+
+### Windows Prerequisites
+
+For Windows users, install the following before proceeding:
+
+1. **Visual C++ Build Tools** — Required for compiling certain dependencies
+   - [Download VC Redist x64](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+   - [Download Build Tools](https://aka.ms/vs/17/release/vs_BuildTools.exe)
+
+2. **CUDA Toolkit 12.4**
+   - [Download CUDA 12.4](https://developer.download.nvidia.com/compute/cuda/12.4.0/local_installers/cuda_12.4.0_551.61_windows.exe)
+   - Verify installation: `nvcc --version`
+
+3. **Add MSVC paths to environment** (for Triton/Zonos):
+   ```
+   C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\<version>\bin\Hostx64\x64
    ```
 
-> **Note:** This project assumes basic Python knowledge. If you've never set up a virtual environment before... now's the time to learn! 🚀
+---
+
+## Installation
+
+### Quick Start (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/d8ahazard/AudioLab.git
+cd AudioLab
+
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/macOS
+# or
+.\venv\Scripts\activate   # Windows
+
+# Run the unified installer
+python install.py
+```
+
+The installer automatically detects your system configuration (OS, GPU, CUDA version) and installs the appropriate dependencies.
+
+### Installation Options
+
+```bash
+python install.py --cpu        # CPU-only installation (no CUDA required)
+python install.py --dev        # Include development tools
+python install.py --minimal    # Core dependencies only
+python install.py --help       # Show all options
+```
+
+### Docker Installation
+
+For containerized deployment:
+
+```bash
+# GPU-enabled
+docker-compose up -d
+
+# CPU-only
+docker-compose --profile cpu up -d
+
+# Development mode (with live code reload)
+docker-compose --profile dev up -d
+```
+
+### Manual Installation
+
+If you prefer manual installation:
+
+```bash
+# Install PyTorch with CUDA
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# Install custom wheels
+pip install -r requirements-wheels.txt
+
+# Install core dependencies
+pip install -r requirements-core.txt
+
+# Install CUDA-specific packages (optional)
+pip install -r requirements-cuda.txt
+```
 
 ---
 
-## 🚑 Windows Troubleshooting
+## Usage
 
-If dependencies refuse to install on Windows, try the following:
+### Starting the Application
 
-- Install **MSVC Build Tools**:
-  - [VC Redist x64](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-  - [Build Tools](https://aka.ms/vs/17/release/vs_BuildTools.exe)
-- Ensure **CUDA is correctly installed**:
-  - Check version: `nvcc --version`
-  - [Download CUDA 12.4](https://developer.download.nvidia.com/compute/cuda/12.4.0/local_installers/cuda_12.4.0_551.61_windows.exe)
-- DLL Errors? Try moving necessary DLLs from `/libs` to:
-  ```plaintext
-  .venv\lib\site-packages\pandas\_libs\window
-  .venv\lib\site-packages\sklearn\.libs
-  C:\Program Files\Python310\ (or wherever your Python is installed)
-  ```
+```bash
+# Activate virtual environment
+source venv/bin/activate  # Linux/macOS
+.\venv\Scripts\activate   # Windows
 
----
+# Start AudioLab
+python main.py
 
-## 🚀 Installation
+# With options
+python main.py --listen          # Bind to 0.0.0.0 for network access
+python main.py --port 8080       # Custom port
+python main.py --api-only        # API server only (no UI)
+```
 
-> **Heads up!** The `requirements.txt` is *not* complete on purpose. Use the setup scripts instead!
+Access the web interface at: `http://127.0.0.1:7860`
 
-### 🛠 Steps
+### API Documentation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/audiolab.git
-   cd audiolab
-   ```
-2. Set up a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Windows: venv\Scripts\activate
-   ```
-3. Run the setup script:
-   ```bash
-   ./setup.sh  # Windows: setup.bat
-   ```
-
-**Common Issues & Fixes:**
-- Downgrade `pip` if installation fails:
-  ```bash
-  python -m pip install pip==24.0
-  ```
-- Install older CUDA drivers if needed: [CUDA Toolkit Archive](https://developer.nvidia.com/cuda-toolkit-archive)
-- Install `fairseq` manually if necessary:
-  ```bash
-  pip install fairseq>=0.12.2 --no-deps
-  ```
+When running, API documentation is available at:
+- Swagger UI: `http://127.0.0.1:7860/api/docs`
+- ReDoc: `http://127.0.0.1:7860/api/redoc`
 
 ---
 
-## 🎛️ Running AudioLab
+## Processing Pipeline
 
-1. Activate your virtual environment:
-   ```bash
-   source venv/bin/activate  # Windows: venv\Scripts\activate.bat
-   ```
-2. Run the application:
-   ```bash
-   python main.py
-   ```
-3. Optional flags:
-   - `--listen` → Bind to `0.0.0.0` for remote access.
-   - `--port PORT` → Specify a custom port.
+AudioLab uses a modular wrapper system for audio processing:
 
----
+```
+Input → [Separate] → [Clone] → [Remaster] → [Super-Res] → [Merge] → [Export] → Output
+```
 
-## 📸 Screenshots
+Each processor can be enabled/disabled independently. The system automatically handles:
+- Multi-file batch processing
+- Progress tracking with ETA
+- Intermediate result caching
+- Error recovery
 
-| ![Screenshot 1](./res/img/ss1_zonos.png) | ![Screenshot 2](./res/img/ss2_tts.png) |
-|---------------------------------|---------------------------------|
-| ![Screenshot 3](./res/img/ss3_yue.png) | ![Screenshot 4](./res/img/ss4_process.png) |
-| ![Screenshot 5](./res/img/ss4_train.png) | |
+### Available Processors
 
----
-
-## 💻 Key Features
-
-### Sound Forge: Text-to-Audio Generation
-
-Generate high-quality sound effects, ambient audio, and musical samples from text descriptions:
-
-- **🔊 Text Prompting:** Create sounds by describing them in natural language.
-- **⏱️ Variable Duration:** Generate audio up to 47 seconds long.
-- **🎛️ Full Control:** Adjust parameters like inference steps and guidance scale.
-- **🎭 Negative Prompts:** Specify what to avoid in your generated audio.
-- **🎲 Multiple Variations:** Generate different versions of the same prompt.
-
-Example prompts:
-- "A peaceful forest ambience with birds chirping and leaves rustling"
-- "An electronic beat with pulsing bass at 120 BPM"
-- "A sci-fi spaceship engine humming"
-
-
-### WaveTransfer: Instrument Timbre Transfer
-
-Transform the sound characteristics of one instrument to another using diffusion models:
-
-- **🎵 Preserve Musical Content:** Transform timbre while keeping the original musical composition intact.
-- **🎸 Multi-instrument Support:** Transfer between any types of musical instruments.
-- **🔄 Two-Step Process:** Easy-to-follow train-then-generate workflow for custom instruments.
-- **⚙️ Flexible Configuration:** Adjust noise schedules and steps for different transfer qualities.
-- **💾 Memory Optimization:** Use chunked processing for longer audio files.
-
-Example applications:
-- Transform a piano recording to sound like a guitar
-- Create hybrid instruments with unique sound characteristics
-- Convert acoustic instrument recordings to electronic sounds
-- Experiment with novel timbres for music production
-
-Example applications:
-- Create audiobooks with natural narration
-- Develop voice assistants with your own voice
-- Generate voiceovers for videos and presentations
-- Create accessible content for those with reading difficulties
-
-### Transcribe: Advanced Speech-to-Text
-
-Convert audio recordings to text with speaker identification and precise timing:
-
-- **👥 Speaker Diarization:** Automatically identify and label different speakers.
-- **⏱️ Word-Level Timestamps:** Create perfectly aligned text with audio timing.
-- **🌍 Multilingual Support:** Transcribe content in multiple languages.
-- **📊 Batch Processing:** Process multiple audio files in sequence.
-- **📋 Multiple Output Formats:** Generate both JSON metadata and readable text.
-
-Example applications:
-- Create subtitles for videos with speaker labels
-- Transcribe interviews and meetings with speaker attribution
-- Generate searchable archives of audio content
-- Create training data for voice and speech models
-
-### Process Tab: Audio Processing Pipeline
-
-The heart of AudioLab with modular audio processing through a chain of wrappers:
-
-- **🔊 Separate:** Split audio into vocals, drums, bass, and other instruments.
-- **🎤 Clone:** Apply voice conversion with trained models.
-- **⚡ Remaster:** Enhance audio based on reference tracks.
-- **🔬 Super Resolution:** Improve audio detail and clarity.
-- **🔀 Merge:** Mix separate audio tracks with complete control.
-- **🔄 Convert:** Change audio formats with customizable settings.
-
-Example workflows:
-- Extract vocals → Apply voice clone → Merge with original instruments
-- Split song → Enhance each component → Remix with new levels
-- Remaster old recordings using modern reference tracks
-
-### RVC Training: Voice Model Creation
-
-Train custom voice models for voice conversion and cloning:
-
-- **🎯 One-Click Process:** Simplified training with automatic preprocessing.
-- **⚙️ Advanced Options:** Fine-tune training for specific voice characteristics.
-- **📊 Training Visualization:** Monitor progress in real-time.
-- **🔄 Model Management:** Organize and share your trained voice models.
-
-Example applications:
-- Create virtual versions of your own voice
-- Develop character voices for games or animations
-- Restore or enhance historical recordings
+| Processor | Description |
+|-----------|-------------|
+| **Separate** | AI-powered stem separation (vocals, instruments, drums) |
+| **Clone** | Voice conversion using trained RVC models |
+| **Remaster** | Apply spectral characteristics from reference tracks |
+| **Super Resolution** | Enhance audio quality and clarity |
+| **Merge** | Combine stems with custom mixing |
+| **Convert** | Format conversion (WAV, MP3, FLAC, etc.) |
+| **Export** | DAW project export (Ableton, Reaper) |
+| **Compare** | A/B comparison of original and processed audio |
 
 ---
 
-## 🤝 Acknowledgements
+## Audio Separation
 
-AudioLab is powered by some fantastic open-source projects:
-- 🎵 [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) – Core for audio separation.
-- 🎚 [matchering](https://github.com/sergree/matchering) – Professional-grade remastering.
-- 🔊 [versatile-audio-super-resolution](https://github.com/d8ahazard/versatile_audio_super_resolution) – High-quality audio enhancement.
-- 🎙 [Real-Time-Voice-Cloning](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) – Voice cloning.
-- 🎶 [MVSEP-MDX23](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model) – Music separation.
-- 📜 [WhisperX](https://github.com/m-bain/whisperX) – Audio transcription.
-- 📜 [Whisper](https://github.com/openai/whisper) - Original Audio transcription engine.
-- 🗣 [Coqui TTS](https://github.com/coqui-ai/TTS) – State-of-the-art TTS.
-- 🎼 [YuE](https://github.com/multimodal-art-projection/YuE) – Music generation.
-- 🏆 [Zonos](https://github.com/Zyphra/Zonos) – High-quality TTS.
-- 🔈 [Stable Audio](https://github.com/Stability-AI/stable-audio-tools) – Text-to-audio generation.
-- 🎵 [DiffRhythm](https://github.com/ASLP-lab/DiffRhythm) – Full-length song generation with latent diffusion.
-- 🎵 [WaveTransfer](https://github.com/tencent-ailab/bddm) – Instrument timbre transfer with diffusion.
+AudioLab uses an ensemble of state-of-the-art models for maximum separation quality:
+
+### Separation Profiles
+
+| Profile | Models | Quality | Speed |
+|---------|--------|---------|-------|
+| **V1 (Standard)** | 2 models | Good | Fast |
+| **V2 (High Quality)** | 3 models | Excellent | Moderate |
+
+### Supported Stems
+
+- Main Vocals / Background Vocals
+- Instrumental (full)
+- Drums (with sub-components: kick, snare, hi-hat, cymbals)
+- Bass
+- Guitar
+- Piano/Keys
+- Woodwinds
+- Other instruments
+
+### Post-Processing
+
+- Reverb removal
+- Echo/delay removal
+- Noise reduction
+- Crowd noise removal
 
 ---
 
-## 🌟 Contribute
+## Voice Cloning (RVC)
 
-Want to help? Check out the [Contributing Guide](CONTRIBUTING.md)! 
+Train custom voice models for high-quality voice conversion:
+
+### Training Requirements
+
+- **Audio Data**: 30-60 minutes of clean speech
+- **Format**: WAV preferred, 44.1kHz stereo
+- **Quality**: Clear recordings without background noise
+
+### Quick Training
+
+1. Navigate to the **Train RVC** tab
+2. Upload training audio files
+3. Configure training parameters (or use defaults)
+4. Click "Start Training"
+5. Model will be saved to `models/trained/`
+
+### Inference
+
+1. Go to the **Process** tab
+2. Enable "Separate" and "Clone" processors
+3. Select your trained voice model
+4. Process your audio
 
 ---
 
-## 📜 License
+## Text-to-Speech
 
-Licensed under MIT. See [LICENSE](LICENSE) for details.
+Multiple TTS engines are available:
+
+| Engine | Strengths | Voice Cloning |
+|--------|-----------|---------------|
+| **Zonos** | Emotional expression, high quality | Yes (reference audio) |
+| **DIA** | Realistic dialogue, multiple speakers | Yes (with transcript) |
+| **Chatterbox** | Natural prosody | Yes (reference audio) |
+| **Coqui XTTS** | Multilingual support | Yes (voice samples) |
+
+### Usage
+
+1. Navigate to the **TTS** tab
+2. Select your preferred engine
+3. Enter text and configure options
+4. Upload reference audio for voice cloning (optional)
+5. Generate speech
 
 ---
 
-Made with ❤️ by the AudioLab team. (AKA D8ahazard)
+## Music Generation
+
+Generate original music with AI:
+
+### Available Models
+
+| Model | Capabilities |
+|-------|-------------|
+| **YuE** | Full song generation with lyrics, multiple genres |
+| **ACE-Step** | Fast high-quality generation with LoRA customization |
+| **Stable Audio** | Sound effects and ambient audio from text prompts |
+
+### Usage
+
+1. Navigate to the **Music** tab
+2. Select your model
+3. Enter prompts/lyrics
+4. Configure generation parameters
+5. Generate and preview
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+<details>
+<summary><strong>CUDA not detected</strong></summary>
+
+1. Verify CUDA installation: `nvcc --version`
+2. Check PyTorch CUDA: `python -c "import torch; print(torch.cuda.is_available())"`
+3. Reinstall PyTorch with CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+</details>
+
+<details>
+<summary><strong>Out of memory errors</strong></summary>
+
+1. Reduce batch size in settings
+2. Use V1 separation profile instead of V2
+3. Process shorter audio segments
+4. Close other GPU applications
+</details>
+
+<details>
+<summary><strong>DLL errors on Windows</strong></summary>
+
+Copy required DLLs from `/libs` to:
+- `.venv/lib/site-packages/pandas/_libs/window`
+- `.venv/lib/site-packages/sklearn/.libs`
+- Your Python installation directory
+</details>
+
+<details>
+<summary><strong>espeak-ng not found</strong></summary>
+
+- **Windows**: Download and install from [espeak-ng releases](https://github.com/espeak-ng/espeak-ng/releases)
+- **Linux**: `sudo apt install espeak-ng`
+- **macOS**: `brew install espeak-ng`
+</details>
+
+---
+
+## Project Structure
+
+```
+AudioLab/
+├── handlers/          # Core handler modules (config, downloads, etc.)
+├── layouts/           # Gradio UI layouts for each tab
+├── modules/           # AI model implementations
+│   ├── acestep/       # ACE-Step music generation
+│   ├── cloning/       # Voice cloning utilities
+│   ├── rvc/           # RVC voice conversion
+│   ├── separator/     # Audio separation
+│   ├── stable_audio/  # Stable Audio generation
+│   ├── yue/           # YuE music generation
+│   └── zonos/         # Zonos TTS
+├── util/              # Shared utilities
+├── wrappers/          # Processing pipeline wrappers
+├── main.py            # Application entry point
+├── api.py             # FastAPI configuration
+└── install.py         # Unified installer
+```
+
+---
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+
+```bash
+# Install with development dependencies
+python install.py --dev
+
+# Run tests
+pytest
+
+# Format code
+ruff format .
+ruff check --fix .
+```
+
+---
+
+## Acknowledgements
+
+AudioLab builds upon these excellent open-source projects:
+
+- [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) — Core separation library
+- [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) — Voice cloning
+- [Coqui TTS](https://github.com/coqui-ai/TTS) — Text-to-speech
+- [Zonos](https://github.com/Zyphra/Zonos) — Emotional TTS
+- [YuE](https://github.com/multimodal-art-projection/YuE) — Music generation
+- [Stable Audio](https://github.com/Stability-AI/stable-audio-tools) — Audio generation
+- [WhisperX](https://github.com/m-bain/whisperX) — Transcription
+- [matchering](https://github.com/sergree/matchering) — Audio remastering
+
+Special thanks to **RunDiffusion** for supporting this project.
+
+---
+
+## License
+
+AudioLab is released under the [MIT License](LICENSE).
+
+---
+
+<p align="center">
+  Made with care by <a href="https://github.com/d8ahazard">D8ahazard</a>
+</p>
