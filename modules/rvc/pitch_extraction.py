@@ -7,7 +7,6 @@ import faiss
 import numpy as np
 import pyworld
 import torch
-import torchcrepe
 from scipy import signal
 
 from handlers.config import model_path
@@ -22,6 +21,7 @@ BASE_MODELS_DIR = os.path.join(model_path, "rvc")
 
 
 class FeatureExtractor:
+    _rmvpe_cache = {}
     def __init__(self, tgt_sr, config, onnx=False):
         self.x_pad, self.x_query, self.x_center, self.x_max, self.is_half = (
             config.x_pad,
@@ -54,12 +54,23 @@ class FeatureExtractor:
             "mangio-crepe-tiny": partial(self.get_f0_crepe_computation, model='model')
         }
         self.vis = F0Visualizer()
+        self._rmvpe_shared = False
 
     def __del__(self):
-        if hasattr(self, "model_rmvpe") and self.model_rmvpe is not None:
+        if hasattr(self, "model_rmvpe") and self.model_rmvpe is not None and not self._rmvpe_shared:
             del self.model_rmvpe
             logger.info("RMVPE model deleted.")
             gc_collect()
+
+    def _get_cached_rmvpe(self):
+        key = (self.onnx, str(self.device), self.is_half)
+        cached = FeatureExtractor._rmvpe_cache.get(key)
+        if cached is None:
+            rmvpe_path = os.path.join(BASE_MODELS_DIR, f"rmvpe.{'onnx' if self.onnx else 'pt'}")
+            cached = RMVPE(rmvpe_path, is_half=self.is_half, device=self.device, onnx=self.onnx)
+            FeatureExtractor._rmvpe_cache[key] = cached
+        self._rmvpe_shared = True
+        return cached
 
     def load_index(self, file_index):
         try:
@@ -94,6 +105,12 @@ class FeatureExtractor:
             *args,
             **kwargs,
     ):
+        try:
+            import torchcrepe
+        except Exception as e:
+            raise ImportError(
+                f"CREPE pitch extraction requires torchcrepe (and its deps). Import failed: {e}"
+            )
         x = x.astype(np.float32)
         x /= np.quantile(np.abs(x), 0.999)
         audio = torch.from_numpy(x).to(self.device, copy=True)
@@ -134,6 +151,12 @@ class FeatureExtractor:
             *args,
             **kwargs
     ):
+        try:
+            import torchcrepe
+        except Exception as e:
+            raise ImportError(
+                f"CREPE pitch extraction requires torchcrepe (and its deps). Import failed: {e}"
+            )
         batch_size = 512
         audio = torch.tensor(np.copy(x))[None].float()
         model = kwargs.get('model', 'full')
@@ -191,14 +214,12 @@ class FeatureExtractor:
 
     def get_rmvpe(self, x, *args, **kwargs):
         if not hasattr(self, "model_rmvpe") or self.model_rmvpe is None:
-            self.model_rmvpe = RMVPE(os.path.join(BASE_MODELS_DIR, f"rmvpe.{'onnx' if self.onnx else 'pt'}"),
-                                     is_half=self.is_half, device=self.device, onnx=self.onnx)
+            self.model_rmvpe = self._get_cached_rmvpe()
         return self.model_rmvpe.infer_from_audio(x, thred=0.03)
 
     def get_pitch_dependant_rmvpe(self, x, f0_min=1, f0_max=40000, *args, **kwargs):
         if not hasattr(self, "model_rmvpe") or self.model_rmvpe is None:
-            self.model_rmvpe = RMVPE(os.path.join(BASE_MODELS_DIR, f"rmvpe.{'onnx' if self.onnx else 'pt'}"),
-                                     is_half=self.is_half, device=self.device, onnx=self.onnx)
+            self.model_rmvpe = self._get_cached_rmvpe()
         return self.model_rmvpe.infer_from_audio_with_pitch(x, thred=0.03, f0_min=f0_min, f0_max=f0_max)
 
     # Fork Feature: Acquire median hybrid f0 estimation calculation

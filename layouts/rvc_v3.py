@@ -16,9 +16,8 @@ from handlers.config import output_path
 from modules.rvc_v3.data_prep import (
     SongDownloader, VocalSeparator, Transcriber, LyricEditor, Phonemizer
 )
-from modules.rvc_v3.training import FeatureExtractor, IndexBuilder, RVCV3Trainer
+from modules.rvc_v3.training.train import RVCV3Trainer
 from modules.rvc_v3.configs import RVCV3Config, get_default_config
-from modules.rvc_v3.inference import RVCV3Pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +468,9 @@ def download_and_process_all(urls: str, project_name: str, use_whisperx: bool, a
 def extract_features(project_name: str, sample_rate: int, use_dual: bool, progress=gr.Progress()):
     """Extract training features from all songs in project."""
     try:
+        # Lazy import: pulls in fairseq (optional) via content encoders.
+        from modules.rvc_v3.training.extract_features import FeatureExtractor
+
         progress(0, desc="Initializing feature extractor...")
         
         config = get_default_config(sample_rate)
@@ -515,6 +517,9 @@ def extract_features(project_name: str, sample_rate: int, use_dual: bool, progre
 def build_index(project_name: str, sample_rate: int, progress=gr.Progress()):
     """Build retrieval index from all songs in project."""
     try:
+        # Lazy import: builder/index can bring in extra deps (faiss).
+        from modules.rvc_v3.training.build_index import IndexBuilder
+
         progress(0, desc="Loading configuration...")
         
         config = get_default_config(sample_rate)
@@ -623,7 +628,7 @@ def list_checkpoints(project_name: str):
     if not checkpoint_dir.exists():
         return []
     
-    checkpoints = list(checkpoint_dir.glob("*.pt"))
+    checkpoints = list(checkpoint_dir.glob("*.safetensors")) + list(checkpoint_dir.glob("*.pt"))
     return [str(cp.name) for cp in sorted(checkpoints, key=lambda x: x.stat().st_mtime, reverse=True)]
 
 
@@ -661,6 +666,9 @@ def convert_audio(
 ):
     """Convert audio using RVC V3."""
     try:
+        # Lazy import: pipeline may pull in optional encoders/deps.
+        from modules.rvc_v3.inference import RVCV3Pipeline
+
         if not input_audio_path:
             return None, "✗ Please upload input audio"
         

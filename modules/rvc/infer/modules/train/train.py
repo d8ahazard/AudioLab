@@ -33,6 +33,7 @@ from modules.rvc.infer.lib.train.losses import (
     generator_loss,
     kl_loss,
 )
+from modules.rvc.infer.lib.train.early_stopping import EarlyStoppingMonitor
 from modules.rvc.infer.lib.train.mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from modules.rvc.infer.lib.train.process_ckpt import savee
 
@@ -54,7 +55,8 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 global_step = 0
 last_saved_epoch = None  # Track the last saved epoch for cleanup
-loss_tracker = None  # Global loss tracker for early stopping/auto-save
+loss_tracker = None  # Global loss tracker for auto-save/plotting
+early_stop_monitor = None  # Shared early-stop monitor (actually stops training)
 
 
 class LossTracker:
@@ -567,7 +569,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
     scaler = GradScaler(enabled=hps.train.fp16_run)
     cache = []
     for epoch in range(epoch_str, hps.train.epochs + 1):
-        train_and_evaluate(
+        early_stopped = train_and_evaluate(
             rank,
             epoch,
             hps,
@@ -584,10 +586,10 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
         scheduler_g.step()
         scheduler_d.step()
 
-        # if global_step >= hps.train.total_steps:
-        #     if rank == 0:
-        #         logger.info("Global step limit reached. Stopping training.")
-        #     break
+        if early_stopped:
+            if rank == 0:
+                logger.info("Training stopped early due to loss plateau or uptrend.")
+            break
 
         if epoch >= hps.train.epochs:
             if rank == 0:
@@ -773,8 +775,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         scaler.step(optim_g)
         scaler.update()
 
-        # Update global loss tracker and possibly log/save
-        global loss_tracker
+        # Update global loss tracker and early-stop monitor
+        global loss_tracker, early_stop_monitor
         if loss_tracker is None and rank == 0:
             # Initialize with mel-based tracking (PRIMARY metrics: mel/fm, IGNORE: gen/disc)
             loss_tracker = LossTracker(
@@ -788,6 +790,15 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 plateau_patience_epochs=10,  # 10 epoch rolling window for plateau detection
                 composite_weight_fm=0.3,  # Weight for FM in composite score (mel + 0.3*fm)
             )
+        if early_stop_monitor is None and rank == 0:
+            early_stop_monitor = EarlyStoppingMonitor(
+                ema_alpha=0.05,
+                plateau_patience=getattr(hps.train, "early_stop_plateau_patience", 20),
+                uptrend_patience=getattr(hps.train, "early_stop_uptrend_patience", 10),
+                min_improvement_ratio=0.01,
+                min_epochs=8,
+                composite_weight_fm=0.3,
+            )
         if rank == 0 and loss_tracker is not None:
             loss_tracker.update(
                 float(loss_gen_all.detach().cpu()),
@@ -796,22 +807,32 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 float(loss_kl.detach().cpu()),
                 float(loss_fm.detach().cpu()),
             )
+            if early_stop_monitor is not None:
+                early_stop_monitor.update(
+                    float(loss_gen_all.detach().cpu()),
+                    float(loss_disc.detach().cpu()),
+                    float(loss_mel.detach().cpu()),
+                    float(loss_kl.detach().cpu()),
+                    float(loss_fm.detach().cpu()),
+                )
             if global_step % hps.train.log_interval == 0:
                 logger.info(f"[Tracker] {loss_tracker.status_str()}")
 
-            # Early stop based on mel loss plateau or overfitting (IGNORES gen/disc)
-            if loss_tracker.should_early_stop():
-                if rank == 0:
-                    logger.info("[Tracker] Early stopping: mel loss plateau (<1% improvement over 10 epochs) or overfitting detected.")
-                # Break out of batch loop; outer loop will handle termination
+            # Early stop based on mel loss plateau or uptrend (actually stops training)
+            if early_stop_monitor is not None and early_stop_monitor.should_stop():
+                logger.info("[EarlyStop] %s", early_stop_monitor.reason())
                 break
 
         global_step += 1
 
+    early_stopped = False
     if rank == 0:
         # Update epoch tracking at the end of each epoch
         if loss_tracker is not None:
             loss_tracker.on_epoch_end(epoch)
+        if early_stop_monitor is not None:
+            early_stop_monitor.on_epoch_end(epoch)
+            early_stopped = early_stop_monitor._stopped
         
         # Save model if it's time for a periodic save or if training is complete
         should_save = (epoch % hps.save_epoch_frequency == 0) or (epoch >= hps.train.epochs)
@@ -948,4 +969,5 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
                 logger.info(f"Final model and index saved: {final_model_path} and {final_index_path}")
 
-            return
+            return early_stopped
+    return early_stopped

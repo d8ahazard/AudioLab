@@ -3,11 +3,37 @@ import re
 import yt_dlp
 import requests
 from typing import Optional, List, Tuple
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from handlers.config import output_path, model_path
 from tqdm import tqdm
 import gradio as gr
 import logging
 logger = logging.getLogger(__name__)
+
+# Timeout for yt-dlp operations (seconds)
+YTDLP_TIMEOUT = 120  # 2 minutes max per video
+
+
+def _extract_info_with_timeout(ydl, url, download=False, timeout=YTDLP_TIMEOUT):
+    """Run yt-dlp extract_info with a hard timeout to prevent hangs."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(ydl.extract_info, url, download=download)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            logger.error(f"yt-dlp timed out after {timeout}s for URL: {url}")
+            raise TimeoutError(f"Download timed out after {timeout} seconds")
+
+
+def _download_with_timeout(ydl, urls, timeout=YTDLP_TIMEOUT):
+    """Run yt-dlp download with a hard timeout to prevent hangs."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(ydl.download, urls)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            logger.error(f"yt-dlp download timed out after {timeout}s")
+            raise TimeoutError(f"Download timed out after {timeout} seconds")
 
 def download_hubert_model() -> str:
     """
@@ -141,9 +167,29 @@ def download_files(url, input_files, include_captions: bool = False) -> gr.updat
     for url in valid_urls:
         try:
             # 2. Pre-fetch media information
+            # Use format and client that avoids SABR streaming issues (see https://github.com/yt-dlp/yt-dlp/issues/12482)
             ydl_opts = {
-                'format': 'bestaudio/best',  # Ensure we get the highest quality audio
+                'format': 'bestaudio/best',  # Let yt-dlp pick the best available
                 'quiet': True,  # Minimize yt-dlp output
+                'no_warnings': False,  # Keep warnings visible for debugging
+                'socket_timeout': 30,  # Timeout for network operations (seconds)
+                'retries': 3,  # Retry failed downloads
+                'fragment_retries': 3,  # Retry failed fragments
+                'extractor_retries': 3,  # Retry failed extractors
+                'file_access_retries': 3,  # Retry failed file access
+                'noprogress': True,  # Disable progress bar to avoid blocking
+                'ignoreerrors': False,  # Don't ignore errors
+                'extract_flat': False,  # Extract full info
+                'live_from_start': False,  # Don't try to get live from start
+                # Use cookies from browser to bypass bot detection
+                'cookiesfrombrowser': ('chrome',),  # Try chrome, falls back gracefully
+                # Use TV client (no PO token needed, no SABR) with mweb fallback
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['tv', 'mweb'],
+                        'player_skip': ['webpage', 'configs'],
+                    }
+                },
             }
             
             # Add caption options if requested
@@ -159,24 +205,29 @@ def download_files(url, input_files, include_captions: bool = False) -> gr.updat
             os.makedirs(download_dir, exist_ok=True)
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = _extract_info_with_timeout(ydl, url, download=False)
                 
+                if info is None:
+                    logger.warning(f"Failed to extract info for {url}")
+                    continue
+                    
                 if 'entries' in info:  # This is a playlist
                     logger.info(f"Processing playlist with {len(info['entries'])} items")
                     
-                    # Update download options
+                    # Update download options (timeout settings already set above)
                     ydl_opts.update({
                         'outtmpl': os.path.join(download_dir, '%(title)s'),
                         'postprocessors': [{
                             'key': 'FFmpegExtractAudio',
                             'preferredcodec': 'mp3',
                             'preferredquality': '192',
-                        }]
+                        }],
+                        'http_chunk_size': 10485760,  # 10MB chunks for more reliable downloads
                     })
                     
-                    # Download all items in the playlist
+                    # Download all items in the playlist (longer timeout for playlists)
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
-                        ydl_download.download([url])
+                        _download_with_timeout(ydl_download, [url], timeout=YTDLP_TIMEOUT * len(info['entries']))
                     
                     # Add all downloaded files to input_files
                     for entry in info['entries']:
@@ -225,19 +276,20 @@ def download_files(url, input_files, include_captions: bool = False) -> gr.updat
                         if file_path not in input_files:
                             input_files.append(file_path)
                     else:
-                        # Update ydl_opts for downloading
+                        # Update ydl_opts for downloading (timeout settings already set above)
                         ydl_opts.update({
                             'outtmpl': os.path.join(download_dir, sanitized_title),  # Exclude extension
                             'postprocessors': [{
                                 'key': 'FFmpegExtractAudio',
                                 'preferredcodec': 'mp3',
                                 'preferredquality': '192',
-                            }]
+                            }],
+                            'http_chunk_size': 10485760,  # 10MB chunks for more reliable downloads
                         })
 
                         # Download the file
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
-                            ydl_download.download([url])
+                            _download_with_timeout(ydl_download, [url])
 
                         # Ensure the file was downloaded
                         if os.path.exists(file_path):
@@ -263,6 +315,8 @@ def download_files(url, input_files, include_captions: bool = False) -> gr.updat
                                     input_files.append(lrc_path)
                                 break
 
+        except TimeoutError as e:
+            logger.warning(f"Timeout downloading {url}: {e} - skipping")
         except Exception as e:
             logger.warning(f"Error downloading {url}: {e}")
             

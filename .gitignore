@@ -11,3 +11,4 @@ Python-Wrapper-for-World-Vocoder/
 .caches/
 *venv*
 espeak-ng.msi
+.extracted/

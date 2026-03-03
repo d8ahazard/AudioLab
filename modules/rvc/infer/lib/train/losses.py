@@ -42,8 +42,10 @@ def generator_loss(disc_outputs):
 
 def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
     """
+    KL divergence loss with numerical stability guards.
     z_p, logs_q: [b, h, t_t]
     m_p, logs_p: [b, h, t_t]
+    Returns 0.0 if inputs contain NaN/inf or computation yields non-finite result.
     """
     z_p = z_p.float()
     logs_q = logs_q.float()
@@ -51,8 +53,25 @@ def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
     logs_p = logs_p.float()
     z_mask = z_mask.float()
 
+    # If any input has NaN/inf, skip KL (return 0 to allow training to continue)
+    if not (torch.isfinite(z_p).all() and torch.isfinite(logs_q).all() and
+            torch.isfinite(m_p).all() and torch.isfinite(logs_p).all() and
+            torch.isfinite(z_mask).all()):
+        return torch.tensor(0.0, device=z_p.device, dtype=z_p.dtype)
+
+    # Clamp log scale to prevent exp(-2*logs_p) overflow (NaN/inf)
+    logs_p = torch.clamp(logs_p, min=-12.0, max=4.0)
+    logs_q = torch.clamp(logs_q, min=-12.0, max=4.0)
+
     kl = logs_p - logs_q - 0.5
     kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2.0 * logs_p)
     kl = torch.sum(kl * z_mask)
-    l = kl / torch.sum(z_mask)
+    mask_sum = torch.sum(z_mask)
+    # Guard against empty mask (avoid div by zero)
+    l = kl / torch.clamp(mask_sum, min=1e-6)
+    # Clamp final loss to prevent NaN/inf propagation into optimizer
+    l = torch.clamp(l, min=0.0, max=1e4)
+    # Fallback: if still non-finite (e.g. from upstream), return 0
+    if not torch.isfinite(l):
+        return torch.tensor(0.0, device=z_p.device, dtype=z_p.dtype)
     return l

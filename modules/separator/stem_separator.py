@@ -54,7 +54,9 @@ def ensure_wav(input_path: str, sr: int = 44100) -> str:
         return input_path
     out_wav = base + "_converted.wav"
     if not os.path.isfile(out_wav):
-        cmd = ["ffmpeg", "-y", "-i", input_path, "-acodec", "pcm_s16le", "-ac", "2", "-ar", str(sr), out_wav]
+        # Preserve dynamic range for downstream separation (avoid 16-bit quantization noise).
+        # Keep as float WAV so ensemble blending can't accidentally "raise the noise floor".
+        cmd = ["ffmpeg", "-y", "-i", input_path, "-acodec", "pcm_f32le", "-ac", "2", "-ar", str(sr), out_wav]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return out_wav
 
@@ -76,7 +78,8 @@ def write_temp_wav(mix_np: np.ndarray, sr: int, out_dir: str) -> str:
     wav_data = mix_np.T.astype(np.float32)
     tmp_name = f"tmp_{uuid.uuid4().hex}.wav"
     tmp_path = os.path.join(out_dir, tmp_name)
-    sf.write(tmp_path, wav_data, sr, format="WAV", subtype="PCM_16")
+    # Keep temp audio as float to avoid repeated PCM_16 quantization across multi-pass separation.
+    sf.write(tmp_path, wav_data, sr, format="WAV", subtype="FLOAT")
     return tmp_path
 
 
@@ -145,6 +148,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             # Added higher-fidelity candidates
             "vocals_mel_band_roformer.ckpt",
             "melband_roformer_big_beta4.ckpt",
+            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
             # Transform models
             "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
             "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"
@@ -284,9 +288,13 @@ class EnsembleDemucsMDXMusicSeparationModel:
             weight = weights[idx] if idx < len(weights) else 1.0
             combined[:, :t.shape[-1]] += t * float(weight)
         combined = combined / total_weight
-        peak = np.max(np.abs(combined))
-        if peak > 0:
-            combined /= peak
+        # IMPORTANT: Never normalize UP here.
+        # When multiple model outputs partially phase-cancel, the peak can get small even while
+        # broadband noise remains; dividing by peak amplifies hiss (most noticeable during vocal sections).
+        peak = float(np.max(np.abs(combined)) if combined.size else 0.0)
+        ceiling = 0.99
+        if peak > ceiling:
+            combined *= (ceiling / peak)
         return combined
 
     def _separate_as_arrays_current(self, mix_np: np.ndarray, sr: int, desc: str = None, output_folder: str = None) -> \
@@ -678,6 +686,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         output_files = []
         stem_names = {
             "vocals": "(Vocals)",
+            "vocals_full": "(Vocals_Full)",
             "bg_vocals": "(BG_Vocals)",
             "instrumental": "(Instrumental)",
             "drums": "(Drums)",
@@ -957,6 +966,7 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     if model.separate_bg_vocals:
         for base_name, res in results.items():
             if "vocals" in res and res["vocals"] is not None:
+                res["vocals_full"] = res["vocals"]
                 main_vocals, bg_vocals = model._apply_bg_vocal_splitting(
                     res["vocals"], res["sr"], base_name, res["output_folder"]
                 )

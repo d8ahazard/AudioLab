@@ -4,7 +4,7 @@ import shutil
 import wave
 import binascii
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import librosa
 
@@ -14,7 +14,99 @@ from util.video_track import VideoTrack
 from util.data_classes import ProjectFiles
 
 
-def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = None, pitch_shift: int = 0, videos: Optional[List[str]] = None):
+def _load_midi_track_template() -> ET.Element:
+    template_path = os.path.join(app_path, "res", "midi_track_template.xml")
+    tree = ET.parse(template_path)
+    return tree.getroot()
+
+
+def _replace_midi_notes(
+    midi_clip: ET.Element,
+    note_events: List[Tuple[float, float, int, int]],
+) -> None:
+    notes_elem = midi_clip.find("Notes")
+    if notes_elem is None:
+        notes_elem = ET.SubElement(midi_clip, "Notes")
+
+    key_tracks = notes_elem.find("KeyTracks")
+    if key_tracks is None:
+        key_tracks = ET.SubElement(notes_elem, "KeyTracks")
+    else:
+        for child in list(key_tracks):
+            key_tracks.remove(child)
+
+    notes_by_pitch: Dict[int, List[Tuple[float, float, int]]] = {}
+    for start, duration, pitch, velocity in note_events:
+        notes_by_pitch.setdefault(pitch, []).append((start, duration, velocity))
+
+    note_id = 1
+    for idx, pitch in enumerate(sorted(notes_by_pitch.keys())):
+        key_track = ET.SubElement(key_tracks, "KeyTrack", {"Id": str(idx)})
+        notes_container = ET.SubElement(key_track, "Notes")
+        for start, duration, velocity in notes_by_pitch[pitch]:
+            ET.SubElement(
+                notes_container,
+                "MidiNoteEvent",
+                {
+                    "Time": str(start),
+                    "Duration": str(duration),
+                    "Velocity": str(float(velocity)),
+                    "VelocityDeviation": "0",
+                    "OffVelocity": "64",
+                    "Probability": "1",
+                    "IsEnabled": "true",
+                    "NoteId": str(note_id),
+                },
+            )
+            note_id += 1
+        ET.SubElement(key_track, "MidiKey", {"Value": str(pitch)})
+
+
+def _update_midi_clip_timing(midi_clip: ET.Element, clip_start: float, clip_length_beats: float, name: str) -> None:
+    midi_clip.set("Time", str(clip_start))
+    current_start = midi_clip.find("CurrentStart")
+    if current_start is not None:
+        current_start.set("Value", str(clip_start))
+    current_end = midi_clip.find("CurrentEnd")
+    if current_end is not None:
+        current_end.set("Value", str(clip_start + clip_length_beats))
+
+    name_elem = midi_clip.find("Name")
+    if name_elem is not None:
+        name_elem.set("Value", name)
+
+    loop_elem = midi_clip.find("Loop")
+    if loop_elem is not None:
+        loop_start = loop_elem.find("LoopStart")
+        loop_end = loop_elem.find("LoopEnd")
+        start_relative = loop_elem.find("StartRelative")
+        loop_on = loop_elem.find("LoopOn")
+        out_marker = loop_elem.find("OutMarker")
+        hidden_loop_start = loop_elem.find("HiddenLoopStart")
+        hidden_loop_end = loop_elem.find("HiddenLoopEnd")
+        if loop_start is not None:
+            loop_start.set("Value", "0")
+        if loop_end is not None:
+            loop_end.set("Value", str(clip_length_beats))
+        if start_relative is not None:
+            start_relative.set("Value", "0")
+        if loop_on is not None:
+            loop_on.set("Value", "false")
+        if out_marker is not None:
+            out_marker.set("Value", str(clip_length_beats))
+        if hidden_loop_start is not None:
+            hidden_loop_start.set("Value", "0")
+        if hidden_loop_end is not None:
+            hidden_loop_end.set("Value", str(clip_length_beats))
+
+
+def create_ableton_project(
+    project: ProjectFiles,
+    stems: List[str],
+    bpm: int = None,
+    pitch_shift: int = 0,
+    videos: Optional[List[str]] = None,
+):
     """
     Create an Ableton Live project with audio stems and optional video files.
     
@@ -220,7 +312,7 @@ def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = N
         tracks_elem.append(rt)
 
     # -------------------------------------------------------------------------
-    # 7) UPDATE <NextPointeeId> TO AVOID "invalid pointee ID"
+    # 8) UPDATE <NextPointeeId> TO AVOID "invalid pointee ID"
     # -------------------------------------------------------------------------
     # Gather all numeric IDs in the entire <LiveSet>
     def gather_all_ids(elem, all_ids):
@@ -248,7 +340,7 @@ def create_ableton_project(project: ProjectFiles, stems: List[str], bpm: int = N
         ET.SubElement(live_set_elem, "NextPointeeId", {"Value": str(new_next_pointee_val)})
 
     # -------------------------------------------------------------------------
-    # 8) PRETTY-PRINT & GZIP THE RESULTING XML AS .als
+    # 9) PRETTY-PRINT & GZIP THE RESULTING XML AS .als
     # -------------------------------------------------------------------------
     try:
         ET.indent(tree, space="  ")

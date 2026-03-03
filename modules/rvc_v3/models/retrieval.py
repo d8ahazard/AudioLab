@@ -131,10 +131,16 @@ class RetrievalIndex:
         """
         if self.index is None:
             raise RuntimeError("Index not built yet")
+        if self.features is None:
+            raise RuntimeError("Index features are not loaded")
         
         # Ensure correct shape
         if query.ndim == 1:
             query = query.reshape(1, -1)
+        if query.shape[1] != self.feature_dim:
+            raise ValueError(
+                f"Query feature dim mismatch: expected {self.feature_dim}, got {query.shape[1]}"
+            )
         
         query = query.astype('float32')
         
@@ -188,6 +194,11 @@ class RetrievalIndex:
         Returns:
             Mixed features (N, feature_dim)
         """
+        if source_features.shape[1] != self.feature_dim:
+            raise ValueError(
+                f"Source feature dim mismatch: expected {self.feature_dim}, got {source_features.shape[1]}"
+            )
+
         # Retrieve target features
         retrieved, distances = self.retrieve_features(
             source_features, k=k, return_distances=True
@@ -214,6 +225,8 @@ class RetrievalIndex:
         
         # Mix source and retrieved
         mixed = alpha * source_features + (1 - alpha) * retrieved
+        if not np.isfinite(mixed).all():
+            raise RuntimeError("Retrieval produced NaN/Inf mixed features")
         
         return mixed
     
@@ -264,6 +277,12 @@ class RetrievalIndex:
         # Load index
         index_file = str(input_path.with_suffix('.index'))
         self.index = faiss.read_index(index_file)
+        if getattr(self.index, "d", None) is not None:
+            index_dim = int(self.index.d)
+            if index_dim != self.feature_dim:
+                raise ValueError(
+                    f"Index dim mismatch for {index_file}: expected {self.feature_dim}, got {index_dim}"
+                )
         
         # Move to GPU if requested
         if self.use_gpu:
@@ -275,9 +294,30 @@ class RetrievalIndex:
                 logger.warning(f"Failed to move index to GPU: {e}")
                 self.use_gpu = False
         
-        # Load features
+        # Load features: prefer .npy; fall back to reconstruct from FAISS (V2-style index)
         features_file = str(input_path.with_suffix('.npy'))
-        self.features = np.load(features_file)
-        
-        logger.info(f"Index loaded from {input_path}: {self.n_features} features")
+        if os.path.exists(features_file):
+            self.features = np.load(features_file).astype(np.float32)
+            self.n_features = self.features.shape[0]
+            self.is_v2_reconstructed = False
+        else:
+            # V2-style index: vectors are stored inside FAISS, reconstruct them
+            index_cpu = self.index
+            if self.use_gpu:
+                index_cpu = faiss.index_gpu_to_cpu(self.index)
+            self.features = np.ascontiguousarray(
+                index_cpu.reconstruct_n(0, index_cpu.ntotal), dtype=np.float32
+            )
+            self.n_features = index_cpu.ntotal
+            self.feature_dim = index_cpu.d
+            self.is_v2_reconstructed = True
+            logger.info(f"Reconstructed {self.n_features} features from FAISS index (V2-style)")
+
+        logger.info(
+            "Index loaded from %s: n=%s dim=%s v2_reconstructed=%s",
+            input_path,
+            self.n_features,
+            self.feature_dim,
+            bool(getattr(self, "is_v2_reconstructed", False)),
+        )
 

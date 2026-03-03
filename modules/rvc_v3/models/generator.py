@@ -152,7 +152,8 @@ class TextConditionedTextEncoder(nn.Module):
         lengths: torch.Tensor,
         text_features: Optional[torch.Tensor] = None,
         text_mask: Optional[torch.Tensor] = None,
-        ppg: Optional[torch.Tensor] = None
+        ppg: Optional[torch.Tensor] = None,
+        text_strength: float = 1.0,
     ):
         """
         Forward pass with optional text conditioning.
@@ -171,8 +172,8 @@ class TextConditionedTextEncoder(nn.Module):
         # Base encoding
         m_p, logs_p, x_mask = self.base_encoder(phone, pitch, lengths, ppg=ppg)
         
-        # If text features provided, apply cross-attention
-        if text_features is not None:
+        # If text features provided, apply cross-attention with controllable strength.
+        if text_features is not None and text_strength > 0.0:
             # Project text if needed
             if self.text_projection is not None:
                 text_features = self.text_projection(text_features)
@@ -184,8 +185,13 @@ class TextConditionedTextEncoder(nn.Module):
             for layer in self.cross_attn_layers:
                 content = layer(content, text_features, text_mask)
             
-            # Transpose back
-            m_p = content.transpose(1, 2)  # (batch, channels, time)
+            # Transpose back and blend with base encoding.
+            m_p_text = content.transpose(1, 2)  # (batch, channels, time)
+            ts = float(max(0.0, min(1.0, text_strength)))
+            if ts < 1.0:
+                m_p = (1.0 - ts) * m_p + ts * m_p_text
+            else:
+                m_p = m_p_text
         
         return m_p, logs_p, x_mask
 
@@ -292,17 +298,17 @@ class RVCV3Generator(nn.Module):
                 is_half=False
             )
         elif vocoder_type == 'bigvgan':
+            # Match our bundled BigVGAN wrapper signature.
+            # See: modules/rvc/lib/models_bigvgan.py::GeneratorBigVgan
             self.dec = GeneratorBigVgan(
                 resblock_kernel_sizes=resblock_kernel_sizes,
                 resblock_dilation_sizes=resblock_dilation_sizes,
                 upsample_rates=upsample_rates,
                 upsample_kernel_sizes=upsample_kernel_sizes,
                 upsample_input=inter_channels,
-                upsample_hidden=upsample_initial_channel,
-                resblock=resblock,
-                gin_channels=gin_channels,
-                sr=sr,
-                is_half=False
+                upsample_initial_channel=upsample_initial_channel,
+                sampling_rate=sr,
+                spk_dim=gin_channels,
             )
         else:
             raise ValueError(f"Unknown vocoder type: {vocoder_type}")
@@ -321,7 +327,8 @@ class RVCV3Generator(nn.Module):
         text_features: Optional[torch.Tensor] = None,
         text_mask: Optional[torch.Tensor] = None,
         ppg: Optional[torch.Tensor] = None,
-        enable_perturbation: bool = False
+        enable_perturbation: bool = False,
+        text_strength: float = 1.0,
     ):
         """
         Forward pass for training.
@@ -352,7 +359,8 @@ class RVCV3Generator(nn.Module):
             phone, pitch, phone_lengths,
             text_features=text_features,
             text_mask=text_mask,
-            ppg=ppg
+            ppg=ppg,
+            text_strength=text_strength,
         )
         
         # Posterior encoding
@@ -382,7 +390,9 @@ class RVCV3Generator(nn.Module):
         text_features: Optional[torch.Tensor] = None,
         text_mask: Optional[torch.Tensor] = None,
         rate: Optional[torch.Tensor] = None,
-        ppg: Optional[torch.Tensor] = None
+        ppg: Optional[torch.Tensor] = None,
+        text_strength: float = 1.0,
+        noise_scale: float = 0.0,
     ):
         """
         Inference with optional text conditioning.
@@ -406,11 +416,19 @@ class RVCV3Generator(nn.Module):
             phone, pitch, phone_lengths,
             text_features=text_features,
             text_mask=text_mask,
-            ppg=ppg
+            ppg=ppg,
+            text_strength=text_strength,
         )
         
-        # Sample from latent distribution
-        z_p = (m_p + torch.exp(logs_p) * torch.randn_like(m_p) * 0.66666) * x_mask
+        # Sample from latent distribution.
+        # V3 can produce modulating buzz in silence when stochastic sampling is high.
+        # Keep this controllable and default to deterministic inference.
+        ns = float(max(0.0, noise_scale))
+        if ns > 0.0:
+            z_noise = torch.randn_like(m_p) * ns
+            z_p = (m_p + torch.exp(logs_p) * z_noise) * x_mask
+        else:
+            z_p = m_p * x_mask
         
         # Rate adjustment if provided
         if rate is not None:

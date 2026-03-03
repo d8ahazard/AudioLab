@@ -321,9 +321,20 @@ class Export(BaseWrapper):
                         # Pass video files to the Ableton project creation if available
                         if video_outputs and export_videos:
                             logger.info(f"Including {len(video_outputs)} video files in Ableton project")
-                            als_path = create_ableton_project(project_file, stems, bpm, pitch_shift, videos=video_outputs)
+                            als_path = create_ableton_project(
+                                project_file,
+                                stems,
+                                bpm,
+                                pitch_shift,
+                                videos=video_outputs,
+                            )
                         else:
-                            als_path = create_ableton_project(project_file, stems, bpm, pitch_shift)
+                            als_path = create_ableton_project(
+                                project_file,
+                                stems,
+                                bpm,
+                                pitch_shift,
+                            )
                         
                         out_zip = zip_folder(als_path)
                         logger.info(f"Saved Ableton project to: {als_path}")

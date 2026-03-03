@@ -4,6 +4,22 @@ import traceback
 from modules.rvc.infer.lib import jit
 from modules.rvc.infer.lib.jit.get_synthesizer import get_synthesizer
 from time import time as ttime
+
+def _patch_tensorboard_no_tf():
+    """
+    See modules/rvc_v3/models/content_encoders.py for full rationale.
+    """
+    try:
+        import sys
+        import types
+
+        sys.modules.setdefault("tensorboard.compat.notf", types.ModuleType("tensorboard.compat.notf"))
+    except Exception:
+        pass
+
+
+_patch_tensorboard_no_tf()
+
 import fairseq
 import faiss
 import numpy as np

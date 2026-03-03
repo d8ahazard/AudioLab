@@ -64,12 +64,21 @@ class IndexBuilder:
         """
         project_path = Path(project_dir)
         features_dir = project_path / config.features_dir
-        
-        # Collect all feature files
-        feature_files = list(features_dir.glob("*.pt"))
-        
+
+        # Collect feature files from both V3 cache (.pt) and legacy RVC dirs (.npy)
+        feature_files = []
+        if features_dir.exists():
+            feature_files.extend(list(features_dir.glob("*.pt")))
+            feature_files.extend(list(features_dir.glob("*.npy")))
+        legacy_dirs = [project_path / "3_feature768", project_path / "3_feature256"]
+        for d in legacy_dirs:
+            if d.exists():
+                feature_files.extend(list(d.glob("*.npy")))
+
         if not feature_files:
-            raise ValueError(f"No feature files found in {features_dir}")
+            raise ValueError(
+                f"No feature files found in {features_dir} or legacy feature directories under {project_path}"
+            )
         
         logger.info(f"Building index from {len(feature_files)} feature files")
         
@@ -78,12 +87,20 @@ class IndexBuilder:
         
         for i, feature_file in enumerate(tqdm(feature_files, desc="Loading features")):
             try:
-                features_data = torch.load(feature_file, map_location='cpu')
-                content_features = features_data['content']  # (T, feature_dim)
-                
-                # Convert to numpy
-                if isinstance(content_features, torch.Tensor):
-                    content_features = content_features.numpy()
+                if feature_file.suffix.lower() == ".pt":
+                    features_data = torch.load(feature_file, map_location="cpu")
+                    content_features = features_data["content"]  # (T, feature_dim)
+                    if isinstance(content_features, torch.Tensor):
+                        content_features = content_features.numpy()
+                else:
+                    content_features = np.load(feature_file)
+
+                if content_features.ndim != 2:
+                    raise ValueError(f"Unexpected feature shape {content_features.shape} in {feature_file}")
+                if content_features.shape[1] != self.feature_dim:
+                    raise ValueError(
+                        f"Feature dim mismatch in {feature_file}: expected {self.feature_dim}, got {content_features.shape[1]}"
+                    )
                 
                 all_features.append(content_features)
                 

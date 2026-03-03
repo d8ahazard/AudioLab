@@ -1,0 +1,4 @@
+{
+  "_comment": "Optional override: maps project_name -> stem -> lyrics text. When present, used instead of Whisper for that stem. Add entries as needed for smoke test quality.",
+  "Maynard_Full": {}
+}

@@ -8,6 +8,17 @@ import time
 import traceback
 import warnings
 from pathlib import Path
+
+# --- Critical runtime patch (must run before importing fairseq) ---
+# This environment has a broken TensorBoard install that tries to import TensorFlow.
+# fairseq pulls in `torch.utils.tensorboard` via its logging stack; we don't need TF.
+try:
+    import types
+
+    sys.modules.setdefault("tensorboard.compat.notf", types.ModuleType("tensorboard.compat.notf"))
+except Exception:
+    pass
+
 import gradio as gr
 import uvicorn
 from torchaudio._extension import _init_dll_path
@@ -98,11 +109,15 @@ if __name__ == '__main__':
     parser.add_argument('--listen', action='store_true', help="Enable server to listen on 0.0.0.0")
     parser.add_argument('--port', type=int, default=7860, help="Specify the port number (default: 7860)")
     parser.add_argument('--api-only', action='store_true', help="Run only the API server without Gradio UI")
+    parser.add_argument('--prep', action='store_true', help="Enable prep-only Process modules")
     args = parser.parse_args()
 
     # Determine the launch configuration
     server_name = "0.0.0.0" if args.listen else "127.0.0.1"
     server_port = args.port
+
+    if args.prep:
+        os.environ["AUDIOLAB_PREP"] = "1"
 
     # Create a server instance that we can control
     server = None

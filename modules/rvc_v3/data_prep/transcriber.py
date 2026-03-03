@@ -234,3 +234,125 @@ class Transcriber:
             logger.error(f"Failed to load transcript: {e}")
             return None
 
+    def transcribe_file(
+        self,
+        audio_path: str,
+        output_path: str,
+        language: Optional[str] = None,
+        word_timestamps: bool = True
+    ) -> Optional[List[Dict]]:
+        """
+        Transcribe a single audio file and save to specified path.
+        
+        Args:
+            audio_path: Path to the audio file
+            output_path: Path to save transcript JSON
+            language: Language code or None for auto-detect
+            word_timestamps: Whether to generate word-level timestamps
+        
+        Returns:
+            List of transcript segments, or None on error
+        """
+        self._load_model()
+        
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            logger.info(f"Transcribing {audio_path}")
+            result = self.model.transcribe(
+                audio_path,
+                language=language,
+                word_timestamps=word_timestamps,
+                verbose=False
+            )
+            
+            segments = []
+            if word_timestamps and 'segments' in result:
+                for segment in result['segments']:
+                    if 'words' in segment:
+                        for word in segment['words']:
+                            segments.append({
+                                'start': word.get('start', 0.0),
+                                'end': word.get('end', 0.0),
+                                'text': word.get('word', '').strip(),
+                                'confidence': word.get('probability', 1.0)
+                            })
+                    else:
+                        segments.append({
+                            'start': segment.get('start', 0.0),
+                            'end': segment.get('end', 0.0),
+                            'text': segment.get('text', '').strip(),
+                            'confidence': 1.0
+                        })
+            else:
+                for segment in result.get('segments', []):
+                    segments.append({
+                        'start': segment.get('start', 0.0),
+                        'end': segment.get('end', 0.0),
+                        'text': segment.get('text', '').strip(),
+                        'confidence': 1.0
+                    })
+            
+            data = {
+                'language': result.get('language', 'unknown'),
+                'segments': segments,
+                'full_text': result.get('text', ''),
+                'source': audio_path
+            }
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Transcription saved: {output_path} ({len(segments)} segments)")
+            return segments
+            
+        except Exception as e:
+            logger.error(f"Transcription failed for {audio_path}: {e}")
+            return None
+
+    def transcribe_project_vocals(
+        self,
+        project_dir: str,
+        gt_wavs_dir: Optional[str] = None,
+        language: Optional[str] = None
+    ) -> Dict[str, bool]:
+        """
+        Transcribe all vocal wavs in a project's 0_gt_wavs directory.
+        Saves per-stem lyrics to project_dir/lyrics/<stem>.json.
+        
+        Args:
+            project_dir: Project directory (e.g. outputs/voices/MyProject)
+            gt_wavs_dir: Path to 0_gt_wavs, or None to use project_dir/0_gt_wavs
+            language: Language code or None for auto-detect
+        
+        Returns:
+            Dict mapping stem -> True if transcribed successfully, False otherwise
+        """
+        project_path = Path(project_dir)
+        wavs_dir = Path(gt_wavs_dir) if gt_wavs_dir else project_path / "0_gt_wavs"
+        lyrics_dir = project_path / "lyrics"
+        lyrics_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not wavs_dir.exists():
+            logger.warning(f"gt_wavs dir not found: {wavs_dir}")
+            return {}
+        
+        wav_files = sorted(wavs_dir.glob("*.wav"))
+        results = {}
+        
+        for wav_path in wav_files:
+            stem = wav_path.stem
+            out_path = lyrics_dir / f"{stem}.json"
+            
+            segs = self.transcribe_file(
+                str(wav_path),
+                str(out_path),
+                language=language,
+                word_timestamps=True
+            )
+            results[stem] = segs is not None
+        
+        n_ok = sum(1 for v in results.values() if v)
+        logger.info(f"Transcribed {n_ok}/{len(results)} vocals in {project_dir}")
+        return results
+

@@ -91,6 +91,15 @@ class RVCV3Config:
     # Logging
     log_interval: int = 200
     save_interval: int = 1000
+
+    # Checkpointing
+    checkpoint_interval: int = 25  # Save periodic checkpoint every N epochs
+    checkpoint_keep_last: int = 2  # Keep last N periodic checkpoints (prune older)
+
+    # Early stopping (plateau/uptrend)
+    early_stop_plateau_patience: int = 20  # Epochs without improvement to trigger stop
+    early_stop_uptrend_patience: int = 10  # Consecutive epochs with increasing mel to trigger stop
+    early_stop_min_epochs: int = 100  # Minimum epochs before early stop can trigger
     
     # Seed
     seed: int = 1234

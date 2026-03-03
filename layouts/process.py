@@ -26,6 +26,8 @@ from handlers.download import download_files
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper
 
+from handlers.weights_zip import list_weights_zip_models
+
 logger = logging.getLogger(__name__)
 
 # Global dictionary to store path mappings
@@ -33,7 +35,25 @@ path_to_filename = {}
 filename_to_path = {}
 
 
+def _weights_zip_models_markdown() -> str:
+    try:
+        models = list_weights_zip_models()
+    except Exception as e:
+        return f"Failed to load zip models: `{e}`"
+
+    if not models:
+        return "_No weights zip models found. Put `*.zip` files in `models/trained/`._"
+
+    lines = []
+    for m in models:
+        author = m.author or "—"
+        tags = ", ".join(m.tags) if m.tags else "—"
+        lines.append(f"- **{m.display_name}**  \n  - Author: {author}  \n  - Tags: {tags}")
+    return "\n".join(lines)
+
+
 def list_wrappers():
+    prep_only_enabled = os.getenv("AUDIOLAB_PREP") == "1"
     project_root = Path(__file__).parent.parent.resolve()
     script_dir = project_root / 'wrappers'
     if str(script_dir) not in sys.path:
@@ -48,6 +68,8 @@ def list_wrappers():
                 for name, obj in module.__dict__.items():
                     if isinstance(obj, type) and issubclass(obj, BaseWrapper) and obj is not BaseWrapper:
                         wrapper_instance = obj()
+                        if getattr(wrapper_instance, "prep_only", False) and not prep_only_enabled:
+                            continue
                         all_wrappers.append(wrapper_instance.title)
                         break
             except Exception as e:
@@ -551,6 +573,10 @@ def render(arg_handler: ArgHandler):
     with gr.Row():
         with gr.Column():
             gr.Markdown("### 🔧 Settings")
+            with gr.Accordion(label="Weights.gg Models", open=False):
+                weights_md = gr.Markdown(value=_weights_zip_models_markdown())
+                weights_refresh = gr.Button(value="Refresh Weights.gg List")
+                weights_refresh.click(fn=lambda: gr.update(value=_weights_zip_models_markdown()), outputs=[weights_md])
             for wrapper_name in wrappers:
                 processor = get_processor(wrapper_name)
                 all_kwargs = processor.allowed_kwargs

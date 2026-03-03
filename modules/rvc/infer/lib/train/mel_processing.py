@@ -1,6 +1,5 @@
 import torch
 import torch.utils.data
-from librosa.filters import mel as librosa_mel_fn
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,6 +36,40 @@ def spectral_de_normalize_torch(magnitudes):
 # Reusable banks
 mel_basis = {}
 hann_window = {}
+
+
+def _mel_fbanks_torch(n_fft: int, num_mels: int, sampling_rate: int, fmin: float, fmax: float, device, dtype):
+    """
+    Build mel filterbank without librosa/numba.
+
+    Prefer torchaudio if available, otherwise fall back to librosa.
+    """
+    try:
+        import torchaudio
+
+        # torchaudio expects f_max to be a float (can be None)
+        f_max = float(fmax) if fmax is not None else float(sampling_rate) / 2.0
+        fb = torchaudio.functional.melscale_fbanks(
+            n_freqs=n_fft // 2 + 1,
+            f_min=float(fmin),
+            f_max=f_max,
+            n_mels=int(num_mels),
+            sample_rate=int(sampling_rate),
+            norm="slaney",
+            mel_scale="htk",
+        )
+        return fb.to(device=device, dtype=dtype)  # (n_freqs, n_mels)
+    except Exception as e:
+        # Fallback to librosa if torchaudio is unavailable
+        try:
+            from librosa.filters import mel as librosa_mel_fn  # type: ignore
+
+            mel = librosa_mel_fn(
+                sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax
+            )
+            return torch.from_numpy(mel).to(device=device, dtype=dtype)  # (n_mels, n_freqs)
+        except Exception as e2:
+            raise RuntimeError(f"Failed to build mel filterbank (torchaudio error={e}; librosa error={e2})")
 
 
 def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False):
@@ -95,12 +128,17 @@ def spec_to_mel_torch(spec, n_fft, num_mels, sampling_rate, fmin, fmax):
     dtype_device = str(spec.dtype) + "_" + str(spec.device)
     fmax_dtype_device = str(fmax) + "_" + dtype_device
     if fmax_dtype_device not in mel_basis:
-        mel = librosa_mel_fn(
-            sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax
+        fb = _mel_fbanks_torch(
+            n_fft=n_fft,
+            num_mels=num_mels,
+            sampling_rate=sampling_rate,
+            fmin=fmin,
+            fmax=fmax,
+            device=spec.device,
+            dtype=spec.dtype,
         )
-        mel_basis[fmax_dtype_device] = torch.from_numpy(mel).to(
-            dtype=spec.dtype, device=spec.device
-        )
+        # Ensure mel basis is (n_mels, n_freqs) for matmul with spec (B, n_freqs, T)
+        mel_basis[fmax_dtype_device] = fb.transpose(0, 1).contiguous()
 
     # Mel-frequency Log-amplitude spectrogram :: (B, Freq=num_mels, Frame)
     melspec = torch.matmul(mel_basis[fmax_dtype_device], spec)

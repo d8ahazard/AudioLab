@@ -8,6 +8,30 @@ import logging
 import os
 from typing import Optional, Tuple
 
+def _patch_tensorboard_no_tf():
+    """
+    Fix broken TensorBoard installs that try to import TensorFlow.
+
+    `fairseq` imports `torch.utils.tensorboard.SummaryWriter`, which imports
+    `tensorboard.compat.tf`. On this machine the installed `tensorboard` package
+    is missing `tensorboard.compat.notf`, causing it to fall back to importing
+    TensorFlow and crashing due to incompatible `ml_dtypes`.
+
+    Providing a stub `tensorboard.compat.notf` makes TensorBoard use its
+    `tensorflow_stub` backend and avoids importing TensorFlow entirely.
+    """
+    try:
+        import sys
+        import types
+
+        sys.modules.setdefault("tensorboard.compat.notf", types.ModuleType("tensorboard.compat.notf"))
+    except Exception:
+        # If anything goes wrong, don't block import; worst case we hit the original error.
+        pass
+
+
+_patch_tensorboard_no_tf()
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -68,6 +92,7 @@ class HuBERTEncoder:
         
         self.model = models[0]
         self.model = self.model.to(self.device)
+        self.input_normalize = getattr(task, 'normalize', False)
         
         if self.is_half and self.device not in ["mps", "cpu"]:
             self.model = self.model.half()
@@ -96,6 +121,9 @@ class HuBERTEncoder:
             audio = audio.float()
         
         audio = audio.to(self.device)
+        
+        if getattr(self, 'input_normalize', False):
+            audio = torch.nn.functional.layer_norm(audio, audio.shape)
         
         # Create padding mask
         padding_mask = torch.zeros_like(audio, dtype=torch.bool, device=self.device)

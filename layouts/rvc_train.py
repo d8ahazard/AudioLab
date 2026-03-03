@@ -406,6 +406,21 @@ def click_train(
         else:
             f_names = get_basenames(gt_wavs_dir) & get_basenames(feature_dir)
 
+        # V3: Auto-transcribe vocals for text conditioning
+        if model_version == "v3" and f_names:
+            try:
+                from modules.rvc_v3.data_prep.transcriber import Transcriber
+                transcriber = Transcriber(output_dir=exp_dir, model_size="base")
+                transcribe_results = transcriber.transcribe_project_vocals(
+                    project_dir=exp_dir,
+                    gt_wavs_dir=gt_wavs_dir,
+                    language=None
+                )
+                n_transcribed = sum(1 for v in transcribe_results.values() if v)
+                logger.info(f"V3 transcription: {n_transcribed}/{len(transcribe_results)} vocals transcribed")
+            except Exception as tr_err:
+                logger.warning(f"V3 transcription skipped (lyrics may be missing): {tr_err}")
+
         opt = [build_entry(f_name, use_pitch_guidance, gt_wavs_dir, feature_dir, f0_dir, f0nsf_dir, speaker_index)
                for f_name in f_names]
 

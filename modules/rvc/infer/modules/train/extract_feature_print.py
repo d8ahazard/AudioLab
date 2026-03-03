@@ -1,5 +1,25 @@
 import os
 import traceback
+
+def _patch_tensorboard_no_tf():
+    """
+    See modules/rvc_v3/models/content_encoders.py for full rationale.
+
+    `fairseq` -> `torch.utils.tensorboard` -> `tensorboard.compat.tf` may try to
+    import TensorFlow on broken TensorBoard installs; that crashes on some
+    Windows environments due to `ml_dtypes`/TF binary mismatch.
+    """
+    try:
+        import sys
+        import types
+
+        sys.modules.setdefault("tensorboard.compat.notf", types.ModuleType("tensorboard.compat.notf"))
+    except Exception:
+        pass
+
+
+_patch_tensorboard_no_tf()
+
 import fairseq
 import logging
 import numpy as np

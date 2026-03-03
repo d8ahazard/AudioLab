@@ -85,12 +85,12 @@ class TextEncoder(nn.Module):
         # Here, attn_mask is used directly if the attention layer can handle boolean masks.
         # Otherwise, convert it to the expected format or values.
         x = self.encoder(x, x_mask)
-        x_mask = x_mask.unsqueeze(-1)
 
-        # since proj is another conv, we have to transpose again
-        stats = self.proj(x.transpose(1, 2)).transpose(1, 2) * x_mask
-        stats = stats.transpose(1, 2)
+        # Return mask in (B, 1, T) like RVC expects.
+        x_mask = x_mask.unsqueeze(1)
 
+        # Project to prior stats (B, 2*out, T) and apply mask.
+        stats = self.proj(x.transpose(1, 2)) * x_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
         return m, logs, x_mask
 

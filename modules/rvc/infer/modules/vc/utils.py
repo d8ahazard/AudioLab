@@ -3,6 +3,24 @@ from functools import lru_cache
 import inspect
 import ast
 
+def _patch_tensorboard_no_tf():
+    """
+    Ensure `fairseq` can import even if TensorBoard is broken.
+
+    - TensorBoard in this environment may try to import TensorFlow (and crash) unless
+      `tensorboard.compat.notf` exists.
+    """
+    try:
+        import sys
+        import types
+
+        sys.modules.setdefault("tensorboard.compat.notf", types.ModuleType("tensorboard.compat.notf"))
+    except Exception:
+        pass
+
+
+_patch_tensorboard_no_tf()
+
 import librosa
 import pyworld
 import torch

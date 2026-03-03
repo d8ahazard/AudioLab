@@ -3,7 +3,12 @@ import platform
 import onnx
 import onnx2torch
 import onnxruntime as ort
-from audio_separator.separator.architectures.mdx_separator import MDXSeparator
+try:
+    # audio-separator (most versions)
+    from audio_separator.separator.architectures.mdx_separator import MDXSeparator
+except Exception:  # pragma: no cover
+    # If internal module layout changes, skip patching gracefully.
+    MDXSeparator = None
 
 og_load_model = None
 
@@ -70,9 +75,9 @@ def patched_load_model(self):
 # Monkey-patch MDXSeparator
 def patch_separator():
     global og_load_model
-    if og_load_model is not None:
-        print("Already patched")
+    if MDXSeparator is None:
         return
-    print("Patching MDXSeparator.load_model")
+    if og_load_model is not None:
+        return
     og_load_model = MDXSeparator.load_model
     MDXSeparator.load_model = patched_load_model

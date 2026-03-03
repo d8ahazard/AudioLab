@@ -19,6 +19,7 @@ from time import time as ttime
 import argparse
 from typing import Dict, List, Optional, Any
 
+import re
 import librosa
 import numpy as np
 import soundfile as sf
@@ -108,7 +109,7 @@ def extract_non_silent_audio(audio_data, sr, threshold=-40.0):
     Extract non-silent portions from audio data using RMS-based detection.
     
     Args:
-        audio_data: Audio data as numpy array (channels, samples) or (samples,)
+        audio_data: Audio data as numpy array. Supports (samples,), (samples, channels), or (channels, samples).
         sr: Sample rate
         threshold: RMS threshold in dB for silence detection
         
@@ -128,16 +129,27 @@ def extract_non_silent_audio(audio_data, sr, threshold=-40.0):
             max_sil_kept=100
         )
         
-        # Get non-silent chunks
-        chunks = slicer.slice(audio_data)
+        sample_axis = _infer_sample_axis(audio_data)
+        slicer_input = audio_data
+        transpose_back = False
+
+        # slicer2 expects multi-channel as (channels, samples)
+        if audio_data.ndim == 2 and sample_axis == 0:
+            slicer_input = audio_data.T
+            transpose_back = True
+
+        # Get non-silent chunks (returned in same orientation as slicer_input)
+        chunks = slicer.slice(slicer_input)
         
         if not chunks:
             return audio_data
         
         # Concatenate all non-silent chunks
-        if len(audio_data.shape) == 2:
-            # Stereo audio
+        if slicer_input.ndim == 2:
+            # Multi-channel: concatenate along the sample axis (axis=1 for (channels, samples))
             non_silent = np.concatenate([chunk for chunk in chunks], axis=1)
+            if transpose_back:
+                non_silent = non_silent.T
         else:
             # Mono audio
             non_silent = np.concatenate([chunk for chunk in chunks], axis=0)
@@ -146,6 +158,64 @@ def extract_non_silent_audio(audio_data, sr, threshold=-40.0):
     except Exception as e:
         logger.warning(f"Failed to extract non-silent audio: {e}, using original audio")
         return audio_data
+
+
+def _infer_sample_axis(audio_data) -> int:
+    if audio_data.ndim == 1:
+        return 0
+    if audio_data.shape[1] == 2 and audio_data.shape[0] != 2:
+        return 0  # (samples, channels)
+    if audio_data.shape[0] == 2 and audio_data.shape[1] != 2:
+        return 1  # (channels, samples)
+    # Fallback to the larger dimension as samples
+    return 0 if audio_data.shape[0] >= audio_data.shape[1] else 1
+
+
+def _slice_samples(audio_data, sample_axis: int, count: int):
+    if audio_data.ndim == 1:
+        return audio_data[:count]
+    if sample_axis == 0:
+        return audio_data[:count, :]
+    return audio_data[:, :count]
+
+
+def _count_samples(audio_data, sample_axis: int) -> int:
+    if audio_data.ndim == 1:
+        return len(audio_data)
+    return audio_data.shape[sample_axis]
+
+
+def _resample_audio(audio_data, orig_sr: int, target_sr: int):
+    if orig_sr == target_sr:
+        return audio_data
+    if audio_data.ndim == 1:
+        return librosa.resample(y=audio_data, orig_sr=orig_sr, target_sr=target_sr)
+    # (samples, channels) -> resample per channel via transpose
+    return librosa.resample(y=audio_data.T, orig_sr=orig_sr, target_sr=target_sr).T
+
+
+def _match_warmup_shape(warmup_audio, target_audio):
+    if warmup_audio is None:
+        return None
+    if target_audio.ndim == 1:
+        if warmup_audio.ndim == 1:
+            return warmup_audio
+        # target mono, warmup stereo/multi -> downmix
+        return warmup_audio.mean(axis=1)
+    # target is (samples, channels)
+    if warmup_audio.ndim == 1:
+        return np.stack([warmup_audio] * target_audio.shape[1], axis=1)
+    if warmup_audio.shape[1] != target_audio.shape[1]:
+        mono = warmup_audio.mean(axis=1)
+        return np.stack([mono] * target_audio.shape[1], axis=1)
+    return warmup_audio
+
+
+def _to_mono_for_rms(audio_data):
+    if audio_data.ndim == 1:
+        return audio_data
+    # (samples, channels)
+    return audio_data.mean(axis=1)
 
 
 def prepare_warmup_audio(audio_data, sr, warmup_duration=10.0):
@@ -161,32 +231,53 @@ def prepare_warmup_audio(audio_data, sr, warmup_duration=10.0):
         Tuple of (warmup_audio, warmup_samples_count)
     """
     try:
-        # First extract non-silent portions
+        # First extract non-silent portions (fallback to original if needed)
         non_silent = extract_non_silent_audio(audio_data, sr)
+        if non_silent is None:
+            non_silent = audio_data
         
         # Calculate desired samples
         warmup_samples = int(warmup_duration * sr)
-        
-        # Handle case where audio is shorter than requested warmup
-        if len(non_silent.shape) == 2:
-            # Stereo
-            available_samples = non_silent.shape[1]
-        else:
-            # Mono
-            available_samples = len(non_silent)
+        sample_axis = _infer_sample_axis(non_silent)
+        available_samples = _count_samples(non_silent, sample_axis)
+        if available_samples <= 0:
+            # Fallback to original audio data if silence trimming removed everything
+            sample_axis = _infer_sample_axis(audio_data)
+            available_samples = _count_samples(audio_data, sample_axis)
+            non_silent = audio_data
+        if available_samples <= 0:
+            return None, 0
         
         if available_samples <= warmup_samples:
-            # Use all available non-silent audio
-            logger.info(f"Audio shorter than warmup duration, using {available_samples/sr:.2f}s for warmup")
-            return non_silent, available_samples
+            # Use all available non-silent audio, at least a few samples
+            min_samples = min(available_samples, max(1, int(0.01 * sr)))
+            warmup_audio = _slice_samples(non_silent, sample_axis, min_samples)
+            logger.info(f"Audio shorter than warmup duration, using {min_samples/sr:.2f}s for warmup")
+            return warmup_audio, min_samples
         
-        # Extract first N seconds
-        if len(non_silent.shape) == 2:
-            # Stereo
-            warmup_audio = non_silent[:, :warmup_samples]
-        else:
-            # Mono
-            warmup_audio = non_silent[:warmup_samples]
+        # Prefer the loudest segment to maximize vocal-rich warmup
+        warmup_audio = _slice_samples(non_silent, sample_axis, warmup_samples)
+        try:
+            mono = _to_mono_for_rms(non_silent)
+            if len(mono) > warmup_samples:
+                hop = max(1, warmup_samples // 2)
+                max_rms = -1.0
+                best_start = 0
+                for start in range(0, len(mono) - warmup_samples + 1, hop):
+                    window = mono[start:start + warmup_samples]
+                    rms = float(np.sqrt(np.mean(window ** 2)))
+                    if rms > max_rms:
+                        max_rms = rms
+                        best_start = start
+                warmup_audio = _slice_samples(non_silent, sample_axis, warmup_samples)
+                # Adjust slice for (samples, channels) vs (channels, samples)
+                if sample_axis == 0:
+                    warmup_audio = non_silent[best_start:best_start + warmup_samples, :]
+                else:
+                    warmup_audio = non_silent[:, best_start:best_start + warmup_samples]
+                logger.info("Selected loudest warmup segment for vocal-rich warmup")
+        except Exception as e:
+            logger.warning(f"Failed to select loudest warmup segment: {e}")
         
         logger.info(f"Prepared {warmup_samples/sr:.2f}s warmup audio from non-silent segments")
         return warmup_audio, warmup_samples
@@ -212,7 +303,12 @@ def concatenate_with_warmup(audio_data, warmup_audio):
         
         # Ensure both have the same number of channels
         if len(audio_data.shape) == 2 and len(warmup_audio.shape) == 2:
-            # Both stereo
+            # Multi-channel: prepend along the sample axis
+            sample_axis = _infer_sample_axis(audio_data)
+            if sample_axis == 0:
+                # (samples, channels)
+                return np.concatenate([warmup_audio, audio_data], axis=0)
+            # (channels, samples)
             return np.concatenate([warmup_audio, audio_data], axis=1)
         elif len(audio_data.shape) == 1 and len(warmup_audio.shape) == 1:
             # Both mono
@@ -546,8 +642,15 @@ class VC:
             self.pipeline = Pipeline(self.tgt_sr, self.config, self.downsample_pipeline)
         n_spk = self.cpt["config"][-3]
         index = {"value": get_index_path_from_model(person), "__type__": "update"}
+        index_value = index["value"]
+        # Resolve to absolute path when it's a filename from models/trained/
+        if index_value and isinstance(index_value, str) and not os.path.isabs(index_value):
+            candidate = os.path.join(model_path, "trained", index_value)
+            if os.path.exists(candidate):
+                index_value = candidate
+        index["value"] = index_value
         logger.info(f"Select index: {index}")
-        self.index = index["value"]
+        self.index = index_value
         return (
             ({"visible": True, "maximum": n_spk, "__type__": "update"}, to_return_protect1)
             if to_return_protect
@@ -560,7 +663,7 @@ class VC:
                   protect=0.33, pitch_correction=False, pitch_correction_humanize=False,
                   merge_type="median", crepe_hop_length=160, f0_autotune=False,
                   rmvpe_onnx=False, clone_stereo=False, callback=None,
-                  use_model_warmup=True, warmup_duration=10.0):
+                  use_model_warmup=True, warmup_duration=10.0, warmup_audio_path=None):
 
         """
         Run voice conversion on a single audio file.
@@ -587,8 +690,16 @@ class VC:
         warmup_samples = 0
         if use_model_warmup:
             try:
-                logger.info(f"[RVC] Preparing {warmup_duration}s warmup audio")
-                warmup_audio, warmup_samples = prepare_warmup_audio(audio_float, og_sr, warmup_duration)
+                warmup_source_path = warmup_audio_path if warmup_audio_path and os.path.exists(warmup_audio_path) else input_audio_path
+                if warmup_source_path != input_audio_path:
+                    logger.info(f"[RVC] Preparing {warmup_duration}s warmup audio from {os.path.basename(warmup_source_path)}")
+                    warmup_source_audio, warmup_sr = load_audio_advanced(file=warmup_source_path, sr=None, mono=False, return_sr=True)
+                    warmup_source_audio = _resample_audio(warmup_source_audio, warmup_sr, og_sr)
+                    warmup_source_audio = _match_warmup_shape(warmup_source_audio, audio_float)
+                else:
+                    logger.info(f"[RVC] Preparing {warmup_duration}s warmup audio")
+                    warmup_source_audio = audio_float
+                warmup_audio, warmup_samples = prepare_warmup_audio(warmup_source_audio, og_sr, warmup_duration)
                 if warmup_audio is not None and warmup_samples > 0:
                     audio_float = concatenate_with_warmup(audio_float, warmup_audio)
                     logger.info(f"[RVC] Added {warmup_samples/og_sr:.2f}s warmup segment to input audio")
@@ -720,6 +831,7 @@ class VC:
             pitch_correction,
             pitch_correction_humanize,
             project_dir,
+            model_display_name: Optional[str] = None,
             callback=None,
             use_model_warmup=True,
             warmup_duration=10.0,
@@ -762,6 +874,29 @@ class VC:
 
                 base_name, ext = os.path.splitext(os.path.basename(path))
                 model_base, _ = os.path.splitext(os.path.basename(model))
+
+                # Prefer a user-facing name if provided (e.g., "<zip title> (zip)")
+                if model_display_name and isinstance(model_display_name, str):
+                    disp = model_display_name.strip()
+                    if disp.endswith(" (zip)"):
+                        disp = disp[: -len(" (zip)")].strip()
+                    if disp.lower().endswith(".pth"):
+                        disp = disp[:-4].strip()
+                    if disp:
+                        model_base = disp
+
+                # Zip-extracted models commonly use "model.pth", which makes outputs collide and hides which voice was used.
+                # If we still have a generic base name, prefer a parent folder name.
+                if model_base.lower() in {"model", "checkpoint", "generator", "final"}:
+                    parent = os.path.basename(os.path.dirname(model))
+                    if parent:
+                        model_base = parent
+
+                # Sanitize for filesystem safety (keep common characters)
+                model_base = re.sub(r"[^a-zA-Z0-9 _\\-\\(\\)\\.]+", "", model_base).strip() or "model"
+                # Avoid pathological filename lengths
+                if len(model_base) > 80:
+                    model_base = model_base[:80].rstrip()
                 # Append pitch shift to filename if non-zero: e.g., (-1), (+2), (+0.5)
                 pitch_suffix = ""
                 try:
@@ -787,6 +922,7 @@ class VC:
                     outputs.append(output_file)
                     continue
 
+                warmup_source = path
                 info, opt = self.vc_single(
                     model,
                     sid,
@@ -808,6 +944,7 @@ class VC:
                     callback=callback,
                     use_model_warmup=use_model_warmup,
                     warmup_duration=warmup_duration,
+                    warmup_audio_path=warmup_source,
                 )
                 if "Success" in info:
                     try:

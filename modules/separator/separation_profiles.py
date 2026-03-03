@@ -50,6 +50,7 @@ class SeparationProfile(str, Enum):
     V1_STANDARD = "v1"
     V2_HIGH_QUALITY = "v2"
     V3_MAXIMUM = "v3"
+    V4_CLEAN_INSTRUMENTAL = "v4"
 
 
 class SeparationPreset(str, Enum):
@@ -181,6 +182,14 @@ MODEL_PRESETS: Dict[SeparationProfile, List[ModelSpec]] = {
         MODELS["mdx23c_instvoc_hq"],
         MODELS["kim_vocal_2"],
     ],
+
+    # V4 (Clean Instrumental) - 3 models (instrumental purity priority)
+    # Optimized for reducing vocal-section artifacts in the instrumental stem.
+    SeparationProfile.V4_CLEAN_INSTRUMENTAL: [
+        MODELS["melband_karaoke"],
+        MODELS["bs_roformer_ep368"],
+        MODELS["mdx23c_instvoc_hq"],
+    ],
 }
 
 
@@ -275,6 +284,11 @@ PROFILE_DEFAULTS: Dict[SeparationProfile, Dict] = {
         "ensemble_size": 5,
         "residual_fill_pct": 0.35,
         "bleed_guard_multiplier": 1.20,
+    },
+    SeparationProfile.V4_CLEAN_INSTRUMENTAL: {
+        "ensemble_size": 3,
+        "residual_fill_pct": 0.50,
+        "bleed_guard_multiplier": 1.30,
     },
 }
 

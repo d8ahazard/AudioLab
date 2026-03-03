@@ -1,17 +1,57 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 import time
+import json
 
-from handlers.config import model_path
+from handlers.config import model_path, output_path
+from handlers.weights_zip import list_weights_zip_models
 from modules.rvc.configs.config import Config
 from modules.rvc.infer.modules.vc.pipeline import VC
 from modules.cloning import main as cloning
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 import gradio as gr
+import numpy as np
+import soundfile as sf
 
 logger = logging.getLogger(__name__)
+
+
+def _wav_stats(path: str) -> Dict[str, Any]:
+    y, sr = sf.read(path, dtype="float32")
+    if y.ndim > 1:
+        y = np.mean(y, axis=1)
+    if y.size == 0:
+        return {"path": path, "sr": int(sr), "samples": 0}
+    peak = float(np.max(np.abs(y)))
+    rms = float(np.sqrt(np.mean(np.square(y), dtype=np.float64)))
+    return {
+        "path": path,
+        "sr": int(sr),
+        "samples": int(y.shape[0]),
+        "duration_sec": float(y.shape[0] / max(1, int(sr))),
+        "peak_abs": peak,
+        "rms": rms,
+        "clipped_frac": float(np.mean(np.abs(y) > 0.99)),
+    }
+
+
+def _append_ab_report(event: Dict[str, Any]) -> None:
+    """
+    Append JSONL event when AUDIOCLONE_AB_REPORT is set.
+    This is used by deterministic V2/V3 A-B evaluations.
+    """
+    report_path = os.environ.get("AUDIOCLONE_AB_REPORT", "").strip()
+    if not report_path:
+        return
+    try:
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        with open(report_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("Failed writing AUDIOCLONE_AB_REPORT: %s", e)
 
 
 def list_speakers():
@@ -20,9 +60,25 @@ def list_speakers():
     """
     speaker_dir = os.path.join(model_path, "trained")
     os.makedirs(speaker_dir, exist_ok=True)
-    models = [f for f in os.listdir(speaker_dir) if f.endswith(".pth")]
-    model_names = [os.path.splitext(f)[0] for f in models]
-    return model_names
+    v2_models = sorted(
+        [os.path.splitext(f)[0] for f in os.listdir(speaker_dir) if f.endswith(".pth")]
+    )
+    v3_dir = os.path.join(speaker_dir, "v3")
+    os.makedirs(v3_dir, exist_ok=True)
+    v3_stems = {os.path.splitext(f)[0] for f in os.listdir(v3_dir) if f.endswith(".pth") or f.endswith(".safetensors")}
+    v3_models = sorted(v3_stems)
+    # Display v3 models explicitly so routing is unambiguous.
+    v3_display = [f"{name} (v3)" for name in v3_models]
+    # Merge in zip-backed models (weights.gg style)
+    try:
+        zip_models = list_weights_zip_models()
+        zip_names = [m.display_name for m in zip_models]
+    except Exception as e:
+        logger.warning(f"Could not list zip models: {e}")
+        zip_names = []
+    # Keep it stable and avoid duplicates
+    merged = list(dict.fromkeys(v2_models + v3_display + zip_names))
+    return merged
 
 
 def list_speakers_ui():
@@ -31,6 +87,130 @@ def list_speakers_ui():
     containing the speaker checkpoint paths found by list_speakers().
     """
     return {"choices": list_speakers(), "__type__": "update"}
+
+
+def _resolve_v3_index_path(model_name: str) -> Optional[str]:
+    candidates = [
+        os.path.join(model_path, "trained", "v3", f"{model_name}_native_retrieval.index"),
+        os.path.join(model_path, "trained", "v3", f"{model_name}.index"),
+        os.path.join(output_path, "rvc_v3_data", model_name, "retrieval_index.index"),
+    ]
+    project_dir = os.path.join(output_path, "rvc_v3_data", model_name)
+    if os.path.isdir(project_dir):
+        candidates.extend(
+            [
+                os.path.join(project_dir, f)
+                for f in os.listdir(project_dir)
+                if f.endswith(".index")
+            ]
+        )
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _resolve_voice_selection(selected_voice: str) -> Dict[str, Optional[str]]:
+    """
+    Resolve a UI-selected voice string to concrete model metadata.
+    """
+    if not selected_voice:
+        return {
+            "backend": None,
+            "checkpoint_path": None,
+            "index_path": None,
+            "model_name": None,
+            "display_name": selected_voice,
+        }
+
+    # Zip model selection
+    if selected_voice.endswith(" (zip)"):
+        try:
+            for m in list_weights_zip_models():
+                if m.display_name == selected_voice:
+                    return {
+                        "backend": "v2",
+                        "checkpoint_path": m.pth_path,
+                        "index_path": m.index_path,
+                        "model_name": os.path.splitext(os.path.basename(m.pth_path))[0],
+                        "display_name": selected_voice,
+                    }
+        except Exception as e:
+            logger.warning(f"Failed resolving zip model '{selected_voice}': {e}")
+        return {
+            "backend": None,
+            "checkpoint_path": None,
+            "index_path": None,
+            "model_name": None,
+            "display_name": selected_voice,
+        }
+
+    selected_voice = selected_voice.strip()
+    if selected_voice.endswith(" (v3)"):
+        model_name = selected_voice[: -len(" (v3)")].strip()
+        v3_dir = os.path.join(model_path, "trained", "v3")
+        v3_safe = os.path.join(v3_dir, f"{model_name}.safetensors")
+        v3_pth = os.path.join(v3_dir, f"{model_name}.pth")
+        v3_path = v3_safe if os.path.exists(v3_safe) else v3_pth
+        if os.path.exists(v3_path):
+            return {
+                "backend": "v3",
+                "checkpoint_path": v3_path,
+                "index_path": _resolve_v3_index_path(model_name),
+                "model_name": model_name,
+                "display_name": selected_voice,
+            }
+        return {
+            "backend": None,
+            "checkpoint_path": None,
+            "index_path": None,
+            "model_name": model_name,
+            "display_name": selected_voice,
+        }
+
+    # Native checkpoint selection
+    speaker_dir = os.path.join(model_path, "trained")
+    pth_path = os.path.join(speaker_dir, f"{selected_voice}.pth")
+    if os.path.exists(pth_path):
+        index_path = None
+        try:
+            from modules.rvc.infer.modules.vc.utils import get_index_path_from_model
+
+            idx_name = get_index_path_from_model(pth_path)
+            if idx_name:
+                candidate = os.path.join(speaker_dir, idx_name)
+                if os.path.exists(candidate):
+                    index_path = candidate
+        except Exception:
+            index_path = None
+
+        return {
+            "backend": "v2",
+            "checkpoint_path": pth_path,
+            "index_path": index_path,
+            "model_name": selected_voice,
+            "display_name": selected_voice,
+        }
+
+    # Fallback: allow selecting bare model name for v3 via API.
+    v3_path = os.path.join(speaker_dir, "v3", f"{selected_voice}.pth")
+    if os.path.exists(v3_path):
+        return {
+            "backend": "v3",
+            "checkpoint_path": v3_path,
+            "index_path": _resolve_v3_index_path(selected_voice),
+            "model_name": selected_voice,
+            "display_name": f"{selected_voice} (v3)",
+        }
+
+    return {
+        "backend": None,
+        "checkpoint_path": None,
+        "index_path": None,
+        "model_name": selected_voice,
+        "display_name": selected_voice,
+    }
+
 
 def toggle_clone_elements(clone_method):
     """
@@ -326,17 +506,73 @@ class Clone(BaseWrapper):
 
         # RVC-specific configs
         if clone_method == "RVC":
-            # Ensure RVC is set up
-            config = Config()
-            self.vc = VC(config, True)
-            
-            selected_voice = filtered_kwargs.get("selected_voice", "")
-            speaker_dir = os.path.join(model_path, "trained")
-            selected_voice = os.path.join(speaker_dir, f"{selected_voice}.pth")
-            if not os.path.exists(selected_voice):
+            selected_voice_ui = filtered_kwargs.get("selected_voice", "")
+            selected_voice_meta = _resolve_voice_selection(selected_voice_ui)
+            selected_voice_path = selected_voice_meta.get("checkpoint_path")
+            selected_index_path = selected_voice_meta.get("index_path")
+            selected_voice_backend = selected_voice_meta.get("backend")
+            if not selected_voice_path or not os.path.exists(selected_voice_path):
                 if callback is not None:
                     callback(0, "Selected voice model not found.")
-                return []
+                raise FileNotFoundError(f"Selected voice model not found: {selected_voice_ui}")
+
+            # Resolve to actual checkpoint path (supports zip-extracted models + v3 models).
+            selected_voice = selected_voice_path
+
+            v3_pipeline = None
+            if selected_voice_backend == "v3":
+                try:
+                    import torch
+                    from modules.rvc_v3.configs.v3_config import RVCV3Config
+                    from modules.rvc_v3.inference.pipeline import RVCV3Pipeline
+                    from modules.rvc_v3.io.checkpoint_io import load_inference_model
+
+                    _, _, meta = load_inference_model(selected_voice, device="cpu")
+                    cfg_dict = meta.get("config", {})
+                    if not cfg_dict:
+                        raise RuntimeError(
+                            f"Missing V3 config metadata for checkpoint: {selected_voice}. "
+                            "Re-export this model to .safetensors with _config.json."
+                        )
+                    v3_config = RVCV3Config.from_dict(cfg_dict)
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    v3_pipeline = RVCV3Pipeline(selected_voice, v3_config, device=device)
+                    if selected_index_path and os.path.exists(selected_index_path):
+                        try:
+                            v3_pipeline.load_retrieval_index(selected_index_path)
+                            logger.info(f"Using V3 retrieval index for '{selected_voice_ui}': {selected_index_path}")
+                        except Exception as idx_err:
+                            logger.warning(f"Could not load V3 retrieval index '{selected_index_path}': {idx_err}")
+                    else:
+                        logger.info(f"No V3 retrieval index found for '{selected_voice_ui}'. Proceeding without index.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize V3 pipeline: {e}")
+                    if callback is not None:
+                        callback(0, f"Failed to initialize V3 model: {e}")
+                    raise
+            else:
+                # Ensure V2 RVC is set up
+                config = Config()
+                self.vc = VC(config, True)
+
+                # IMPORTANT:
+                # VC.vc_multi() calls VC.get_vc() internally and overwrites self.index based on models/trained/*,
+                # which breaks zip-extracted indexes living under `.extracted/`.
+                # Load the model first, then override index with the resolved zip index path (if present).
+                try:
+                    if self.vc is not None:
+                        self.vc.get_vc(selected_voice)
+                        if selected_index_path and os.path.exists(selected_index_path):
+                            self.vc.index = selected_index_path
+                            logger.info(f"Using resolved index for '{selected_voice}': {selected_index_path}")
+                        else:
+                            # Keep whatever VC.get_vc discovered (or None)
+                            logger.info(f"No index found/resolved for '{selected_voice}'. Proceeding without index.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize RVC model/index: {e}")
+                    if callback is not None:
+                        callback(0, f"Failed to initialize RVC model/index: {e}")
+                    raise
                 
             spk_id = filtered_kwargs.get("speaker_id", 0)
             f0method = filtered_kwargs.get("pitch_extraction_method", "rmvpe+")
@@ -364,6 +600,12 @@ class Clone(BaseWrapper):
             # For RVC callback
             if self.vc:
                 self.vc.total_steps = total_steps
+            if selected_voice_backend == "v3":
+                logger.info(
+                    "Selected V3 model '%s'. Using V3 conversion pipeline (applies pitch_shift/index_rate/speaker_id; "
+                    "ignores v2-only knobs such as f0_method/filter_radius/protect/rmvpe options).",
+                    selected_voice_ui,
+                )
 
         outputs = []
         try:
@@ -395,7 +637,10 @@ class Clone(BaseWrapper):
                         filtered_inputs = [project.src_file]
                 else:
                     # Typically, we only clone from the path labeled "(Vocals)". If none, fallback to the src_file.
-                    filtered_inputs = [p for p in last_outputs if "(Vocals)" in p or "(BG_Vocals" in p]
+                    filtered_inputs = [
+                        p for p in last_outputs
+                        if "(Vocals)" in p or "(BG_Vocals" in p or "(Vocals_Full)" in p
+                    ]
                     if not filtered_inputs:
                         filtered_inputs = [project.src_file]
 
@@ -435,31 +680,117 @@ class Clone(BaseWrapper):
                             # Use RVC for cloning
                             if callback is not None:
                                 callback(0.3, f"Cloning with RVC: {os.path.basename(proc_file)}")
-                                
-                            # Perform the voice conversion with RVC
-                            file_outputs = self.vc.vc_multi(
-                                model=selected_voice,
-                                sid=spk_id,
-                                paths=[proc_file],
-                                f0_up_key=filtered_kwargs.get("pitch_shift", 0),
-                                f0_method=f0method,
-                                index_rate=index_rate,
-                                filter_radius=filter_radius,
-                                rms_mix_rate=rms_mix_rate,
-                                protect=protect,
-                                merge_type=merge_type,
-                                crepe_hop_length=crepe_hop_length,
-                                f0_autotune=f0_autotune,
-                                rmvpe_onnx=rmvpe_onnx,
-                                clone_stereo=clone_stereo,
-                                pitch_correction=pitch_correction,
-                                pitch_correction_humanize=pitch_correction_humanize,
-                                project_dir=project.project_dir,
-                                callback=project_callback,
-                                use_model_warmup=use_model_warmup,
-                                warmup_duration=warmup_duration
-                            )
-                            clone_outputs.extend(file_outputs)
+
+                            if selected_voice_backend == "v3":
+                                if v3_pipeline is None:
+                                    raise RuntimeError("V3 pipeline was not initialized")
+                                out_dir = os.path.join(project.project_dir, "cloned")
+                                os.makedirs(out_dir, exist_ok=True)
+                                base_name, _ = os.path.splitext(os.path.basename(proc_file))
+                                model_base = selected_voice_meta.get("model_name") or "v3"
+                                model_base = re.sub(r"[^a-zA-Z0-9 _\\-\\(\\)\\.]+", "", model_base).strip() or "v3"
+                                output_file = os.path.join(
+                                    out_dir,
+                                    f"{base_name}(Cloned)({model_base}_rvcv3).wav",
+                                )
+                                lyrics_for_convert = (custom_text or "").strip() or None
+                                # Auto-lyrics can destabilize current V3 conditioning for some songs.
+                                # Keep it opt-in until text-conditioning quality is consistently better.
+                                use_auto_lyrics = os.environ.get("AUDIOCLONE_V3_AUTO_LYRICS", "0").strip() == "1"
+                                if use_auto_lyrics and not lyrics_for_convert:
+                                    try:
+                                        from modules.rvc_v3.data_prep.transcriber import Transcriber
+                                        transcriber = Transcriber(output_dir=out_dir, model_size="base")
+                                        segs = transcriber.transcribe_file(
+                                            proc_file,
+                                            os.path.join(out_dir, f"{base_name}_transcript.json"),
+                                            language=None,
+                                            word_timestamps=True,
+                                        )
+                                        if segs:
+                                            lyrics_for_convert = "[clean] " + " ".join(s.get("text", "") for s in segs)
+                                    except Exception as tr_err:
+                                        logger.debug("V3 auto-transcribe skipped: %s", tr_err)
+                                v3_pipeline.convert(
+                                    audio_path=proc_file,
+                                    lyrics=lyrics_for_convert,
+                                    output_path=output_file,
+                                    index_rate=float(index_rate),
+                                    pitch_shift=int(filtered_kwargs.get("pitch_shift", 0)),
+                                    speaker_id=int(spk_id),
+                                )
+                                clone_outputs.append(output_file)
+                                try:
+                                    event = {
+                                        "backend": "v3",
+                                        "model_display": selected_voice_ui,
+                                        "checkpoint": selected_voice_path,
+                                        "index_path": selected_index_path,
+                                        "project_dir": project.project_dir,
+                                        "input_file": proc_file,
+                                        "output_file": output_file,
+                                        "settings": {
+                                            "index_rate": float(index_rate),
+                                            "pitch_shift": int(filtered_kwargs.get("pitch_shift", 0)),
+                                            "speaker_id": int(spk_id),
+                                        },
+                                        "output_stats": _wav_stats(output_file),
+                                        "v3_debug": getattr(v3_pipeline, "last_convert_debug", {}),
+                                    }
+                                    _append_ab_report(event)
+                                except Exception as rep_err:
+                                    logger.warning("Could not emit V3 A/B report event: %s", rep_err)
+                                if callback is not None:
+                                    callback(1.0, f"V3 clone complete: {os.path.basename(output_file)}")
+                            else:
+                                # Perform the voice conversion with V2 RVC path
+                                file_outputs = self.vc.vc_multi(
+                                    model=selected_voice,
+                                    sid=spk_id,
+                                    paths=[proc_file],
+                                    f0_up_key=filtered_kwargs.get("pitch_shift", 0),
+                                    f0_method=f0method,
+                                    index_rate=index_rate,
+                                    filter_radius=filter_radius,
+                                    rms_mix_rate=rms_mix_rate,
+                                    protect=protect,
+                                    merge_type=merge_type,
+                                    crepe_hop_length=crepe_hop_length,
+                                    f0_autotune=f0_autotune,
+                                    rmvpe_onnx=rmvpe_onnx,
+                                    clone_stereo=clone_stereo,
+                                    pitch_correction=pitch_correction,
+                                    pitch_correction_humanize=pitch_correction_humanize,
+                                    project_dir=project.project_dir,
+                                    model_display_name=selected_voice_ui,
+                                    callback=project_callback,
+                                    use_model_warmup=use_model_warmup,
+                                    warmup_duration=warmup_duration
+                                )
+                                clone_outputs.extend(file_outputs)
+                                try:
+                                    for one_out in file_outputs:
+                                        event = {
+                                            "backend": "v2",
+                                            "model_display": selected_voice_ui,
+                                            "checkpoint": selected_voice_path,
+                                            "index_path": selected_index_path,
+                                            "project_dir": project.project_dir,
+                                            "input_file": proc_file,
+                                            "output_file": one_out,
+                                            "settings": {
+                                                "index_rate": float(index_rate),
+                                                "pitch_shift": int(filtered_kwargs.get("pitch_shift", 0)),
+                                                "speaker_id": int(spk_id),
+                                                "f0_method": f0method,
+                                                "rms_mix_rate": float(rms_mix_rate),
+                                                "protect": float(protect),
+                                            },
+                                            "output_stats": _wav_stats(one_out),
+                                        }
+                                        _append_ab_report(event)
+                                except Exception as rep_err:
+                                    logger.warning("Could not emit V2 A/B report event: %s", rep_err)
                             
                         elif clone_method == "OpenVoice":
                             # Use OpenVoice for cloning

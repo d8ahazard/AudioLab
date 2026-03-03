@@ -32,9 +32,9 @@ class Separate(BaseWrapper):
     allowed_kwargs = {
         "separation_profile": TypedInput(
             default="v2",
-            description="Separation quality profile. v3 uses 5 models for maximum fidelity. v2 (recommended) balances quality and speed with 3 models. v1 is fastest with 2 models.",
+            description="Separation quality profile. v4 prioritizes clean instrumentals (karaoke-style). v3 uses 5 models for maximum fidelity. v2 (recommended) balances quality and speed with 3 models. v1 is fastest with 2 models.",
             type=str,
-            choices=["v3", "v2", "v1"],
+            choices=["v4", "v3", "v2", "v1"],
             gradio_type="Dropdown"
         ),
         "separation_preset": TypedInput(

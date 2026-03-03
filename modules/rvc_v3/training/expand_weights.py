@@ -230,7 +230,8 @@ def expand_v2_to_v3(
     
     # Create v3 config
     v3_config = RVCV3Config(
-        spec_channels=json_config['data']['n_mel_channels'],
+        # Linear spectrogram bins expected by posterior encoder.
+        spec_channels=json_config['data']['filter_length'] // 2 + 1,
         segment_size=json_config['train']['segment_size'],
         inter_channels=json_config['model']['inter_channels'],
         hidden_channels=json_config['model']['hidden_channels'],
@@ -248,7 +249,8 @@ def expand_v2_to_v3(
         gin_channels=json_config['model']['gin_channels'],
         spk_embed_dim=json_config['model']['spk_embed_dim'],
         sampling_rate=json_config['data']['sampling_rate'],
-        vocoder_type='bigvgan',  # Default to bigvgan for v3
+        # Preserve v2-compatible vocoder path for transferred decoder weights.
+        vocoder_type='hifigan',
         use_dual_encoder=False,  # Single HuBERT for now
         hubert_dim=768,
     )
@@ -303,36 +305,34 @@ def expand_v2_to_v3(
         v2_d_checkpoint, v3_discriminator
     )
     
-    # Combine generator and text encoder into single checkpoint
-    # (V3 trains them together)
-    v3_gen_checkpoint = {
-        'model': v3_gen_state,
-        'text_encoder': v3_text_state,
-        'iteration': v2_g_checkpoint.get('iteration', 0),
-        'learning_rate': v2_g_checkpoint.get('learning_rate', 0.0001),
-        'version': 'v3',
-        'config': v3_config.__dict__
-    }
-    
-    v3_disc_checkpoint = {
-        'model': v3_disc_state,
-        'iteration': v2_d_checkpoint.get('iteration', 0),
-        'learning_rate': v2_d_checkpoint.get('learning_rate', 0.0001),
-        'version': 'v3'
-    }
-    
-    # Save expanded weights
+    # Save expanded weights (safetensors + config)
     f0_str = 'f0' if if_f0 else ''
     sr_str = f"{sample_rate // 1000}k"
-    
-    v3_g_path = os.path.join(output_dir, f"{f0_str}G{sr_str}.pth")
-    v3_d_path = os.path.join(output_dir, f"{f0_str}D{sr_str}.pth")
-    
-    logger.info(f"Saving expanded v3 generator to {v3_g_path}")
-    torch.save(v3_gen_checkpoint, v3_g_path)
-    
-    logger.info(f"Saving expanded v3 discriminator to {v3_d_path}")
-    torch.save(v3_disc_checkpoint, v3_d_path)
+    v3_g_base = os.path.join(output_dir, f"{f0_str}G{sr_str}")
+    v3_d_base = os.path.join(output_dir, f"{f0_str}D{sr_str}")
+
+    from modules.rvc_v3.io.checkpoint_io import save_discriminator_checkpoint, save_inference_model_from_state_dicts
+
+    config_dict = v3_config.to_dict() if hasattr(v3_config, "to_dict") else {}
+
+    logger.info(f"Saving expanded v3 generator to {v3_g_base}.safetensors")
+    v3_g_path, _ = save_inference_model_from_state_dicts(
+        v3_g_base,
+        v3_gen_state,
+        v3_text_state,
+        config_dict,
+        version="v3",
+        iteration=v2_g_checkpoint.get("iteration", 0),
+        lr=v2_g_checkpoint.get("learning_rate", 0.0001),
+    )
+
+    logger.info(f"Saving expanded v3 discriminator to {v3_d_base}.safetensors")
+    v3_d_path, _ = save_discriminator_checkpoint(
+        v3_d_base,
+        v3_disc_state,
+        iteration=v2_d_checkpoint.get("iteration", 0),
+        lr=v2_d_checkpoint.get("learning_rate", 0.0001),
+    )
     
     logger.info("Weight expansion complete!")
     

@@ -8,6 +8,7 @@ soundfile>=0.13.1
 pydub>=0.25.1
 pyloudnorm>=0.1.1
 praat-parselmouth>=0.4.5
+basic-pitch
 pyworld
 psola
 torchcrepe
@@ -27,7 +28,7 @@ torchdiffeq>=0.2.5
 torchlibrosa>=0.1.0
 
 # Audio separation
-audio-separator[gpu]>=0.32.0
+audio-separator[gpu]>=0.41.1
 demucs>=4.0.1
 
 # ML utilities

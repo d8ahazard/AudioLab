@@ -80,18 +80,27 @@ class SongDownloader:
         output_template = str(project_dir / "%(title)s.%(ext)s")
         
         # yt-dlp command options
+        # Use format and client that avoids SABR streaming issues (see https://github.com/yt-dlp/yt-dlp/issues/12482)
         cmd = [
             "python", "-m", "yt_dlp",
             url,
             "-o", output_template,
             "--no-playlist",
             "--write-info-json",
-            "--remote-components", "ejs:github"
+            "--socket-timeout", "30",  # Timeout for network operations
+            "--retries", "3",  # Retry failed downloads
+            "--fragment-retries", "3",  # Retry failed fragments
+            "--extractor-retries", "3",  # Retry failed extractors
+            "--no-live-from-start",  # Don't try to get live from start
+            # Use cookies from browser to bypass bot detection
+            "--cookies-from-browser", "chrome",
+            # Use TV client (no PO token needed, no SABR) with mweb fallback
+            "--extractor-args", "youtube:player_client=tv,mweb;player_skip=webpage,configs",
         ]
         
         if extract_audio:
-            # Prefer high-quality audio formats
             cmd.extend([
+                "-f", "bestaudio/best",  # Let yt-dlp pick best available
                 "-x",  # Extract audio
                 "--audio-format", "wav",
                 "--audio-quality", "0",  # Best quality
@@ -99,7 +108,7 @@ class SongDownloader:
             ])
         else:
             cmd.extend([
-                "-f", format_preference,
+                "-f", f"{format_preference}/best",
             ])
         
         try:
