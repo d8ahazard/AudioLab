@@ -8,6 +8,9 @@ import logging
 import math
 import os
 import shutil
+import faulthandler
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -230,6 +233,25 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
     # TODO: Replace with proper phonemizer when available
     phonemizer = SimplePhonemizer()
     
+    debug_stall = os.environ.get("SMOKE_DEBUG_STALL", "0").strip().lower() in ("1", "true", "yes")
+    stall_timeout_sec = float(os.environ.get("SMOKE_STALL_TIMEOUT_SEC", "0").strip() or 0.0)
+    progress_every = int(os.environ.get("SMOKE_PROGRESS_EVERY_BATCHES", "10").strip() or 10)
+    progress_every = max(1, progress_every)
+
+    def _tensor_fingerprint(t: torch.Tensor | None) -> str:
+        if t is None:
+            return "none"
+        shape = tuple(int(x) for x in t.shape)
+        dtype = str(t.dtype).replace("torch.", "")
+        device_str = str(t.device)
+        if t.numel() == 0:
+            return f"shape={shape} dtype={dtype} dev={device_str} empty"
+        finite = bool(torch.isfinite(t).all().item())
+        t_float = t.detach().float()
+        tmin = float(torch.min(t_float).item())
+        tmax = float(torch.max(t_float).item())
+        return f"shape={shape} dtype={dtype} dev={device_str} finite={finite} min={tmin:.4g} max={tmax:.4g}"
+
     # Create progress callback wrapper
     def progress_callback(prog, message, total_steps=None):
         if progress is not None:
@@ -262,13 +284,21 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
         )
         collate_fn = TextAudioCollateMultiNSFsidV3()
 
+        pin_memory = os.environ.get("SMOKE_PIN_MEMORY", "0").strip().lower() in ("1", "true", "yes")
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
             shuffle=True,
             num_workers=0,  # Windows-safe
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=pin_memory and torch.cuda.is_available(),
             collate_fn=collate_fn,
+        )
+        logger.info(
+            "[stall-debug] loader settings: num_workers=%d pin_memory=%s progress_every=%d timeout_sec=%.1f",
+            0,
+            bool(pin_memory and torch.cuda.is_available()),
+            progress_every,
+            stall_timeout_sec,
         )
 
         trainer.generator.train()
@@ -314,7 +344,29 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
                 unit="batch",
                 leave=False,
             )
+            last_successful_marker = f"epoch={epoch + 1} batch=0 global_step={trainer.global_step}"
             for batch_idx, info in batch_bar:
+                batch_marker = f"epoch={epoch + 1} batch={batch_idx}/{len(train_loader)} global_step={trainer.global_step}"
+                batch_t0 = time.perf_counter()
+                watchdog = None
+                if stall_timeout_sec > 0:
+                    def _on_timeout(marker: str = batch_marker) -> None:
+                        logger.error(
+                            "STALL watchdog fired after %.1fs at %s (last_successful=%s)",
+                            stall_timeout_sec,
+                            marker,
+                            last_successful_marker,
+                        )
+                        try:
+                            faulthandler.dump_traceback(file=sys.__stderr__, all_threads=True)
+                        except Exception:
+                            pass
+                        os._exit(124)
+
+                    watchdog = threading.Timer(stall_timeout_sec, _on_timeout)
+                    watchdog.daemon = True
+                    watchdog.start()
+
                 (
                     phone,
                     phone_lengths,
@@ -330,18 +382,21 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
                 ) = info
 
                 # Move to device
+                t_move = time.perf_counter()
                 if torch.cuda.is_available():
-                    phone = phone.to(device, non_blocking=True)
-                    phone_lengths = phone_lengths.to(device, non_blocking=True)
-                    pitch = pitch.to(device, non_blocking=True)
-                    pitchf = pitchf.to(device, non_blocking=True)
-                    spec = spec.to(device, non_blocking=True)
-                    spec_lengths = spec_lengths.to(device, non_blocking=True)
-                    wave = wave.to(device, non_blocking=True)
-                    sid = sid.to(device, non_blocking=True)
+                    use_non_blocking = pin_memory
+                    phone = phone.to(device, non_blocking=use_non_blocking)
+                    phone_lengths = phone_lengths.to(device, non_blocking=use_non_blocking)
+                    pitch = pitch.to(device, non_blocking=use_non_blocking)
+                    pitchf = pitchf.to(device, non_blocking=use_non_blocking)
+                    spec = spec.to(device, non_blocking=use_non_blocking)
+                    spec_lengths = spec_lengths.to(device, non_blocking=use_non_blocking)
+                    wave = wave.to(device, non_blocking=use_non_blocking)
+                    sid = sid.to(device, non_blocking=use_non_blocking)
                     if text_tokens is not None:
-                        text_tokens = text_tokens.to(device, non_blocking=True)
-                        text_mask = text_mask.to(device, non_blocking=True)
+                        text_tokens = text_tokens.to(device, non_blocking=use_non_blocking)
+                        text_mask = text_mask.to(device, non_blocking=use_non_blocking)
+                move_sec = time.perf_counter() - t_move
 
                 batch = {
                     "phone": phone,
@@ -356,8 +411,27 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
                     "text_mask": text_mask,
                 }
 
+                if debug_stall and (
+                    batch_idx <= 3
+                    or batch_idx >= len(train_loader) - 3
+                    or (batch_idx % 10 == 0)
+                ):
+                    logger.info(
+                        "[stall-debug] pre-step %s | phone=%s pitch=%s pitchf=%s spec=%s wave=%s text=%s",
+                        batch_marker,
+                        _tensor_fingerprint(phone),
+                        _tensor_fingerprint(pitch),
+                        _tensor_fingerprint(pitchf),
+                        _tensor_fingerprint(spec),
+                        _tensor_fingerprint(wave),
+                        _tensor_fingerprint(text_tokens),
+                    )
+
+                t_step = time.perf_counter()
                 losses = trainer._train_step(batch)
+                step_sec = time.perf_counter() - t_step
                 trainer.global_step += 1
+                last_successful_marker = batch_marker
 
                 loss_values = {
                     "loss_mel": float(losses.get("loss_mel", 0.0)),
@@ -398,14 +472,27 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
                 )
 
                 step_no += 1
-                progress_callback(
-                    step_no / total_steps,
-                    f"Epoch {epoch + 1}/{total_epochs} step {batch_idx}/{len(train_loader)} "
-                    f"mel={loss_values['loss_mel']:.3f} fm={loss_values['loss_fm']:.3f} "
-                    f"g={loss_values['loss_gen']:.3f} d={loss_values['loss_disc']:.3f} "
-                    f"lr={current_lr:.2e}",
-                    total_steps,
-                )
+                if (batch_idx % progress_every == 0) or (batch_idx == len(train_loader)):
+                    progress_callback(
+                        step_no / total_steps,
+                        f"Epoch {epoch + 1}/{total_epochs} step {batch_idx}/{len(train_loader)} "
+                        f"mel={loss_values['loss_mel']:.3f} fm={loss_values['loss_fm']:.3f} "
+                        f"g={loss_values['loss_gen']:.3f} d={loss_values['loss_disc']:.3f} "
+                        f"lr={current_lr:.2e}",
+                        total_steps,
+                    )
+
+                if debug_stall:
+                    total_sec = time.perf_counter() - batch_t0
+                    logger.info(
+                        "[stall-debug] post-step %s | move=%.3fs train=%.3fs total=%.3fs",
+                        batch_marker,
+                        move_sec,
+                        step_sec,
+                        total_sec,
+                    )
+                if watchdog is not None:
+                    watchdog.cancel()
 
             batch_bar.close()
 

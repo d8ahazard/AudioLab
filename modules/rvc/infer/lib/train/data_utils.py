@@ -109,7 +109,24 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
 
         audio_norm = audio_norm.unsqueeze(0)
         spec_filename = filename.replace(".wav", ".spec.pt")
-        if os.path.exists(spec_filename):
+        # Smoke stall debugging: bypass spec cache reads/writes to avoid blocking
+        # on potentially corrupted or locked cache files.
+        disable_spec_cache = os.environ.get("SMOKE_DISABLE_SPEC_CACHE", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if disable_spec_cache:
+            spec = spectrogram_torch(
+                audio_norm,
+                self.filter_length,
+                self.sampling_rate,
+                self.hop_length,
+                self.win_length,
+                center=False,
+            )
+            spec = torch.squeeze(spec, 0)
+        elif os.path.exists(spec_filename):
             try:
                 spec = torch.load(spec_filename)
             except:

@@ -21,6 +21,10 @@ import warnings
 # Suppress noisy torchaudio FFmpeg extension DEBUG logs and autocast FutureWarnings
 logging.getLogger("torio").setLevel(logging.WARNING)
 logging.getLogger("torio._extension.utils").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("faiss").setLevel(logging.WARNING)
+logging.getLogger("faiss.loader").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.cuda.amp.autocast.*")
 
 import glob
@@ -330,6 +334,14 @@ def _run_smoke_main(
     from testing.smoke_infer_v3 import infer_v3_to_wav
 
     batch_size = int(os.environ.get("SMOKE_BATCH", "2"))
+    fp16_run = os.environ.get("SMOKE_FP16", "0").strip().lower() in ("1", "true", "yes")
+    debug_stall = os.environ.get("SMOKE_DEBUG_STALL", "0").strip().lower() in ("1", "true", "yes")
+    stall_timeout_sec = float(os.environ.get("SMOKE_STALL_TIMEOUT_SEC", "0").strip() or 0.0)
+    debug_cuda_sync = os.environ.get("SMOKE_DEBUG_CUDA_SYNC", "0").strip().lower() in ("1", "true", "yes")
+    disable_spec_cache = os.environ.get("SMOKE_DISABLE_SPEC_CACHE", "").strip().lower() in ("1", "true", "yes")
+    if debug_stall and not disable_spec_cache:
+        os.environ["SMOKE_DISABLE_SPEC_CACHE"] = "1"
+        disable_spec_cache = True
     v2_baseline_model = os.environ.get("SMOKE_V2_MODEL", "Maynard_Full_v190")
 
     max_stft_l1_norm = float(os.environ.get("SMOKE_MAX_STFT_L1_NORM", "1.10"))
@@ -423,7 +435,11 @@ def _run_smoke_main(
     )
     print(f"[smoke] filelist={filelist}")
     print(f"[smoke] eval_wav={eval_wav}")
-    print(f"[smoke] epochs={epochs} batch={batch_size} seed={seed}")
+    print(
+        f"[smoke] epochs={epochs} batch={batch_size} seed={seed} fp16={fp16_run} "
+        f"debug_stall={debug_stall} stall_timeout_sec={stall_timeout_sec} "
+        f"debug_cuda_sync={debug_cuda_sync} disable_spec_cache={disable_spec_cache}"
+    )
 
     # Load v2-style hparams from existing RVC config (v3/48k.json), then override for smoke.
     cfg_path = os.path.join(ROOT_DIR, "modules", "rvc", "configs", "v3", "48k.json")
@@ -439,6 +455,7 @@ def _run_smoke_main(
 
     hparams.train.batch_size = batch_size
     hparams.train.epochs = epochs
+    hparams.train.fp16_run = fp16_run
 
     hparams.pretrainG = os.path.join(model_path, "rvc", "pretrained_v2", "f0G48k.pth")
     hparams.pretrainD = os.path.join(model_path, "rvc", "pretrained_v2", "f0D48k.pth")
@@ -449,6 +466,11 @@ def _run_smoke_main(
         "seed": seed,
         "epochs": epochs,
         "batch_size": batch_size,
+        "fp16_run": fp16_run,
+        "debug_stall": debug_stall,
+        "stall_timeout_sec": stall_timeout_sec,
+        "debug_cuda_sync": debug_cuda_sync,
+        "disable_spec_cache": disable_spec_cache,
         "n_items": len(names),
         "eval_wav": eval_wav,
         "device": "cuda" if torch.cuda.is_available() else "cpu",

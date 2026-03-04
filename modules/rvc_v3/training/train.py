@@ -79,8 +79,18 @@ class RVCV3Trainer:
         # Training state
         self.global_step = 0
         self.epoch = 0
+        self.debug_stall = os.environ.get("SMOKE_DEBUG_STALL", "0").strip().lower() in ("1", "true", "yes")
+        self.debug_sync = os.environ.get("SMOKE_DEBUG_CUDA_SYNC", "0").strip().lower() in ("1", "true", "yes")
+        self.last_train_stage = "init"
         
         logger.info("RVCV3Trainer initialized")
+
+    def _mark_train_stage(self, stage: str) -> None:
+        self.last_train_stage = stage
+        if self.debug_stall:
+            logger.info("[stall-debug] _train_step stage=%s", stage)
+        if self.debug_sync and torch.cuda.is_available():
+            torch.cuda.synchronize()
     
     def _init_models(self):
         """Initialize generator, text encoder, and discriminators."""
@@ -243,6 +253,7 @@ class RVCV3Trainer:
         # -------------------------
         # Unify batch into v2-style
         # -------------------------
+        self._mark_train_stage("unify_batch")
         if "spec" in batch and "wave" in batch and "phone" in batch:
             phone = batch["phone"]
             phone_lengths = batch["phone_lengths"]
@@ -314,6 +325,7 @@ class RVCV3Trainer:
         # -------------------------
         # Optional text conditioning
         # -------------------------
+        self._mark_train_stage("text_conditioning")
         text_features = None
         if text_tokens is not None and text_mask is not None and not bool(torch.all(text_mask)):
             text_features = self.text_encoder(text_tokens, text_mask)  # (B, L, d_model)
@@ -323,6 +335,7 @@ class RVCV3Trainer:
         # -------------------------
         # Generator forward
         # -------------------------
+        self._mark_train_stage("generator_forward")
         with autocast("cuda", enabled=self.config.fp16_run):
             (y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q)) = self.generator(
                 phone,
@@ -337,6 +350,7 @@ class RVCV3Trainer:
             )
 
             # Convert real spec -> mel
+            self._mark_train_stage("mel_from_spec")
             mel = spec_to_mel_torch(
                 spec,
                 self.config.filter_length,
@@ -350,6 +364,7 @@ class RVCV3Trainer:
             )
 
             # Pred mel from waveform (disable autocast for stability)
+            self._mark_train_stage("mel_from_y_hat")
             with autocast("cuda", enabled=False):
                 y_hat_mel = mel_spectrogram_torch(
                     y_hat.float().squeeze(1),
@@ -363,6 +378,7 @@ class RVCV3Trainer:
                 )
 
             # Slice real waveform to match ids_slice
+            self._mark_train_stage("wave_slice")
             wave_slice = rvc_commons.slice_segments(
                 wave, ids_slice * self.config.hop_length, self.config.segment_size
             )
@@ -370,30 +386,40 @@ class RVCV3Trainer:
             # -------------------------
             # Discriminator update
             # -------------------------
+            self._mark_train_stage("disc_forward_detach")
             y_d_hat_r, y_d_hat_g, _, _ = self.discriminator(wave_slice, y_hat.detach())
             with autocast("cuda", enabled=False):
+                self._mark_train_stage("disc_loss")
                 loss_disc, _, _ = discriminator_loss(y_d_hat_r, y_d_hat_g)
 
+        self._mark_train_stage("disc_backward")
         self.optim_d.zero_grad(set_to_none=True)
         self.scaler.scale(loss_disc).backward()
+        self._mark_train_stage("disc_step")
         self.scaler.step(self.optim_d)
 
         # -------------------------
         # Generator update
         # -------------------------
+        self._mark_train_stage("gen_disc_forward")
         with autocast("cuda", enabled=self.config.fp16_run):
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.discriminator(wave_slice, y_hat)
             with autocast("cuda", enabled=False):
+                self._mark_train_stage("gen_losses")
                 loss_mel = F.l1_loss(y_mel, y_hat_mel) * float(self.config.c_mel)
                 loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * float(self.config.c_kl)
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, _ = generator_loss(y_d_hat_g)
                 loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
 
+        self._mark_train_stage("gen_backward")
         self.optim_g.zero_grad(set_to_none=True)
         self.scaler.scale(loss_gen_all).backward()
+        self._mark_train_stage("gen_step")
         self.scaler.step(self.optim_g)
+        self._mark_train_stage("scaler_update")
         self.scaler.update()
+        self._mark_train_stage("loss_itemize")
 
         return {
             "loss_gen": float(loss_gen.detach().item()),
