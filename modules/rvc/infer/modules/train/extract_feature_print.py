@@ -95,7 +95,9 @@ def extract_feature_print(device, exp_dir, version, is_half):
         logger.error("Error: WAV directory %s does not exist.", wav_dir)
         raise FileNotFoundError("WAV directory not found: " + wav_dir)
 
-    models, saved_cfg, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
+    from modules.rvc.infer.modules.vc.utils import load_model_ensemble_and_task
+
+    models, saved_cfg, _ = load_model_ensemble_and_task(
         [model_file],
         suffix="",
     )

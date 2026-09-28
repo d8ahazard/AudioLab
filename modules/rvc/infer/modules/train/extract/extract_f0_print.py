@@ -116,10 +116,14 @@ class FeatureInput(object):
                                  idx, inp_path, traceback.format_exc())
 
 
+def _extract_f0_worker(paths, f0_method):
+    """Top-level worker for multiprocessing (must be picklable on Windows spawn)."""
+    FeatureInput().go(paths, f0_method)
+
+
 def extract_f0_features(exp_dir, n_p, f0_method):
     logger = logging.getLogger(__name__)
     logger.info("Starting F0 feature extraction")
-    feature_input = FeatureInput()
     paths = []
     inp_root = os.path.join(exp_dir, "1_16k_wavs")
     opt_root1 = os.path.join(exp_dir, "2a_f0")
@@ -140,10 +144,21 @@ def extract_f0_features(exp_dir, n_p, f0_method):
         opt_path2 = os.path.join(opt_root2, name)
         paths.append([inp_path, opt_path1, opt_path2])
 
+    n_p = max(int(n_p), 1)
+    # Avoid Process when a single worker is enough — Windows spawn re-imports
+    # __main__ and previously pulled in the full Gradio/API stack.
+    if n_p <= 1:
+        _extract_f0_worker(paths, f0_method)
+        return
+
     processes = []
     for i in range(n_p):
-        p = Process(target=feature_input.go, args=(paths[i::n_p], f0_method))
+        p = Process(target=_extract_f0_worker, args=(paths[i::n_p], f0_method))
         processes.append(p)
         p.start()
     for p in processes:
         p.join()
+        if p.exitcode not in (0, None):
+            raise RuntimeError(
+                f"F0 extraction worker exited with code {p.exitcode}"
+            )

@@ -221,17 +221,16 @@ def train_rvc_v3(hparams, progress: gr.Progress = None):
             try:
                 trainer.load_pretrained(pretrain_g, pretrain_d, sample_rate=sample_rate, if_f0=if_f0)
             except Exception as e:
-                logger.warning("Failed to load pretrained weights: %s", e)
-                logger.warning("Training from scratch")
+                raise RuntimeError('Requested V3 warm start failed; refusing silent training from random weights') from e
         else:
-            logger.warning("Discriminator path not provided, skipping pretrained weights")
+            raise ValueError('V3 warm start requires both generator and discriminator checkpoints')
     else:
         logger.info("No pretrained weights specified, training from scratch")
     
     # Initialize phonemizer for text encoding
     # For now, use simple character-level tokenization
     # TODO: Replace with proper phonemizer when available
-    phonemizer = SimplePhonemizer()
+    phonemizer = SimplePhonemizer(config.text_tokenizer)
     
     debug_stall = os.environ.get("SMOKE_DEBUG_STALL", "0").strip().lower() in ("1", "true", "yes")
     stall_timeout_sec = float(os.environ.get("SMOKE_STALL_TIMEOUT_SEC", "0").strip() or 0.0)
@@ -605,13 +604,17 @@ class SimplePhonemizer:
     TODO: Replace with proper phonemizer (espeak-ng or similar)
     """
     
-    def __init__(self):
+    def __init__(self, version="legacy"):
+        self.version = version
         self.vocab = list("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'\"")
         self.char_to_id = {c: i for i, c in enumerate(self.vocab)}
         self.id_to_char = {i: c for i, c in enumerate(self.vocab)}
     
     def phonemize(self, text: str):
         """Convert text to phoneme IDs."""
+        if self.version == 'char_v1':
+            from modules.rvc_v3.text_tokens import encode_char_v1
+            return encode_char_v1(text)
         # Simple character-level tokenization
         ids = []
         for char in text:
@@ -623,5 +626,8 @@ class SimplePhonemizer:
     
     @property
     def vocab_size(self):
+        if self.version == 'char_v1':
+            from modules.rvc_v3.text_tokens import CHARACTERS
+            return len(CHARACTERS)+2
         return len(self.vocab)
 

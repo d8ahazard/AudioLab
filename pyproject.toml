@@ -61,7 +61,7 @@ dependencies = [
     "torchlibrosa>=0.1.0",
     
     # Audio separation
-    "audio-separator[gpu]>=0.32.0",
+    "audio-separator[gpu]==0.47.0",
     "demucs>=4.0.1",
     
     # ML utilities
@@ -69,9 +69,9 @@ dependencies = [
     "scipy>=1.15.0",
     "scikit-learn>=1.5.0",
     "faiss-cpu>=1.11.0",
-    "onnx>=1.16.0",
-    "onnxruntime-gpu>=1.21.1",
-    "onnxsim",
+    "onnx-weekly==1.20.0.dev20251005",
+    "protobuf==4.25.8",
+    "onnxruntime-gpu==1.22.0",
     
     # TTS dependencies
     "phonemizer>=3.3.0",
@@ -122,13 +122,14 @@ dependencies = [
     "ffmpeg_progress_yield",
     "opencv-python>=4.10.0.84",
     "matplotlib>=3.10.0",
-    "yt-dlp>=2025.5.22",
+    "yt-dlp[default]>=2025.5.22",
+    "curl-cffi>=0.14,<0.15",
     
     # Language detection
     "py3langid>=0.3.0",
     
     # Training utilities
-    "tensorboardX",
+    "tensorboardX==2.6.5",
     "wandb>=0.17.2",
     
     # DAW export

@@ -33,11 +33,13 @@ def load_v2_checkpoint(checkpoint_path: str) -> Dict:
         raise FileNotFoundError(f"V2 checkpoint not found: {checkpoint_path}")
     
     logger.info(f"Loading v2 checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
     
     # V2 checkpoints have structure: {'model': state_dict, 'iteration': ..., 'learning_rate': ...}
     if 'model' in checkpoint:
         return checkpoint
+    elif 'weight' in checkpoint:
+        return {'model': checkpoint['weight']}
     else:
         # If no 'model' key, assume the whole thing is the state dict
         return {'model': checkpoint}
@@ -122,7 +124,7 @@ def expand_generator_weights(
     for k in v3_gen_state.keys():
         if k.startswith(v3_enc_p_prefix):
             # Try to find corresponding v2 layer
-            v2_key = k  # Same key structure initially
+            v2_key = k.replace('enc_p.base_encoder.', 'enc_p.', 1)
             
             if v2_key in v2_state:
                 # Check for shape compatibility
@@ -144,6 +146,11 @@ def expand_generator_weights(
     logger.info(f"  Copied from v2: {len(copied_layers)} layers")
     logger.info(f"  Randomly initialized: {len(initialized_layers)} layers")
     logger.info(f"  Copy ratio: {len(copied_layers) / (len(copied_layers) + len(initialized_layers)) * 100:.1f}%")
+    if getattr(v3_generator.enc_p, 'backbone', 'legacy') == 'v2_compatible':
+        missing_core = [k for k in initialized_layers
+                        if not k.startswith(('text_encoder.', 'enc_p.cross_attn_layers.', 'enc_p.text_projection.'))]
+        if missing_core:
+            raise ValueError(f'Incomplete V2 transfer; core tensors would be random: {missing_core[:10]}')
     
     return v3_gen_state, v3_text_state
 
@@ -208,6 +215,8 @@ def expand_v2_to_v3(
     Returns:
         Tuple of (v3_generator_path, v3_discriminator_path)
     """
+    if not if_f0:
+        raise ValueError('The V2-compatible V3 backbone currently requires pitch-guided V2 checkpoints')
     os.makedirs(output_dir, exist_ok=True)
     
     # Load v2 checkpoints
@@ -249,6 +258,9 @@ def expand_v2_to_v3(
         gin_channels=json_config['model']['gin_channels'],
         spk_embed_dim=json_config['model']['spk_embed_dim'],
         sampling_rate=json_config['data']['sampling_rate'],
+        hop_length=json_config['data']['hop_length'],
+        filter_length=json_config['data']['filter_length'],
+        win_length=json_config['data']['win_length'],
         # Preserve v2-compatible vocoder path for transferred decoder weights.
         vocoder_type='hifigan',
         use_dual_encoder=False,  # Single HuBERT for now
@@ -271,7 +283,8 @@ def expand_v2_to_v3(
     # Generator
     v3_generator = RVCV3Generator(
         spec_channels=v3_config.spec_channels,
-        segment_size=v3_config.segment_size,
+        segment_size=v3_config.segment_size // v3_config.hop_length,
+        backbone=v3_config.backbone,
         inter_channels=v3_config.inter_channels,
         hidden_channels=v3_config.hidden_channels,
         filter_channels=v3_config.filter_channels,
@@ -295,7 +308,8 @@ def expand_v2_to_v3(
     )
     
     # Discriminator
-    v3_discriminator = MultiPeriodDiscriminator()
+    from modules.rvc.infer.lib.infer_pack.models import MultiPeriodDiscriminator as CompatibleDiscriminator
+    v3_discriminator = CompatibleDiscriminator()
     
     # Expand weights
     v3_gen_state, v3_text_state = expand_generator_weights(

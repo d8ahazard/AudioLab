@@ -5,9 +5,18 @@ import shutil
 import threading
 from typing import Any, List, Dict, Optional
 import logging
+from pathlib import Path
+from importlib.metadata import version
+from dataclasses import asdict
 
 from handlers.config import output_path
 from modules.separator.stem_separator import separate_music
+from modules.separator.separation_profiles import selected_models
+from modules.separator.model_runtime import FUSED_DEREVERB
+from modules.separator.instrument_policy import INSTRUMENT_STEMS, DRUM_STEMS, MEGA_EXTRAS, MEGA_MODEL
+from modules.separator.model_runtime import BG_MODELS, INSTRUMENT_MODELS, CUSTOM_MODELS
+from modules.separator.stem_manifest import PIPELINE_REVISION, MANIFEST_NAME, file_hash, model_fingerprint, read_manifest, safe_path
+from handlers.config import app_path
 from util.data_classes import ProjectFiles
 from wrappers.base_wrapper import BaseWrapper, TypedInput
 
@@ -30,13 +39,38 @@ class Separate(BaseWrapper):
     file_operation_lock = threading.Lock()
 
     allowed_kwargs = {
+        "cpu": TypedInput(default=False, type=bool, gradio_type="Checkbox", render=False,
+                          description="Force CPU inference."),
         "separation_profile": TypedInput(
-            default="v2",
-            description="Separation quality profile. v4 prioritizes clean instrumentals (karaoke-style). v3 uses 5 models for maximum fidelity. v2 (recommended) balances quality and speed with 3 models. v1 is fastest with 2 models.",
+            default="hybrid_cleaned",
+            description="Default: cleaned V2 vocals + V4 instrumental (six core models). V1–V4 remain available. The hybrid uses a fixed recipe; preset and fusion overrides apply to other profiles.",
             type=str,
-            choices=["v4", "v3", "v2", "v1"],
+            choices=["hybrid_cleaned", "v4", "v3", "v2", "v1"],
             gradio_type="Dropdown"
         ),
+        "separation_quality": TypedInput(default="balanced", type=str,
+            choices=["fast", "balanced", "maximum"], gradio_type="Dropdown",
+            description="Inference effort. V4 always uses three core models. Maximum uses at least eight overlaps."),
+        "smart_stems": TypedInput(default="off", type=str, render=False,
+            description="Retired compatibility setting; automatic stem hiding is disabled."),
+        "instrument_stems": TypedInput(default=INSTRUMENT_STEMS, type=list, choices=INSTRUMENT_STEMS,
+            gradio_type="CheckboxGroup", description="Instrument outputs to keep when individual-instrument separation is enabled."),
+        "drum_stems": TypedInput(default=DRUM_STEMS, type=list, choices=DRUM_STEMS,
+            gradio_type="CheckboxGroup", description="Kit pieces to keep when Separate drums is enabled."),
+        "mega_stems": TypedInput(default=[], type=list, choices=MEGA_EXTRAS,
+            gradio_type="CheckboxGroup", description="Optional Mega instruments. Empty disables Mega. Core instruments, vocals, kit pieces and overlapping family outputs are excluded. Mega internally predicts all heads; only your choices are exported."),
+        "backing_vocal_model": TypedInput(default="karaoke", type=str, choices=["karaoke", "bve", "bve_v2"],
+            gradio_type="Dropdown", description="Default karaoke = Frazer–Becruily BS-RoFormer. Used only when background separation is enabled."),
+        "instrument_model": TypedInput(default="consensus", type=str, choices=["consensus", "demucs", "roformer_sw"],
+            gradio_type="Dropdown", description="Demucs + SW with listener-selected consensus cleanup. Drum components blend both DrumSep outputs with gentle cleanup."),
+        "instrument_input": TypedInput(default="instrumental", type=str, choices=["mix", "instrumental"],
+            gradio_type="Dropdown", description="Input for single-model alternatives; consensus always uses the new instrumental."),
+        "vocal_fusion": TypedInput(default=None, type=str,
+            choices=[None, "avg_wave", "avg_complex", "median_magnitude", "min_magnitude", "max_magnitude"],
+            gradio_type="Dropdown", render=False, description="V4 vocal fusion algorithm."),
+        "instrumental_fusion": TypedInput(default=None, type=str,
+            choices=[None, "avg_wave", "avg_complex", "median_magnitude", "min_magnitude", "max_magnitude"],
+            gradio_type="Dropdown", render=False, description="V4 instrumental fusion algorithm."),
         "separation_preset": TypedInput(
             default=None,
             description="Use-case specific preset. Overrides profile with optimized settings for: karaoke (clean instrumental), acappella (clean vocals), remix (balanced), podcast (voice isolation).",
@@ -90,11 +124,15 @@ class Separate(BaseWrapper):
             type=bool,
             gradio_type="Checkbox"
         ),
+        "vocal_reverb": TypedInput(
+            default="Keep wet", type=str, choices=["Keep wet", "Dry vocals", "Capture reverb"],
+            gradio_type="Dropdown",
+            description="Sucial Fused: Dry vocals removes reverb/echo. Capture reverb keeps exported and cloned vocals wet, saves the response, and reapplies it to cloned vocals at merge."),
 		"store_reverb_ir": TypedInput(
 			default=False,
-            description="Store the impulse response for reverb removal. Will be used to re-apply reverb later.",
+            description="Capture a stereo reverb/echo response. Restore it later only if it passes held-out reconstruction checks; unreliable fits are reported and skipped.",
             type=bool,
-            gradio_type="Checkbox"
+            gradio_type="Checkbox", render=False
         ),
         "separate_drums": TypedInput(
             default=False,
@@ -120,7 +158,7 @@ class Separate(BaseWrapper):
             description="Apply reverb removal.",
             type=str,
             choices=["Nothing", "Main Vocals", "All Vocals", "All"],
-            gradio_type="Dropdown"
+            gradio_type="Dropdown", render=False
         ),
 		"echo_removal": TypedInput(
 			default="Nothing",
@@ -264,7 +302,7 @@ class Separate(BaseWrapper):
         return process_separate_json
 
     def process_audio(self, inputs: List[ProjectFiles], callback=None, **kwargs: Dict[str, any]) -> List[ProjectFiles]:
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in self.allowed_kwargs}
+        filtered_kwargs = {k: kwargs.get(k, spec.field.default) for k, spec in self.allowed_kwargs.items()}
         final_projects = []
         to_separate = []  # Projects that need separation (no valid cache)
 
@@ -299,14 +337,14 @@ class Separate(BaseWrapper):
                 if not os.path.exists(new_path):
                     shutil.copyfile(project.src_file, new_path)
                 project_stems = [new_path]
-                project.add_output("stems", project_stems)
+                self._set_stems(project, project_stems)
                 final_projects.append(project)
                 logger.info(f"Skipping separation for special file {project.src_file}")
                 continue
 
             current_config = {
                 "file": project.src_file,
-                "separation_profile": filtered_kwargs.get("separation_profile", "v2"),
+                "separation_profile": filtered_kwargs.get("separation_profile", "hybrid_cleaned"),
                 "ensemble_size": filtered_kwargs.get("ensemble_size", None),
                 "residual_fill": filtered_kwargs.get("residual_fill", None),
                 "vocals_only": filtered_kwargs.get("vocals_only", True),
@@ -325,13 +363,15 @@ class Separate(BaseWrapper):
                 "crowd_removal_model": filtered_kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx"),
                 "store_reverb_ir": filtered_kwargs.get("store_reverb_ir", True)
             }
+            current_config.update(filtered_kwargs)
+            current_config["identity"] = self._cache_identity(project.src_file, filtered_kwargs)
 
             valid_cache = False
             if os.path.exists(cache_file):
                 try:
                     with open(cache_file, "r") as f:
                         cached_data = json.load(f)
-                    if cached_data.get("config") == current_config:
+                    if cached_data.get("config") == current_config and self._manifest_valid(out_dir):
                         output_stems = []
                         all_stems_good = True
                         for stem_info in cached_data.get("stems", []):
@@ -342,7 +382,7 @@ class Separate(BaseWrapper):
                                 break
                             output_stems.append(path)
                         if all_stems_good:
-                            project.add_output("stems", output_stems)
+                            self._set_stems(project, output_stems)
                             final_projects.append(project)
                             valid_cache = True
                 except Exception as e:
@@ -383,21 +423,22 @@ class Separate(BaseWrapper):
                 output_folder_parts = os.path.join(output_path, "process").split(os.path.sep)
                 # Remove output_folder_parts from folder_parts
                 folder_parts = [part for part in folder_parts if part not in output_folder_parts]
-                base = folder_parts[0]
+                base = os.path.basename(os.path.dirname(os.path.dirname(stem)))
                 separation_results.setdefault(base, []).append(stem)
 
             # For each project, move its outputs to its own stems folder and update cache.
             for base, (proj, config) in project_map.items():
                 # TTS file handling has been moved to the first pass
                 
-                if base not in separation_results:
+                if base not in separation_results and not os.path.exists(os.path.join(proj.project_dir, "stems", MANIFEST_NAME)):
                     logger.warning(f"No separation results found for project {proj.src_file}")
                     continue
-                project_stems = separation_results[base]
-                proj.add_output("stems", project_stems)
+                project_stems = separation_results.get(base, [])
+                self._set_stems(proj, project_stems)
                 final_projects.append(proj)
                 out_dir = os.path.join(proj.project_dir, "stems")
                 cache_file = os.path.join(out_dir, "separation_info.json")
+                config["identity"] = self._cache_identity(proj.src_file, filtered_kwargs)
                 cache_info = {"config": config, "stems": []}
                 for p in project_stems:
                     hash_val = self._hash_file(p)
@@ -416,12 +457,55 @@ class Separate(BaseWrapper):
                 final_stems = project.file_dict.get("stems", [])
                 for fname in os.listdir(out_dir):
                     full_path = os.path.join(out_dir, fname)
-                    if fname == "separation_info.json" or fname == "impulse_response.ir":
+                    if fname in {"separation_info.json", "impulse_response.ir", MANIFEST_NAME} or fname.endswith(".ir") or os.path.isdir(full_path):
                         continue
                     if full_path not in final_stems:
                         self.del_stem(full_path)
 
         return final_projects
+
+    @staticmethod
+    def _set_stems(project, stems):
+        project.file_dict["stems"] = []
+        if hasattr(project, "output_dict"):
+            project.output_dict["stems"] = []
+        project.add_output("stems", stems)
+
+    @staticmethod
+    def _manifest_valid(folder):
+        try:
+            if not (Path(folder) / MANIFEST_NAME).exists():
+                return False
+            return all(file_hash(safe_path(folder, s["path"])) == s["sha256"] and
+                       ("reverb_ir" not in s or file_hash(safe_path(folder, s["reverb_ir"]["path"])) == s["reverb_ir"]["sha256"])
+                       for s in read_manifest(folder)["stems"])
+        except (OSError, ValueError, KeyError):
+            return False
+
+    @staticmethod
+    def _cache_identity(source, options):
+        ids = [m.id for m in selected_models(options)]
+        if options.get("vocal_reverb", "Keep wet") != "Keep wet":
+            ids.append(FUSED_DEREVERB)
+        if options.get("separate_bg_vocals"):
+            ids.append(BG_MODELS[options.get("backing_vocal_model", "karaoke")])
+        if not options.get("vocals_only", True):
+            choice = options.get("instrument_model", "consensus")
+            ids.extend(INSTRUMENT_MODELS.values() if choice == "consensus" else [INSTRUMENT_MODELS[choice]])
+            for flag, model in (("alt_bass_model", "kuielab_a_bass.onnx"),
+                ("separate_drums", "MDX23C-DrumSep-aufr33-jarredou.ckpt"), ("separate_woodwinds", "17_HP-Wind_Inst-UVR.pth")):
+                if options.get(flag):
+                    ids.append(model)
+        for flag, model in (("reverb_removal", "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"),
+            ("echo_removal", options.get("delay_removal_model")), ("crowd_removal", options.get("crowd_removal_model")),
+            ("noise_removal", options.get("noise_removal_model"))):
+            if options.get(flag, "Nothing") != "Nothing" and model:
+                ids.append(model)
+        if options.get("mega_stems"):
+            ids.append(MEGA_MODEL)
+        return {"pipeline": PIPELINE_REVISION, "package": version("audio-separator"),
+                "recipe": [asdict(m) for m in selected_models(options)], "custom_models": CUSTOM_MODELS,
+                "source_sha256": file_hash(source), "models": model_fingerprint(Path(app_path) / "models/audio_separator", ids)}
 
     def del_stem(self, path: str) -> bool:
         try:

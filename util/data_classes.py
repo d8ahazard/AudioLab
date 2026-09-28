@@ -98,6 +98,7 @@ class ProjectFiles:
         
         # Enumerate existing files in project directory
         for root, dirs, files in os.walk(project_dir):
+            dirs[:] = [d for d in dirs if d != ".hidden_stems" and not d.startswith("tmp_stage_")]
             if root == project_dir:
                 continue
             folder_name = os.path.basename(root)

@@ -22,6 +22,7 @@ BASE_MODELS_DIR = os.path.join(model_path, "rvc")
 
 class FeatureExtractor:
     _rmvpe_cache = {}
+    _fcpe_cache = {}
     def __init__(self, tgt_sr, config, onnx=False):
         self.x_pad, self.x_query, self.x_center, self.x_max, self.is_half = (
             config.x_pad,
@@ -48,6 +49,7 @@ class FeatureExtractor:
             "rmvpe": self.get_rmvpe,
             "rmvpe_onnx": self.get_rmvpe,
             "rmvpe+": self.get_pitch_dependant_rmvpe,
+            "fcpe": self.get_fcpe,
             "crepe": self.get_f0_official_crepe_computation,
             "crepe-tiny": partial(self.get_f0_official_crepe_computation, model='model'),
             "mangio-crepe": self.get_f0_crepe_computation,
@@ -55,6 +57,22 @@ class FeatureExtractor:
         }
         self.vis = F0Visualizer()
         self._rmvpe_shared = False
+
+    def get_fcpe(self, x, f0_min=50, f0_max=1100, **kwargs):
+        """Optional FCPE comparator; preserve unvoiced frames and the 100-Hz clock."""
+        try:
+            from torchfcpe import spawn_bundled_infer_model
+        except ImportError as exc:
+            raise RuntimeError('FCPE requires the optional requirements-rvc-evaluation.txt dependencies') from exc
+        key = str(self.device)
+        if key not in self._fcpe_cache:
+            self._fcpe_cache[key] = spawn_bundled_infer_model(device=self.device)
+        audio = torch.as_tensor(x, dtype=torch.float32, device=self.device)[None, :, None]
+        with torch.inference_mode():
+            f0 = self._fcpe_cache[key].infer(audio, sr=self.sr, decoder_mode='local_argmax',
+                threshold=.006, f0_min=f0_min, f0_max=f0_max, interp_uv=False,
+                output_interp_target_length=len(x)//self.window+1)
+        return f0.squeeze().cpu().numpy()
 
     def __del__(self):
         if hasattr(self, "model_rmvpe") and self.model_rmvpe is not None and not self._rmvpe_shared:

@@ -94,6 +94,7 @@ class RVCV3Trainer:
     
     def _init_models(self):
         """Initialize generator, text encoder, and discriminators."""
+        self.config.validate_contract()
         # Text encoder
         self.text_encoder = TextEncoder(
             vocab_size=200,  # Will be set from phonemizer
@@ -129,11 +130,15 @@ class RVCV3Trainer:
             vocoder_type=self.config.vocoder_type,
             text_encoder_dim=self.config.text_encoder_dim,
             n_cross_attn_layers=self.config.n_cross_attn_layers,
-            ppg_dim=self.config.get_content_feature_dim()
+            ppg_dim=self.config.get_content_feature_dim(),
+            backbone=self.config.backbone,
         ).to(self.device)
         
         # Discriminator
-        self.discriminator = MultiPeriodDiscriminator().to(self.device)
+        discriminator_cls = MultiPeriodDiscriminator
+        if self.config.backbone == 'v2_compatible':
+            from modules.rvc.infer.lib.infer_pack.models import MultiPeriodDiscriminator as discriminator_cls
+        self.discriminator = discriminator_cls().to(self.device)
         
         logger.info("Models initialized")
     
@@ -537,7 +542,8 @@ class RVCV3Trainer:
         from handlers.config import model_path
         
         # Check if v3 pretrained weights exist
-        v3_pretrain_dir = os.path.join(model_path, "rvc", "pretrained_v3")
+        cache_name = 'pretrained_v3_v2_compatible' if self.config.backbone == 'v2_compatible' else 'pretrained_v3'
+        v3_pretrain_dir = os.path.join(model_path, "rvc", cache_name)
         f0_str = 'f0' if if_f0 else ''
         sr_str = f"{sample_rate // 1000}k"
         
@@ -595,6 +601,10 @@ class RVCV3Trainer:
         not_loaded = 0
         
         for k in gen_state_dict.keys():
+            if self.config.backbone == 'v2_compatible' and not k.startswith(
+                ('enc_p.cross_attn_layers.', 'enc_p.text_projection.')
+            ) and (k not in g_state or gen_state_dict[k].shape != g_state[k].shape):
+                raise ValueError(f'Incompatible V3 backbone checkpoint: {k}')
             if k in g_state:
                 if gen_state_dict[k].shape == g_state[k].shape:
                     gen_state_dict[k] = g_state[k]
@@ -670,7 +680,8 @@ class RVCV3Trainer:
             self._load_v3_pretrained(v3_g_path, v3_d_path)
             
             # Optionally save to pretrained_v3 directory for future use
-            v3_pretrain_dir = os.path.join(model_path, "rvc", "pretrained_v3")
+            cache_name = 'pretrained_v3_v2_compatible' if self.config.backbone == 'v2_compatible' else 'pretrained_v3'
+            v3_pretrain_dir = os.path.join(model_path, "rvc", cache_name)
             os.makedirs(v3_pretrain_dir, exist_ok=True)
             import shutil
             f0_str = "f0" if if_f0 else ""

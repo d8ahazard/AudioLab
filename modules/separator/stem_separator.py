@@ -4,21 +4,29 @@ import os
 import subprocess
 import uuid
 import warnings
+import json
+import tempfile
+import sys
+import gc
+from pathlib import Path
+from importlib.metadata import version
 from typing import List, Dict, Callable, Tuple
 
 import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from audio_separator.separator import Separator
+from modules.separator.model_runtime import AudioLabSeparator, BG_MODELS, INSTRUMENT_MODELS, read_outputs, CUSTOM_MODELS, FUSED_DEREVERB
+from modules.separator.audio_quality import stereo, fuse, clean_hybrid_vocals, consensus_blend
+from modules.separator.stem_manifest import MANIFEST_NAME, PIPELINE_REVISION, file_hash, write_json, model_fingerprint
 
+from modules.separator.instrument_policy import INSTRUMENT_STEMS, DRUM_STEMS, MEGA_EXTRAS, MEGA_MODEL, selected, duplicate_of
 from handlers.config import app_path, output_path
-from handlers.patch_separate import patch_separator
 from handlers.reverb import extract_reverb
 from modules.separator.separation_profiles import (
     SeparationProfile,
     get_profile_models,
-    get_profile_defaults
+    get_profile_defaults, selected_models, SeparationPreset, get_preset_defaults
 )
 
 logger = logging.getLogger(__name__)
@@ -106,17 +114,18 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.options = options
         self.device = torch.device("cuda:0") if torch.cuda.is_available() and not options.get("cpu", False) \
             else torch.device("cpu")
-        patch_separator()
-        self.separator = Separator(
+        self.separator = AudioLabSeparator(
             log_level=logging.ERROR,
             model_file_dir=os.path.join(app_path, "models", "audio_separator"),
-            invert_using_spec=True,
-            use_autocast=True
+            invert_using_spec=options.get("separation_profile", "hybrid_cleaned") not in {"v4", "hybrid_cleaned"},
+            use_autocast=not options.get("cpu", False), use_soundfile=True,
+            normalization_threshold=1.0, amplification_threshold=0.0,
+            cpu=options.get("cpu", False), quality=options.get("separation_quality", "balanced"),
+            preserve_gain=options.get("separation_profile", "hybrid_cleaned") in {"v4", "hybrid_cleaned"},
         )
         
-        # Separation profile (v1 = Standard, v2 = High Quality)
-        # Default to v2 for best quality
-        profile_str = options.get("separation_profile", "v2")
+        # Listener-selected cleaned hybrid is the default; legacy profiles remain.
+        profile_str = options.get("separation_profile", "hybrid_cleaned")
         try:
             self.separation_profile = SeparationProfile(profile_str)
         except ValueError:
@@ -125,7 +134,22 @@ class EnsembleDemucsMDXMusicSeparationModel:
         
         # Get profile defaults
         profile_defaults = get_profile_defaults(self.separation_profile)
-        
+        if options.get("separation_preset") and self.separation_profile.value not in {"v4", "hybrid_cleaned"}:
+            profile_defaults = get_preset_defaults(SeparationPreset(options["separation_preset"]))
+        self.profile_models = selected_models(options)
+        if self.separation_profile.value == "v4":
+            preset = options.get("separation_preset")
+            # Presets select the fusion objective; all V4 routes keep the same three models.
+            if preset in {"karaoke", "instrumental"}:
+                options.setdefault("instrumental_fusion", "min_magnitude")
+            elif preset in {"acappella", "podcast"}:
+                options.setdefault("vocal_fusion", "min_magnitude")
+        # Old saved Smart Stems flags are deliberately ignored.
+        self.smart_stems = "off"
+        self.instrument_stems = selected(options, "instrument_stems", INSTRUMENT_STEMS, INSTRUMENT_STEMS)
+        self.drum_stems = selected(options, "drum_stems", DRUM_STEMS, DRUM_STEMS)
+        self.mega_stems = selected(options, "mega_stems", MEGA_EXTRAS, [])
+
         # Use profile defaults if values are None or not provided
         ensemble_size_opt = options.get("ensemble_size")
         residual_fill_opt = options.get("residual_fill")
@@ -137,24 +161,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         logger.info(f"Using separation profile: {self.separation_profile.value} "
                    f"(ensemble_size={self.ensemble_strength}, residual_blend={self.residual_blend_pct:.2f})")
         
-        # Download all required models
-        self.model_list = [
-            "htdemucs_ft.yaml", "htdemucs.yaml", "hdemucs_mmi.yaml", "htdemucs_6s.yaml",
-            "MDX23C-8KFFT-InstVoc_HQ.ckpt", "model_bs_roformer_ep_368_sdr_12.9628.ckpt",
-            "UVR-MDX-NET-Voc_FT.onnx", "Kim_Vocal_1.onnx", "Kim_Vocal_2.onnx",
-            "MDX23C-DrumSep-aufr33-jarredou.ckpt",
-            "17_HP-Wind_Inst-UVR.pth",
-            "kuielab_a_bass.onnx",
-            # Added higher-fidelity candidates
-            "vocals_mel_band_roformer.ckpt",
-            "melband_roformer_big_beta4.ckpt",
-            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
-            # Transform models
-            "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
-            "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"
-        ]
-        for model in self.model_list:
-            self.separator.download_model_files(model)
+        # Models are loaded and downloaded only when their stage runs.
 
         # Flags and options
         self.vocals_only = bool(options.get("vocals_only", False))
@@ -182,12 +189,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
         self.crowd_removal_model = options.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx")
         self.separate_bg_vocals = options.get("separate_bg_vocals", True)
         self.bg_vocal_layers = options.get("bg_vocal_layers", 1)
+        if not isinstance(self.bg_vocal_layers, int) or not 1 <= self.bg_vocal_layers <= 10:
+            raise ValueError("bg_vocal_layers must be an integer from 1 to 10")
         self.store_reverb_ir = options.get("store_reverb_ir", False)
 
         # Progress tracking
         self.global_step = 0
         self.total_steps = 0
-        self.callback = options.get("callback", None)
+        self.callback = callback or options.get("callback")
 
     def _advance_progress(self, desc: str, weight: int = 1) -> None:
         """
@@ -199,7 +208,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         """
         self.global_step += weight
         if self.callback is not None and self.total_steps > 0:
-            self.callback(self.global_step / self.total_steps, desc, self.total_steps)
+            self.callback(min(0.99, self.global_step / self.total_steps), desc, self.total_steps)
         logger.info(f"[{self.global_step}/{self.total_steps}] {desc}")
 
     def _residual_subtract(self, base: np.ndarray, component: np.ndarray, sr: int, max_shift_ms: float = 12.0) -> np.ndarray:
@@ -297,98 +306,42 @@ class EnsembleDemucsMDXMusicSeparationModel:
             combined *= (ceiling / peak)
         return combined
 
-    def _separate_as_arrays_current(self, mix_np: np.ndarray, sr: int, desc: str = None, output_folder: str = None) -> \
-    Dict[str, np.ndarray]:
-        """
-        Runs separation for the current model and returns results as arrays.
+    def _separate_as_arrays_current(self, mix_np, sr, desc=None, output_folder=None, task="core"):
+        mix_np = stereo(mix_np)
+        Path(output_folder).mkdir(parents=True, exist_ok=True)
+        # Every stage owns its temporary outputs, even on failure.
+        with tempfile.TemporaryDirectory(prefix="tmp_stage_", dir=output_folder) as temp:
+            tmp = write_temp_wav(mix_np, sr, temp)
+            self.separator.output_dir = temp
+            self.separator.model_instance.output_dir = temp
+            paths = self.separator.separate(tmp)
+            stems = read_outputs(paths, temp, sr, mix_np.shape[-1], task)
+            if task == "core" and not {"vocals", "instrumental"} <= stems.keys():
+                raise RuntimeError(f"{self.separator.current_model} did not produce both primary stems: {list(stems)}")
+            return stems
 
-        Parameters:
-            mix_np (np.ndarray): Input mix as a numpy array.
-            sr (int): Sample rate.
-            desc (str): Optional description.
-            output_folder (str): Folder for temporary outputs.
-
-        Returns:
-            Dict[str, np.ndarray]: Dictionary with separated stems.
-        """
-        tmp_wav = write_temp_wav(mix_np, sr, output_folder)
-        if desc:
-            logger.debug(desc)
-        output_partial = self.separator.separate(tmp_wav)
-        output_files = [os.path.join(output_folder, f) for f in output_partial]
-        stems = {}
-        # First pass: classify outputs using robust heuristics
-        vocals_idx = None
-        inst_idx = None
-        lowered = [os.path.basename(f).lower() for f in output_files]
-        # Strong instrumental indicators
-        inst_tags = ["instrumental", "accompaniment", "no_vocals", "no vocals", "without vocals", "minus vocals", "inst"]
-        # Negative qualifiers for vocals
-        vocals_neg = ["no_vocals", "no vocals", "without vocals", "bg", "background", "backing"]
-        for i, name in enumerate(lowered):
-            if any(tag in name for tag in inst_tags):
-                inst_idx = i
-        for i, name in enumerate(lowered):
-            if ("vocals" in name or "(vocals)" in name) and not any(neg in name for neg in vocals_neg):
-                vocals_idx = i
-                break
-        # If still ambiguous and exactly 2 files, choose the non-instrumental as vocals
-        if vocals_idx is None and len(output_files) == 2 and inst_idx is not None:
-            other = 1 - inst_idx
-            vocals_idx = other
-        # If we have vocals but no explicit instrumental, pick the other file as instrumental when 2 outputs
-        if vocals_idx is not None and inst_idx is None and len(output_files) == 2:
-            inst_idx = 1 - vocals_idx
-        # If neither detected, try again with simpler rules
-        if vocals_idx is None:
-            for i, name in enumerate(lowered):
-                if "vocals" in name and "no vocals" not in name and "no_vocals" not in name and "bg" not in name:
-                    vocals_idx = i
-                    break
-        if inst_idx is None:
-            for i, name in enumerate(lowered):
-                if any(tag in name for tag in inst_tags):
-                    inst_idx = i
-                    break
-        # STRICT original mapping: rely only on explicit (Vocals)/(Instrumental) tags
-        stems = {}
-        vocals_path = None
-        for file in output_files:
-            arr, _ = librosa.load(file, sr=sr, mono=False)
-            if arr.ndim == 1:
-                arr = np.stack([arr, arr], axis=0)
-            flow = file.lower()
-            if "(vocals)" in flow:
-                stems["vocals"] = arr
-                vocals_path = file
-            elif "(instrumental)" in flow:
-                stems["instrumental"] = arr
-        # Minimal, safe fallback: if instrumental not found by exact tag, accept common aliases
-        if "instrumental" not in stems:
-            for file in output_files:
-                name = os.path.basename(file).lower()
-                if any(tag in name for tag in ["accompaniment", "no_vocals", "no vocals", "without vocals", "minus vocals", " inst ", "_inst", "(inst)"]):
-                    arr, _ = librosa.load(file, sr=sr, mono=False)
-                    if arr.ndim == 1:
-                        arr = np.stack([arr, arr], axis=0)
-                    stems["instrumental"] = arr
-                    break
-        # Vocals-only rule: whatever file is NOT the vocals becomes the instrumental
-        if self.vocals_only and "vocals" in stems and "instrumental" not in stems:
-            for file in output_files:
-                if vocals_path is not None and os.path.abspath(file) == os.path.abspath(vocals_path):
-                    continue
-                # First non-vocal output becomes instrumental
-                arr, _ = librosa.load(file, sr=sr, mono=False)
-                if arr.ndim == 1:
-                    arr = np.stack([arr, arr], axis=0)
-                stems["instrumental"] = arr
-                break
-        # No heuristics, no fallbacks here: strictly keep original behavior
-        # Clean up temporary file
-        if os.path.exists(tmp_wav):
-            os.remove(tmp_wav)
-        return stems
+    def _hybrid_separate_all(self, files_data):
+        # Keep the two listened-to recipes independent; downstream stages run once.
+        outputs = {}
+        for profile in ("v2", "v4"):
+            child_options = {**self.options, "separation_profile": profile,
+                             "ensemble_size": None, "residual_fill": None,
+                             "separation_preset": None, "vocal_fusion": "avg_wave",
+                             "instrumental_fusion": "avg_wave"}
+            child = EnsembleDemucsMDXMusicSeparationModel(child_options)
+            child._advance_progress = self._advance_progress
+            try:
+                outputs[profile] = child._ensemble_separate_all(files_data)
+                self.separator.loaded_models.update(child.separator.loaded_models)
+                self.separator.run_records.extend(child.separator.run_records)
+            finally:
+                child.separator.model_instance = None
+                del child
+        results = outputs["v2"]
+        for key, res in results.items():
+            res["instrumental"] = outputs["v4"][key]["instrumental"]
+            res["vocals"] = clean_hybrid_vocals(res["vocals"], res["mix_np"], res["instrumental"])
+        return results
 
     def _ensemble_separate_all(self, files_data: List[Dict]) -> Dict[str, Dict]:
         """
@@ -400,10 +353,13 @@ class EnsembleDemucsMDXMusicSeparationModel:
         Returns:
             Dict[str, Dict]: Dictionary mapping base names to separation results.
         """
+        if self.separation_profile == SeparationProfile.HYBRID_CLEANED:
+            return self._hybrid_separate_all(files_data)
         results = {}
         for file in files_data:
-            base_name = file["base_name"]
+            base_name = file.get("key", file["base_name"])
             results[base_name] = {
+                "base_name": file["base_name"],
                 "mix_np": file["mix_np"],
                 "sr": file["sr"],
                 "vocals_list": [],
@@ -414,7 +370,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             }
         
         # Get models from the separation profile
-        profile_models = get_profile_models(self.separation_profile, self.ensemble_strength)
+        profile_models = self.profile_models
         models_with_weights = [
             (spec.id, spec.vocal_weight, spec.inst_weight)
             for spec in profile_models
@@ -429,9 +385,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
             self.options["residual_blend"] = float(self.residual_blend_pct)
 
         for model_name, v_wt, i_wt in models_with_weights:
-            self.separator.load_model(model_name)
+            self.separator.load_model(model_name, **(next(s.kwargs for s in profile_models if s.id == model_name) or {}))
             for file in files_data:
-                base_name = file["base_name"]
+                base_name = file.get("key", file["base_name"])
                 mix_np = file["mix_np"]
                 sr = file["sr"]
                 self.separator.output_dir = file["output_folder"]
@@ -451,6 +407,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
             # Restore original, strict blending behavior
             res["vocals"] = self._blend_tracks(res["vocals_list"], res["v_weights"])
             res["instrumental"] = self._blend_tracks(res["instrumental_list"], res["i_weights"])
+            if self.separation_profile.value == "v4":
+                res["vocals"] = fuse(res["vocals_list"], self.options.get("vocal_fusion", "avg_wave"))
+                res["instrumental"] = fuse(res["instrumental_list"], self.options.get("instrumental_fusion", "avg_wave"))
+                continue
             # Post-blend de-bleed: mix-based residual subtraction blended into instrumental
             try:
                 mix_np = res.get("mix_np")
@@ -506,225 +466,149 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     res["instrumental"] = resid
         return results
 
-    def _multistem_separation_all(self, results: Dict[str, Dict]) -> None:
-        """
-        Runs 6-stem separation on the full mix for all files.
+    def _multistem_separation_all(self, results):
+        choice = self.options.get("instrument_model", "consensus")
+        if choice == "consensus":
+            self.separator.preserve_gain = True
+        names = ["demucs", "roformer_sw"] if choice == "consensus" else [choice]
+        for res in results.values():
+            res["_instrument_predictions"] = []
+        for name in names:
+            self.separator.load_model(INSTRUMENT_MODELS[name])
+            for res in results.values():
+                audio = res["instrumental"] if choice == "consensus" or self.options.get("instrument_input", "instrumental") == "instrumental" else res["mix_np"]
+                stems = self._separate_as_arrays_current(audio, res["sr"], output_folder=res["output_folder"], task="instruments")
+                if not set(INSTRUMENT_STEMS) <= stems.keys():
+                    raise RuntimeError("Instrument model missing required stems")
+                res["_instrument_predictions"].append(stems)
+        for res in results.values():
+            pool = res["_instrument_predictions"]
+            if len(pool) == 1:
+                res.update({k: pool[0][k] for k in INSTRUMENT_STEMS})
+            else:
+                # Include the model vocal/residual bucket as competing evidence,
+                # but never replace the approved hybrid lead-vocal estimate.
+                roles = [k for k in INSTRUMENT_STEMS + ["vocals"] if k in pool[0] and k in pool[1]]
+                avg = {k: (pool[0][k] + pool[1][k]) * .5 for k in roles}
+                for role in INSTRUMENT_STEMS:
+                    res[role] = consensus_blend(pool[0][role], pool[1][role], sum(v for k, v in avg.items() if k != role))
+            self._advance_progress("Separated selected instruments")
 
-        Parameters:
-            results (Dict[str, Dict]): Separation results.
-        """
-        self.separator.load_model("htdemucs_6s.yaml")
-        for base_name, res in results.items():
-            sr = res["sr"]
-            mix_np = res.get("mix_np")
-            if mix_np is None or mix_np.size == 0:
-                # Fallback to instrumental if mix is unavailable
-                mix_np = res.get("instrumental")
-            if mix_np is None or mix_np.size == 0:
-                mix_np = np.zeros((2, 1), dtype=np.float32)
-            self.separator.output_dir = res["output_folder"]
-            self.separator.model_instance.output_dir = res["output_folder"]
-
-            tmp_mix_wav = write_temp_wav(mix_np, sr, res["output_folder"])
-            demucs_partial = self.separator.separate(tmp_mix_wav)
-            demucs_files = [os.path.join(self.separator.output_dir, f) for f in demucs_partial]
-            res["drums"] = None
-            res["bass"] = None
-            res["guitar"] = None
-            res["piano"] = None
-            res["other"] = None
-            for f in demucs_files:
-                lowf = os.path.basename(f).lower()
-                arr, _ = librosa.load(f, sr=sr, mono=False)
-                if arr.ndim == 1:
-                    arr = np.stack([arr, arr], axis=0)
-                if ("(drums)" in lowf) or ("drums" in lowf) or ("drum" in lowf):
-                    res["drums"] = arr
-                elif ("(bass)" in lowf) or ("bass" in lowf):
-                    res["bass"] = arr
-                elif ("(guitar)" in lowf) or ("guitar" in lowf):
-                    res["guitar"] = arr
-                elif ("(piano)" in lowf) or ("piano" in lowf):
-                    res["piano"] = arr
-                elif ("(other)" in lowf) or ("other" in lowf) or ("accompaniment" in lowf) or ("rest" in lowf):
-                    res["other"] = arr
-            if os.path.exists(tmp_mix_wav):
-                os.remove(tmp_mix_wav)
-            self._advance_progress("Separated drums, bass, guitar, piano, and other instruments")
-
-    def _alt_bass_separation_all(self, results: Dict[str, Dict]) -> None:
-        """
-        Applies an alternate bass separation model on all files.
-
-        Parameters:
-            results (Dict[str, Dict]): Separation results.
-        """
+    def _alt_bass_separation_all(self, results):
         self.separator.load_model("kuielab_a_bass.onnx")
-        for base_name, res in results.items():
-            sr = res["sr"]
-            inst = res["instrumental"]
-            self.separator.output_dir = res["output_folder"]
-            self.separator.model_instance.output_dir = res["output_folder"]
-            tmp_instru_wav = write_temp_wav(inst, sr, res["output_folder"])
-            alt_bass_out = self.separator.separate(tmp_instru_wav)
-            alt_bass_files = [os.path.join(self.separator.output_dir, f) for f in alt_bass_out]
-            for bfile in alt_bass_files:
-                if not os.path.exists(bfile):
-                    continue
-                blow = os.path.basename(bfile).lower()
-                arrb, _ = librosa.load(bfile, sr=sr, mono=False)
-                if arrb.ndim == 1:
-                    arrb = np.stack([arrb, arrb], axis=0)
-                if "(bass)" in blow:
-                    res["bass"] = arrb
-            if os.path.exists(tmp_instru_wav):
-                os.remove(tmp_instru_wav)
-            self._advance_progress("Bass track isolated with enhanced model")
+        for res in results.values():
+            stems = self._separate_as_arrays_current(res["instrumental"], res["sr"], output_folder=res["output_folder"], task="instruments")
+            if "bass" not in stems:
+                raise RuntimeError("Bass model did not produce a bass stem")
+            res["bass"] = stems["bass"]
+            self._advance_progress("Enhanced bass separation")
 
-    def _advanced_drum_separation_all(self, results: Dict[str, Dict]) -> None:
-        """
-        Runs advanced drum separation on the drums stem for all files.
-
-        Parameters:
-            results (Dict[str, Dict]): Separation results.
-        """
+    def _advanced_drum_separation_all(self, results):
         self.separator.load_model("MDX23C-DrumSep-aufr33-jarredou.ckpt")
-        for base_name, res in results.items():
-            sr = res["sr"]
-            drums = res.get("drums", np.zeros_like(res["instrumental"]))
-            tmp_drums_wav = write_temp_wav(drums, sr, res["output_folder"])
-            output_folder = res["output_folder"]
-            self.separator.output_dir = output_folder
-            self.separator.model_instance.output_dir = output_folder
+        for res in results.values():
+            parents = res.get("_instrument_predictions", [])
+            inputs = [p["drums"] for p in parents] if len(parents) == 2 else [res["drums"]]
+            pool = [self._separate_as_arrays_current(a, res["sr"], output_folder=res["output_folder"], task="drums") for a in inputs]
+            expected = ["drums_" + r for r in DRUM_STEMS]
+            if any(not set(expected) <= p.keys() for p in pool):
+                raise RuntimeError("Drum model missing configured kit components")
+            if len(pool) == 2:
+                avg = {k: (pool[0][k] + pool[1][k]) * .5 for k in expected}
+                res.update({k: consensus_blend(pool[0][k], pool[1][k], sum(v for r, v in avg.items() if r != k)) for k in expected})
+            else:
+                res.update(pool[0])
+            self._advance_progress("Blended kick, snare, hi-hat, toms, ride and crash")
 
-            drum_parts = self.separator.separate(tmp_drums_wav)
-            drum_part_files = [os.path.join(self.separator.output_dir, f) for f in drum_parts]
-            drums_other = np.copy(drums)
-            for key in ["drums_kick", "drums_snare", "drums_toms", "drums_hh", "drums_ride", "drums_crash"]:
-                res[key] = None
-            for dpf in drum_part_files:
-                dplow = os.path.basename(dpf).lower()
-                arrp, _ = librosa.load(dpf, sr=sr, mono=False)
-                if arrp.ndim == 1:
-                    arrp = np.stack([arrp, arrp], axis=0)
-                if arrp.shape[-1] <= drums_other.shape[-1]:
-                    # Gain-matched, time-aligned subtraction to reduce hiss
-                    drums_other[:, :arrp.shape[-1]] = self._residual_subtract(drums_other[:, :arrp.shape[-1]], arrp, sr)
-                if "(kick)" in dplow:
-                    res["drums_kick"] = arrp
-                elif "(snare)" in dplow:
-                    res["drums_snare"] = arrp
-                elif "(toms)" in dplow:
-                    res["drums_toms"] = arrp
-                elif "(hh)" in dplow:
-                    res["drums_hh"] = arrp
-                elif "(ride)" in dplow:
-                    res["drums_ride"] = arrp
-                elif "(crash)" in dplow:
-                    res["drums_crash"] = arrp
-            # Only set stems that were actually detected; otherwise derive reasonable defaults
-            if res.get("drums") is None:
-                res["drums"] = np.zeros_like(drums)
-            if res.get("bass") is None:
-                res["bass"] = np.zeros_like(drums)
-            if res.get("guitar") is None:
-                res["guitar"] = np.zeros_like(drums)
-            if res.get("piano") is None:
-                res["piano"] = np.zeros_like(drums)
-            if res.get("other") is None:
-                res["other"] = np.zeros_like(drums)
-            res["drums_other"] = drums_other
-            self._advance_progress("Drum components separated (kick, snare, hi-hat, cymbals)")
+    def _mega_separation_all(self, results):
+        if not self.mega_stems:
+            return
+        self.separator.model_instance = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        for res in results.values():
+            with tempfile.TemporaryDirectory(dir=res["output_folder"]) as temp:
+                source = Path(temp) / "input.wav"
+                sf.write(source, stereo(res["instrumental"]).T, res["sr"], subtype="FLOAT")
+                cmd = [sys.executable, "-m", "modules.separator.mega_worker", str(source), temp,
+                       self.separator.model_file_dir, "--quality", self.options.get("separation_quality", "balanced")]
+                if self.options.get("cpu"):
+                    cmd.append("--cpu")
+                subprocess.run(cmd, cwd=app_path, check=True)
+                info = json.loads((Path(temp) / "mega.json").read_text())
+                self.separator.run_records.extend(info["runs"])
+                self.separator.loaded_models.add(MEGA_MODEL)
+                for role in self.mega_stems:
+                    audio, _ = librosa.load(str(Path(temp) / info["outputs"][role]), sr=res["sr"], mono=False)
+                    res["mega_" + role.replace("-", "_")] = stereo(audio, res["instrumental"].shape[-1])
+            self._advance_progress("Separated selected additional Mega instruments")
 
-    def _woodwinds_separation_all(self, results: Dict[str, Dict]) -> None:
-        """
-        Separates woodwinds from the 'other' stem on all files.
-
-        Parameters:
-            results (Dict[str, Dict]): Separation results.
-        """
+    def _woodwinds_separation_all(self, results):
         self.separator.load_model("17_HP-Wind_Inst-UVR.pth")
-        for base_name, res in results.items():
-            sr = res["sr"]
-            other = res.get("other", np.zeros_like(res["instrumental"]))
-            tmp_other_wav = write_temp_wav(other, sr, res["output_folder"])
-            output_folder = res["output_folder"]
-            self.separator.output_dir = output_folder
-            self.separator.model_instance.output_dir = output_folder
+        for res in results.values():
+            stems = self._separate_as_arrays_current(res["other"], res["sr"], output_folder=res["output_folder"], task="instruments")
+            if "woodwinds" not in stems:
+                raise RuntimeError("Woodwind model did not produce a recognized woodwind stem")
+            res["woodwinds"] = stems["woodwinds"]
+            res["other"] = res["other"] - res["woodwinds"]
+            self._advance_progress("Separated woodwinds")
 
-            ww_parts = self.separator.separate(tmp_other_wav)
-            ww_part_files = [os.path.join(self.separator.output_dir, f) for f in ww_parts]
-            new_woodwinds = np.zeros_like(other)
-            for wfile in ww_part_files:
-                if not os.path.exists(wfile):
-                    continue
-                wflow = os.path.basename(wfile).lower()
-                arrw, _ = librosa.load(wfile, sr=sr, mono=False)
-                if arrw.ndim == 1:
-                    arrw = np.stack([arrw, arrw], axis=0)
-                if "(woodwinds)" in wflow:
-                    new_woodwinds = arrw
-            leftover_other = np.copy(other)
-            if new_woodwinds.shape[-1] <= leftover_other.shape[-1]:
-                # Gain-matched, time-aligned subtraction to reduce hiss
-                leftover_other[:, :new_woodwinds.shape[-1]] = self._residual_subtract(leftover_other[:, :new_woodwinds.shape[-1]], new_woodwinds, sr)
-            res["woodwinds"] = new_woodwinds
-            res["other"] = leftover_other
-            self._advance_progress("Woodwind instruments isolated")
-
-    def _save_all_stems(self, results: Dict[str, Dict]) -> List[str]:
-        """
-        Saves all final stems to disk and cleans up temporary files.
-
-        Parameters:
-            results (Dict[str, Dict]): Separation results.
-
-        Returns:
-            List[str]: List of output file paths.
-        """
-        self._advance_progress("Saving separated audio files...")
+    def _save_all_stems(self, results):
         output_files = []
-        stem_names = {
-            "vocals": "(Vocals)",
-            "vocals_full": "(Vocals_Full)",
-            "bg_vocals": "(BG_Vocals)",
-            "instrumental": "(Instrumental)",
-            "drums": "(Drums)",
-            "bass": "(Bass)",
-            "guitar": "(Guitar)",
-            "piano": "(Piano)",
-            "woodwinds": "(Woodwinds)",
-            "other": "(Other)",
-            "drums_kick": "(Drums_Kick)",
-            "drums_snare": "(Drums_Snare)",
-            "drums_toms": "(Drums_Toms)",
-            "drums_hh": "(Drums_HH)",
-            "drums_ride": "(Drums_Ride)",
-            "drums_crash": "(Drums_Crash)",
-            "drums_other": "(Drums_Other)"
-        }
+        labels = {"vocals": "Vocals", "vocals_full": "Vocals_Full", "bg_vocals": "BG_Vocals",
+                  "instrumental": "Instrumental", "drums_hh": "Drums_HH"}
+        manifests = {}
+        fingerprint = model_fingerprint(self.separator.model_file_dir, self.separator.loaded_models)
         for base_name, res in results.items():
-            sr = res["sr"]
-            output_folder = res["output_folder"]
-            for stem_key, label in stem_names.items():
-                if stem_key in res and res[stem_key] is not None:
-                    # Skip writing stems that are effectively silent (prevents empty files)
-                    arr = res[stem_key]
-                    if isinstance(arr, np.ndarray) and float(np.max(np.abs(arr)) if arr.size > 0 else 0.0) < 1e-6:
-                        continue
-                    if stem_key == "bg_vocals" and "bg_vocals_" in base_name:
-                        bg_int = int(base_name.split("bg_vocals_")[-1])
-                        label = f"(BG_Vocals_{bg_int})"
-                    output_name = f"{base_name}__{label}.wav"
-                    output_path_file = os.path.join(output_folder, output_name)
-                    sf.write(output_path_file, res[stem_key].T, sr, subtype="FLOAT")
-                    output_files.append(output_path_file)
-            self._advance_progress("Audio files saved successfully")
-        for base_name, res in results.items():
-            output_folder = res["output_folder"]
-            for temp_file in os.listdir(output_folder):
-                if temp_file.startswith("tmp_"):
-                    os.remove(os.path.join(output_folder, temp_file))
+            folder = Path(res["output_folder"])
+            manifest = manifests.setdefault(str(folder), {"pipeline": PIPELINE_REVISION,
+                "audio_separator": version("audio-separator"), "experimental": self.separation_profile.value == "v4",
+                "settings": {k: v for k, v in self.options.items() if k not in {"input_dict", "callback"}},
+                "model_hashes": fingerprint, "custom_models": CUSTOM_MODELS,
+                "runs": self.separator.run_records, "stems": []})
+            candidates = {k: v for k, v in res.items() if k in INSTRUMENT_STEMS and isinstance(v, np.ndarray)}
+            for key, arr in res.items():
+                if not isinstance(arr, np.ndarray) or key == "mix_np":
+                    continue
+                parent_key = ("vocals_full" if key.startswith("bg_vocals") or key == "vocals" and "vocals_full" in res
+                              else "drums" if key.startswith("drums_") else "instrumental"
+                              if key in {"bass", "drums", "guitar", "piano", "other", "woodwinds"} or key.startswith("mega_") else "mix_np")
+                if key in INSTRUMENT_STEMS and key not in self.instrument_stems:
+                    continue
+                if key.startswith("drums_") and key[6:] not in self.drum_stems:
+                    continue
+                hidden = False
+                activity = {"hidden": False, "reason": "user-selected; automatic activity filtering disabled"}
+                duplicate = duplicate_of(arr, candidates) if key.startswith("mega_") else None
+                if key.startswith("mega_"):
+                    candidates[key] = arr
+                label = labels.get(key, "BG_Vocals_" + key.rsplit("_", 1)[-1] if key.startswith("bg_vocals_") else key.title())
+                if duplicate:
+                    label += "_Duplicate_of_" + duplicate.title()
+                    logger.warning("%s is a near-identical copy of %s; retained as an alternative", key, duplicate)
+                filename = f"{res.get('base_name', base_name)}__({label}).wav"
+                relative = str(Path(".hidden_stems") / filename) if hidden else filename
+                target = folder / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(target, stereo(arr).T, res["sr"], subtype="FLOAT")
+                manifest["stems"].append({"role": key, "parent": parent_key, "filename": filename,
+                    "path": relative, "hidden": hidden, "activity": activity, "sha256": file_hash(target),
+                    "aggregate": key in {"vocals_full", "instrumental", "drums", "bg_vocals"}})
+                if duplicate:
+                    manifest["stems"][-1]["duplicate_of"] = duplicate
+                    manifest["stems"][-1]["note"] = "Near-identical copy retained for user review; excluded from automatic mixing"
+                if key == "vocals" and (self.options.get("vocal_reverb") == "Capture reverb" or "vocal_reverb" not in self.options and self.store_reverb_ir and any(
+                    self._should_apply_transform(key, flag) for flag in (self.reverb_removal, self.echo_removal)
+                )):
+                    capture_path = folder / (Path(filename).stem + ".ir")
+                    if capture_path.exists():
+                        manifest["stems"][-1]["reverb_ir"] = {
+                            "path": capture_path.name, "sha256": file_hash(capture_path)}
+                if not hidden:
+                    output_files.append(str(target))
+            self._advance_progress("Saved audio and Smart Stems manifest")
+        for folder, manifest in manifests.items():
+            write_json(Path(folder) / MANIFEST_NAME, manifest)
         return output_files
 
     @staticmethod
@@ -739,164 +623,86 @@ class EnsembleDemucsMDXMusicSeparationModel:
         Returns:
             bool: True if transform should be applied, False otherwise.
         """
-        if setting == "Nothing":
-            return False
+        name = stem_name.lower().strip("()")
         if setting == "All":
             return True
         if setting == "All Vocals":
-            return "vocals)" in stem_name.lower()
+            return name in {"vocals", "vocals_full"} or name.startswith("bg_vocals")
         if setting == "Main Vocals":
-            return "vocals)" in stem_name and "(bg_vocals" not in stem_name.lower()
+            return name == "vocals"
         return False
 
-    @staticmethod
-    def _rename_file(base_in: str, filepath: str) -> str:
-        """
-        Rebuilds the filename to remove model references.
+    def _apply_bg_vocal_splitting(self, vocals_array, sr, base_name, output_folder):
+        choice = self.options.get("backing_vocal_model", "karaoke")
+        self.separator.load_model(BG_MODELS[choice])
+        stems = self._separate_as_arrays_current(vocals_array, sr, output_folder=output_folder,
+                                                 task="karaoke" if choice == "karaoke" else "bve")
+        if not {"vocals", "bg_vocals"} <= stems.keys():
+            raise RuntimeError("Backing vocal model did not return lead and backing vocals")
+        self._advance_progress("Separated lead and backing vocals")
+        return stems["vocals"], stems["bg_vocals"]
 
-        Parameters:
-            base_in (str): The base input filename.
-            filepath (str): The current file path.
-
-        Returns:
-            str: The new file path after renaming.
-        """
-        dirname = os.path.dirname(filepath)
-        ext = os.path.splitext(filepath)[1]
-        base_only = os.path.splitext(os.path.basename(base_in))[0]
-        import re
-        all_parens = re.findall(r"\([^)]*\)", os.path.basename(filepath))
-        to_strip = [
-            "deverb_bs_roformer", "UVR-DeEcho-DeReverb", "UVR-De-Echo-Normal",
-            "UVR-DeNoise", "UVR-DeNoise-Lite", "mel_band_roformer", "MDX23C", "UVR-MDX-NET",
-            "drumsep", "roformer", "viperx", "crowd", "karaoke", "instrumental", "_InstVoc", "_VOCFT",
-            "NoReverb", "NoEcho", "NoDelay", "NoCrowd", "NoNoise", "_mel_band_roformer_karaoke_aufr33_viperx_sdr_10"
-        ]
-        filtered = []
-        for g in all_parens:
-            if not any(p.lower() in g.lower() for p in to_strip):
-                filtered.append(g)
-        final_name = base_only + "_" + "".join(filtered) + ext
-        final_name = final_name.replace(") (", ")(").replace("__", "_")
-        final_path = os.path.join(dirname, final_name)
-        if os.path.exists(filepath):
-            if os.path.exists(final_path):
-                os.remove(final_path)
-            os.rename(filepath, final_path)
-        return final_path
-
-    def _apply_bg_vocal_splitting(self, vocals_array: np.ndarray, sr: int, base_name: str, output_folder: str) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Applies background vocal splitting to the vocals array.
-
-        Parameters:
-            vocals_array (np.ndarray): The vocal stem.
-            sr (int): Sample rate.
-            base_name (str): Base filename.
-            output_folder (str): Folder to store outputs.
-
-        Returns:
-            Tuple[np.ndarray, np.ndarray]: (Main vocals, background vocals) if successful;
-                                           otherwise, returns (original vocals_array, None).
-        """
-        tmp_file = write_temp_wav(vocals_array, sr, output_folder)
-        self.separator.load_model("UVR-BVE-4B_SN-44100-1.pth")
-        self.separator.output_dir = output_folder
-        self.separator.model_instance.output_dir = output_folder
-        out_files = self.separator.separate(tmp_file)
-        self._advance_progress("Background vocals separated from lead vocals")
-        out_files = [os.path.join(output_folder, f) for f in out_files]
-
-        bg = None
-        main = None
-        for f in out_files:
-            arr, _ = librosa.load(f, sr=sr, mono=False)
-            if "(Vocals)" in f:
-                bg = arr
-            elif "(Instrumental)" in f:
-                main = arr
-        if os.path.exists(tmp_file):
-            os.remove(tmp_file)
-        if bg is not None and main is not None:
-            if np.max(np.abs(bg)) > 0.0:
-                return main, bg
-            else:
-                logger.info("Background vocals are empty after splitting.")
-                return vocals_array, None
-        return vocals_array, None
-
-    def _apply_transform_chain(self, stem_array: np.ndarray, sr: int, base_name: str, stem_label: str,
-                               output_folder: str, skip_transforms: List[str] = None) -> np.ndarray:
-        """
-        Applies a series of transformations (reverb, crowd, noise removal) to a stem array.
-
-        Parameters:
-            stem_array (np.ndarray): Audio stem to process.
-            sr (int): Sample rate.
-            base_name (str): Base filename.
-            stem_label (str): Label for the stem (e.g., "vocals", "instrumental").
-            output_folder (str): Output folder for temporary files.
-            skip_transforms (List[str], optional): List of transformation labels to skip.
-
-        Returns:
-            np.ndarray: Transformed audio stem.
-        """
-        if skip_transforms is None:
-            skip_transforms = []
+    def _apply_transform_chain(self, stem_array, sr, base_name, stem_label, output_folder, skip_transforms=None):
+        mode = getattr(self, "options", {}).get("vocal_reverb", "Keep wet")
+        if mode not in {"Keep wet", "Dry vocals", "Capture reverb"}:
+            raise ValueError("Unknown vocal reverb mode")
+        use_fused = stem_label == "vocals" and mode != "Keep wet"
         transformations = [
-            ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", "No Reverb", self.reverb_removal),
+            ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", "dry", self.reverb_removal),
             (self.delay_removal_model, "dry", self.echo_removal),
-            (self.crowd_removal_model, "No Crowd", self.crowd_removal),
-            (self.noise_removal_model, "No Noise", self.noise_removal),
+            (self.crowd_removal_model, "clean", self.crowd_removal),
+            (self.noise_removal_model, "clean", self.noise_removal),
         ]
-        current_array = stem_array
-        simulated_name = f"({stem_label})"
-        for model_file, out_label, transform_flag in transformations:
-            if out_label in skip_transforms:
+        current = stem_array
+        if use_fused:
+            self.separator.load_model(FUSED_DEREVERB)
+            stems = self._separate_as_arrays_current(stem_array, sr, output_folder=output_folder, task="cleanup")
+            if "dry" not in stems:
+                raise RuntimeError("Sucial Fused did not produce a dry vocal")
+            dry_vocal = stems["dry"]
+            if mode == "Dry vocals":
+                current = dry_vocal
+            else:
+                from modules.reverb_ir import save_capture
+                ir_path = Path(output_folder) / f"{Path(base_name).name}__(Vocals).ir"
+                with tempfile.TemporaryDirectory(dir=output_folder) as temp:
+                    dry_path = write_temp_wav(dry_vocal, sr, temp)
+                    wet_path = write_temp_wav(stem_array - dry_vocal, sr, temp)
+                    extract_reverb(str(dry_path), wet_path, str(ir_path))
+                capture = json.loads(ir_path.read_text())
+                capture.update({"restore_requested": True, "exported_wet": True, "cloning_input": "wet", "model": FUSED_DEREVERB})
+                save_capture(ir_path, capture)
+                if not capture.get("valid_for_restore"):
+                    logger.warning("Requested reverb capture retained with fit warning: %s", capture.get("rejection_reasons"))
+            self._advance_progress("Dried vocals" if mode == "Dry vocals" else "Captured reverb; retaining wet vocals")
+        effect_input = None
+        effect_dry = None
+        for model, role, flag in transformations:
+            if stem_label == "vocals" and "vocal_reverb" in getattr(self, "options", {}) and role == "dry":
+                continue  # Explicit new mode wins over saved legacy removal toggles.
+            if not self._should_apply_transform(stem_label, flag):
                 continue
-            if self._should_apply_transform(simulated_name, transform_flag):
-                self.separator.load_model(model_file)
-                self.separator.output_dir = output_folder
-                self.separator.model_instance.output_dir = output_folder
-                tmp_file = write_temp_wav(current_array, sr, output_folder)
-                out_files = self.separator.separate(tmp_file)
-                out_files_full = [os.path.join(output_folder, f) for f in out_files]
-                chosen_file = None
-                if len(out_files_full) == 2:
-                    if out_label.replace(" ", "").lower() in out_files_full[0].replace(" ", "").lower():
-                        chosen_file = out_files_full[0]
-                        alt_file = out_files_full[1]
-                    else:
-                        chosen_file = out_files_full[1]
-                        alt_file = out_files_full[0]
-                    chosen_file = self._rename_file(base_name, chosen_file)
-                    if (
-                            out_label == "No Echo" or out_label == "No Reverb") and stem_label.lower() == "vocals" and self.store_reverb_ir and alt_file:
-                        try:
-                            out_ir = os.path.join(output_folder, "impulse_response.ir")
-                            logger.info(f"Extracting reverb IR from {os.path.basename(alt_file)}")
-                            extract_reverb(chosen_file, alt_file, out_ir)
-                        except Exception as e:
-                            logger.error(f"Error extracting IR: {e}")
-                else:
-                    for pf in out_files_full:
-                        if out_label.replace(" ", "").lower() in pf.replace(" ", "").lower():
-                            chosen_file = self._rename_file(base_name, pf)
-                            break
-                if chosen_file:
-                    current_array, _ = librosa.load(chosen_file, sr=sr, mono=False)
-                # User-friendly transform message
-                transform_messages = {
-                    "No Reverb": "Reverb removed",
-                    "dry": "Echo/delay removed", 
-                    "No Crowd": "Crowd noise removed",
-                    "No Noise": "Background noise removed"
-                }
-                friendly_msg = transform_messages.get(out_label, f"{out_label} applied")
-                self._advance_progress(f"{friendly_msg} from {stem_label}")
-                if os.path.exists(tmp_file):
-                    os.remove(tmp_file)
-        return current_array
+            self.separator.load_model(model)
+            stems = self._separate_as_arrays_current(current, sr, output_folder=output_folder, task="cleanup")
+            if role not in stems:
+                raise RuntimeError(f"Cleanup model {model} missing expected {role} output")
+            if role == "dry" and self.store_reverb_ir and stem_label == "vocals":
+                if effect_input is None:
+                    effect_input = current.copy()
+                effect_dry = stems[role]
+            current = stems[role]
+            self._advance_progress(f"Applied {model} to {stem_label}")
+        if effect_input is not None:
+            # Capture the combined reverb/echo removal once, before unrelated denoising.
+            with tempfile.TemporaryDirectory(dir=output_folder) as temp:
+                dry = write_temp_wav(effect_dry, sr, temp)
+                wet = write_temp_wav(effect_input - effect_dry, sr, temp)
+                ir_path = str(Path(output_folder) / f"{Path(base_name).name}__(Vocals).ir")
+                extract_reverb(dry, wet, ir_path)
+                capture = json.loads(Path(ir_path).read_text())
+                if not capture.get("valid_for_restore"):
+                    logger.warning("IR capture not reusable: %s", capture.get("rejection_reasons"))
+        return current
 
 
 ################################################################################
@@ -920,10 +726,11 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
         for ip in input_files:
             if not os.path.isfile(ip):
                 continue
-            wav_path = ensure_wav(ip)
-            loaded, sr = librosa.load(wav_path, sr=44100, mono=False)
+            loaded, sr = librosa.load(ip, sr=44100, mono=False)
+            loaded = stereo(loaded)
+            os.makedirs(out_folder, exist_ok=True)
             base_name = os.path.splitext(os.path.basename(ip))[0]
-            files_data.append({"base_name": base_name, "mix_np": loaded, "sr": sr, "output_folder": out_folder})
+            files_data.append({"base_name": base_name, "key": str(Path(out_folder).resolve() / base_name), "mix_np": loaded, "sr": sr, "output_folder": out_folder})
     if not files_data:
         return []
     model = EnsembleDemucsMDXMusicSeparationModel(options, callback)
@@ -931,14 +738,14 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     # Pre-calculate total steps for accurate progress tracking.
     N = len(files_data)
     # Get actual ensemble models from the separation profile
-    profile_models = get_profile_models(model.separation_profile, model.ensemble_strength)
+    profile_models = model.profile_models
     ensemble_steps = len(profile_models) * N
-    bg_steps = N if model.separate_bg_vocals else 0
+    bg_steps = N * int(options.get("bg_vocal_layers", 1)) if model.separate_bg_vocals else 0
     # Compute transformation steps per file based on settings.
-    trans_opts = [model.reverb_removal, model.crowd_removal, model.noise_removal]
+    trans_opts = [model.reverb_removal, model.echo_removal, model.crowd_removal, model.noise_removal]
     count_vocals = sum(1 for opt in trans_opts if opt in {"All", "All Vocals", "Main Vocals"})
     count_instrumental = sum(1 for opt in trans_opts if opt == "All")
-    transform_steps = (count_vocals + count_instrumental) * N
+    transform_steps = (count_vocals + count_instrumental + (options.get("vocal_reverb", "Keep wet") != "Keep wet")) * N
     multi_stem_steps = N if not model.vocals_only else 0
     alt_bass_steps = N if (model.alt_bass_model and not model.vocals_only) else 0
     drum_steps = N if (model.separate_drums and not model.vocals_only) else 0
@@ -953,50 +760,35 @@ def predict_with_model(options: Dict, callback: Callable = None) -> List[str]:
     # Ensemble separation
     results = model._ensemble_separate_all(files_data)
 
-    # --- NEW ORDER: Apply reverb removal on vocals BEFORE background splitting ---
-    if model.reverb_removal != "Nothing" and "vocals" in next(iter(results.values())):
-        for base_name, res in results.items():
-            if res.get("vocals") is not None:
-                # Apply reverb removal transform on vocals only
-                res["vocals"] = model._apply_transform_chain(
-                    res["vocals"], res["sr"], base_name, "vocals", res["output_folder"]
-                )
-
-    # Background vocal splitting comes after reverb removal.
     if model.separate_bg_vocals:
         for base_name, res in results.items():
-            if "vocals" in res and res["vocals"] is not None:
-                res["vocals_full"] = res["vocals"]
-                main_vocals, bg_vocals = model._apply_bg_vocal_splitting(
-                    res["vocals"], res["sr"], base_name, res["output_folder"]
-                )
-                res["vocals"] = main_vocals
-                if bg_vocals is not None:
-                    res["bg_vocals"] = bg_vocals
-
-    # Apply remaining transformation chain:
-    # For vocals, skip reverb removal as it was already applied.
-    if any(opt != "Nothing" for opt in [model.crowd_removal, model.noise_removal]):
-        for base_name, res in results.items():
-            if res.get("vocals") is not None:
-                res["vocals"] = model._apply_transform_chain(
-                    res["vocals"], res["sr"], base_name, "vocals", res["output_folder"], skip_transforms=["No Reverb"]
-                )
-            if res.get("instrumental") is not None:
-                res["instrumental"] = model._apply_transform_chain(
-                    res["instrumental"], res["sr"], base_name, "instrumental", res["output_folder"]
-                )
+            res["vocals_full"] = res["vocals"].copy()
+            lead, backing = model._apply_bg_vocal_splitting(res["vocals"], res["sr"], base_name, res["output_folder"])
+            res["vocals"], res["bg_vocals"] = lead, backing
+            remainder = backing
+            for layer in range(2, int(options.get("bg_vocal_layers", 1)) + 1):
+                part, remainder = model._apply_bg_vocal_splitting(remainder, res["sr"], base_name, res["output_folder"])
+                res[f"bg_vocals_{layer - 1}"] = part
+                res[f"bg_vocals_{layer}"] = remainder
 
     # Only run multistem logic when not in vocals-only mode
-    if not model.vocals_only:
+    if not model.vocals_only and (model.instrument_stems or (model.separate_drums and model.drum_stems) or model.alt_bass_model or model.separate_woodwinds):
         model._multistem_separation_all(results)
         if model.alt_bass_model:
             model._alt_bass_separation_all(results)
-        if model.separate_drums:
+        if model.separate_drums and model.drum_stems:
             model._advanced_drum_separation_all(results)
         if model.separate_woodwinds:
             model._woodwinds_separation_all(results)
+    model._mega_separation_all(results)
+    # Each requested cleanup runs exactly once per final stem, including backing vocals.
+    for base_name, res in results.items():
+        for key, arr in list(res.items()):
+            if isinstance(arr, np.ndarray) and key != "mix_np":
+                res[key] = model._apply_transform_chain(arr, res["sr"], res.get("base_name", base_name), key, res["output_folder"])
     output_files = model._save_all_stems(results)
+    if model.callback:
+        model.callback(1.0, "Separation complete", model.total_steps)
     return output_files
 
 
@@ -1029,7 +821,7 @@ def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, 
     options = {
         "input_dict": input_dict,
         "cpu": kwargs.get("cpu", False),
-        "separation_profile": kwargs.get("separation_profile", "v2"),
+        "separation_profile": kwargs.get("separation_profile", "hybrid_cleaned"),
         "ensemble_size": kwargs.get("ensemble_size", None),
         "residual_fill": kwargs.get("residual_fill", None),
         "vocals_only": kwargs.get("vocals_only", True),
@@ -1049,10 +841,17 @@ def separate_music(input_dict: Dict[str, List[str]], callback: Callable = None, 
         "noise_removal_model": kwargs.get("noise_removal_model", "UVR-DeNoise.pth"),
         "crowd_removal_model": kwargs.get("crowd_removal_model", "UVR-MDX-NET_Crowd_HQ_1.onnx"),
         "separate_bg_vocals": kwargs.get("separate_bg_vocals", True),
+        "backing_vocal_model": kwargs.get("backing_vocal_model") or "karaoke",
         "bg_vocal_layers": kwargs.get("bg_vocal_layers", 1),
         "store_reverb_ir": kwargs.get("store_reverb_ir", False),
         "callback": callback,
         "ensemble_strength": kwargs.get("ensemble_strength", 2),
         "residual_blend": kwargs.get("residual_blend", 0.4)
     }
+    for key in ("separation_quality", "smart_stems", "separation_preset", "backing_vocal_model", "vocal_reverb",
+                "instrument_model", "instrument_input", "instrument_stems", "drum_stems", "mega_stems", "vocal_fusion", "instrumental_fusion"):
+        if key in kwargs and kwargs[key] is not None:
+            options[key] = kwargs[key]
+    if options["delay_removal"] != "Nothing" and options["echo_removal"] == "Nothing":
+        options["echo_removal"] = options["delay_removal"]
     return predict_with_model(options, callback)

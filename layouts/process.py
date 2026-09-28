@@ -1,6 +1,8 @@
 import os
 import io
 import zipfile
+import json
+import re
 
 from fastapi import HTTPException
 import gradio as gr
@@ -33,6 +35,9 @@ logger = logging.getLogger(__name__)
 # Global dictionary to store path mappings
 path_to_filename = {}
 filename_to_path = {}
+
+LYRIC_TAG_PATTERN = re.compile(r"\[([^\]]+)\]")
+LYRICS_AUDIO_EXTS = (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus", ".aac")
 
 
 def _weights_zip_models_markdown() -> str:
@@ -533,6 +538,339 @@ def refresh_projects() -> gr.update:
     return gr.update(value=list_projects())
 
 
+def _project_root(project_name: str) -> Path:
+    return Path(output_path) / "process" / project_name
+
+
+def _smart_stem_folder(project_name):
+    root = (Path(output_path) / "process").resolve()
+    folder = (root / (project_name or "") / "stems").resolve()
+    if not project_name or not folder.is_relative_to(root):
+        raise ValueError("Select an existing project")
+    return folder
+
+
+def show_hidden_stems(project_name):
+    from modules.separator.stem_manifest import hidden_stems
+    if not project_name:
+        return gr.update(choices=[], value=None), "Select an existing project."
+    stems = hidden_stems(_smart_stem_folder(project_name))
+    choices = [(f"{s['filename']} — {s['activity']['reason']}", s["path"]) for s in stems]
+    return gr.update(choices=choices, value=choices[0][1] if choices else None), f"{len(stems)} recoverable hidden stems."
+
+
+def restore_hidden_stem(project_name, stem):
+    from modules.separator.stem_manifest import restore_stem
+    if not stem:
+        return *show_hidden_stems(project_name), None
+    path = restore_stem(_smart_stem_folder(project_name), stem)
+    choices, _ = show_hidden_stems(project_name)
+    return choices, f"Restored {Path(path).name}. Available to subsequent processing without re-separation.", path
+
+
+def _lyrics_dir(project_name: str) -> Path:
+    path = _project_root(project_name) / "lyrics"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _safe_track_key(track_ref: str) -> str:
+    base = os.path.splitext(track_ref)[0].strip().lower()
+    base = base.replace("\\", "/")
+    return re.sub(r"[^a-z0-9/_\-\.]+", "_", base).replace("/", "__")
+
+
+def _list_project_tracks(project_name: str) -> List[str]:
+    root = _project_root(project_name)
+    if not root.exists():
+        return []
+    candidates: List[Path] = []
+    for folder in ("stems", "source", "speakers", "cloned"):
+        d = root / folder
+        if d.exists():
+            for file_path in d.rglob("*"):
+                if file_path.is_file() and ".hidden_stems" not in file_path.parts and file_path.suffix.lower() in LYRICS_AUDIO_EXTS:
+                    candidates.append(file_path)
+    if not candidates:
+        return []
+    rels = [str(p.relative_to(root)).replace("\\", "/") for p in sorted(set(candidates), key=lambda x: str(x))]
+    vocal_first = []
+    other = []
+    for rel in rels:
+        name = rel.lower()
+        if "vocal" in name or "(vocals)" in name or "lead" in name:
+            vocal_first.append(rel)
+        else:
+            other.append(rel)
+    return vocal_first + other
+
+
+def _resolve_track_path(project_name: str, track_selector: str | None) -> Path | None:
+    if not project_name:
+        return None
+    root = _project_root(project_name)
+    if not root.exists():
+        return None
+    if track_selector:
+        candidate = (root / track_selector).resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except Exception:
+            return None
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    tracks = _list_project_tracks(project_name)
+    if not tracks:
+        return None
+    first = root / tracks[0]
+    return first if first.exists() else None
+
+
+def _parse_tagged_line(line: str) -> Dict[str, Any]:
+    tags = [t.strip() for t in LYRIC_TAG_PATTERN.findall(line) if t.strip()]
+    text = LYRIC_TAG_PATTERN.sub("", line).strip()
+    return {"text": text, "tags": tags}
+
+
+def _load_json_file(path: Path) -> Dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("Could not read JSON file %s: %s", path, e)
+        return None
+
+
+def _load_lyrics_payload(project_name: str, track_selector: str | None = None) -> Tuple[Dict[str, Any] | None, str]:
+    root = _project_root(project_name)
+    lyrics = _lyrics_dir(project_name)
+    track_ref = None
+    if track_selector:
+        track_ref = track_selector.replace("\\", "/")
+    track_sources = []
+    if track_ref:
+        track_key = _safe_track_key(track_ref)
+        track_dir = lyrics / "tracks"
+        track_sources = [
+            (track_dir / f"{track_key}.annotated_lyrics.json", f"tracks/{track_key}.annotated_lyrics.json"),
+            (track_dir / f"{track_key}.transcript.auto.json", f"tracks/{track_key}.transcript.auto.json"),
+            (track_dir / f"{track_key}.transcript.json", f"tracks/{track_key}.transcript.json"),
+        ]
+    for path, source_name in track_sources:
+        data = _load_json_file(path)
+        if data and isinstance(data.get("segments", None), list):
+            return data, source_name
+
+    sources = [
+        (lyrics / "annotated_lyrics.json", "annotated_lyrics.json"),
+        (lyrics / "transcript.auto.json", "transcript.auto.json"),
+        (lyrics / "transcript.json", "transcript.json"),
+    ]
+    for path, source_name in sources:
+        data = _load_json_file(path)
+        if data and isinstance(data.get("segments", None), list):
+            return data, source_name
+    cloned_hits = sorted((root / "cloned").glob("*_transcript.json")) if (root / "cloned").exists() else []
+    for path in cloned_hits:
+        data = _load_json_file(path)
+        if data and isinstance(data.get("segments", None), list):
+            return data, path.name
+    return None, ""
+
+
+def _format_editor_and_preview(data: Dict[str, Any]) -> Tuple[str, str]:
+    sheet_lines = []
+    preview_lines = []
+    for seg in data.get("segments", []):
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        tags = [str(t).strip() for t in seg.get("tags", []) if str(t).strip()]
+        start = float(seg.get("start", 0.0) or 0.0)
+        end = float(seg.get("end", 0.0) or 0.0)
+        if tags:
+            tag_prefix = "".join([f"[{t}]" for t in tags])
+            sheet_lines.append(f"{tag_prefix} {text}")
+        else:
+            sheet_lines.append(text)
+        preview_lines.append(f"{start:.2f}-{end:.2f}: {text}")
+    return "\n".join(sheet_lines), "\n".join(preview_lines)
+
+
+def load_project_tracks(project_name: str):
+    tracks = _list_project_tracks(project_name) if project_name else []
+    value = tracks[0] if tracks else None
+    return gr.update(choices=tracks, value=value)
+
+
+def load_project_lyrics(project_name: str, track_selector: str | None = None):
+    if not project_name:
+        return "", "", "Select a process project first."
+    track_path = _resolve_track_path(project_name, track_selector)
+    track_ref = None
+    if track_path is not None:
+        track_ref = str(track_path.relative_to(_project_root(project_name))).replace("\\", "/")
+    data, source_name = _load_lyrics_payload(project_name, track_ref)
+    if not data:
+        if track_ref:
+            return "", "", f"No lyrics/transcript found for `{track_ref}` yet. Click Transcribe."
+        return "", "", "No lyrics/transcript found for this project yet. Click Transcribe."
+    sheet, preview = _format_editor_and_preview(data)
+    track_msg = f"Track: `{track_ref}`. " if track_ref else ""
+    return sheet, preview, f"{track_msg}Loaded lyrics from `{source_name}`."
+
+
+def init_project_lyrics_editor(project_name: str):
+    tracks = _list_project_tracks(project_name) if project_name else []
+    selected = tracks[0] if tracks else None
+    sheet, preview, status = load_project_lyrics(project_name, selected)
+    return gr.update(choices=tracks, value=selected), sheet, preview, status
+
+
+def _build_aligned_segments(base_segments: List[Dict[str, Any]], edited_lines: List[str]) -> List[Dict[str, Any]]:
+    parsed = [_parse_tagged_line(line) for line in edited_lines if line.strip()]
+    parsed = [p for p in parsed if p["text"]]
+    if not parsed:
+        return []
+
+    clean_base = [seg for seg in base_segments if str(seg.get("text", "")).strip()]
+    if not clean_base:
+        return [
+            {
+                "start": float(i),
+                "end": float(i + 1),
+                "text": item["text"],
+                "tags": item["tags"],
+                "confidence": 1.0,
+            }
+            for i, item in enumerate(parsed)
+        ]
+
+    if len(clean_base) == len(parsed):
+        aligned = []
+        for base, edited in zip(clean_base, parsed):
+            aligned.append(
+                {
+                    "start": float(base.get("start", 0.0) or 0.0),
+                    "end": float(base.get("end", 0.0) or 0.0),
+                    "text": edited["text"],
+                    "tags": edited["tags"],
+                    "confidence": float(base.get("confidence", 1.0) or 1.0),
+                }
+            )
+        return aligned
+
+    start_t = float(clean_base[0].get("start", 0.0) or 0.0)
+    end_t = float(clean_base[-1].get("end", clean_base[-1].get("start", 0.0)) or start_t)
+    if end_t <= start_t:
+        end_t = start_t + max(1.0, float(len(parsed)))
+    total_dur = end_t - start_t
+    weights = [max(1, len(item["text"].replace(" ", ""))) for item in parsed]
+    total_weight = float(sum(weights))
+    aligned = []
+    cursor = start_t
+    for idx, item in enumerate(parsed):
+        if idx == len(parsed) - 1:
+            seg_end = end_t
+        else:
+            seg_end = cursor + (total_dur * (weights[idx] / total_weight))
+        aligned.append(
+            {
+                "start": float(cursor),
+                "end": float(seg_end),
+                "text": item["text"],
+                "tags": item["tags"],
+                "confidence": 1.0,
+            }
+        )
+        cursor = seg_end
+    return aligned
+
+
+def save_project_lyrics_with_alignment(project_name: str, track_selector: str | None, lyrics_text: str):
+    if not project_name:
+        return "", "Select a process project first."
+    if not lyrics_text or not lyrics_text.strip():
+        return "", "Lyrics are empty."
+
+    track_path = _resolve_track_path(project_name, track_selector)
+    track_ref = None
+    if track_path is not None:
+        track_ref = str(track_path.relative_to(_project_root(project_name))).replace("\\", "/")
+    base_data, source_name = _load_lyrics_payload(project_name, track_ref)
+    if not base_data:
+        return "", "No base transcript found. Click Transcribe first."
+    base_segments = base_data.get("segments", [])
+    edited_lines = [line for line in lyrics_text.splitlines() if line.strip()]
+    aligned_segments = _build_aligned_segments(base_segments, edited_lines)
+    if not aligned_segments:
+        return "", "No valid lyric lines found to save."
+
+    output_data = {
+        "project_name": project_name,
+        "metadata": {
+            "alignment_source": source_name,
+            "base_segment_count": len(base_segments),
+            "edited_line_count": len(edited_lines),
+            "track": track_ref,
+        },
+        "segments": aligned_segments,
+    }
+    if track_ref:
+        track_dir = _lyrics_dir(project_name) / "tracks"
+        track_dir.mkdir(parents=True, exist_ok=True)
+        annotated_path = track_dir / f"{_safe_track_key(track_ref)}.annotated_lyrics.json"
+    else:
+        annotated_path = _lyrics_dir(project_name) / "annotated_lyrics.json"
+    with open(annotated_path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    _, preview = _format_editor_and_preview(output_data)
+    track_msg = f" for `{track_ref}`" if track_ref else ""
+    return preview, f"Saved and aligned lyrics{track_msg} to `{annotated_path.name}`."
+
+
+def transcribe_project_lyrics(project_name: str, track_selector: str | None, use_whisperx: bool, overwrite_existing: bool = False, progress=gr.Progress()):
+    if not project_name:
+        return "", "", "Select a process project first."
+    project_dir = _project_root(project_name)
+    if not project_dir.exists():
+        return "", "", f"Project not found: {project_name}"
+
+    src_audio = _resolve_track_path(project_name, track_selector)
+    if src_audio is None:
+        return "", "", "No selectable track found. Add input audio/stems first."
+
+    try:
+        from modules.rvc_v3.data_prep.transcriber import Transcriber
+        progress(0.1, desc="Loading transcriber...")
+        transcriber = Transcriber(str(Path(output_path) / "process"), model_size="large-v3")
+        progress(0.25, desc="Transcribing lyrics...")
+        track_ref = str(src_audio.relative_to(project_dir)).replace("\\", "/")
+        track_key = _safe_track_key(track_ref)
+        track_dir = _lyrics_dir(project_name) / "tracks"
+        track_dir.mkdir(parents=True, exist_ok=True)
+        transcript_out = track_dir / f"{track_key}.transcript.auto.json"
+        # Use transcribe_file so every input track gets its own transcript path.
+        segments = transcriber.transcribe_file(
+            str(src_audio),
+            str(transcript_out),
+            language=None,
+            word_timestamps=True,
+            overwrite_existing=overwrite_existing,
+        )
+        whisperx_note = " WhisperX is not used for per-track files; used Whisper timestamps." if use_whisperx else ""
+        if not segments:
+            return "", "", "Transcription failed."
+        sheet, preview, status = load_project_lyrics(project_name, track_ref)
+        prefix = "Re-transcribed" if overwrite_existing else "Transcribed"
+        return sheet, preview, f"{prefix} `{track_ref}`.{whisperx_note} {status}"
+    except Exception as e:
+        logger.error("Failed to transcribe project lyrics: %s", e, exc_info=True)
+        return "", "", f"Transcription error: {e}"
+
+
 def load_project(project_name: str, input_files) -> gr.update:
     project_folder = os.path.join(output_path, "process", project_name, "source")
     # The only mp3 in the project folder is the source file
@@ -615,6 +953,36 @@ def render(arg_handler: ArgHandler):
                                            interactive=True, key="process_input_url")
                 with gr.Column():
                     input_url_button = gr.Button(value='Load URL(s)', visible=True, interactive=True)
+            with gr.Accordion(label="Lyrics Editor", open=False):
+                gr.Markdown("Single lyrics sheet for V3: edit text, add inline tags (`[clean]`, `[raspy]`, etc), then save with auto-alignment.")
+                with gr.Row():
+                    lyrics_load_btn = gr.Button(value="Load Lyrics", variant="secondary")
+                    lyrics_transcribe_btn = gr.Button(value="Transcribe", variant="secondary")
+                    lyrics_retranscribe_btn = gr.Button(value="Re-Transcribe", variant="secondary")
+                    lyrics_use_whisperx = gr.Checkbox(label="Use WhisperX", value=False)
+                with gr.Row():
+                    lyrics_track_selector = gr.Dropdown(
+                        label="Track",
+                        choices=[],
+                        value=None,
+                        interactive=True,
+                    )
+                    lyrics_refresh_tracks_btn = gr.Button(value="Refresh Tracks", variant="secondary")
+                lyrics_sheet = gr.Textbox(
+                    label="Lyrics Sheet",
+                    lines=16,
+                    placeholder="Edit lyrics here. Example: [clean] Never gonna give you up",
+                    elem_classes=["lyrics-sheet"],
+                    interactive=True,
+                )
+                with gr.Row():
+                    lyrics_save_btn = gr.Button(value="Save + Auto-Align", variant="primary")
+                    lyrics_status = gr.Textbox(label="Lyrics Status", lines=1)
+                lyrics_preview = gr.Textbox(
+                    label="Timing Preview",
+                    lines=8,
+                    interactive=False,
+                )
         with gr.Column():
             gr.Markdown("### 🎮 Actions")
             with gr.Row():
@@ -634,6 +1002,17 @@ def render(arg_handler: ArgHandler):
                                    file_types=['audio', 'video'],
                                    interactive=False, key="process_output_files")
             progress_display = gr.HTML(label='Progress', value='')
+            with gr.Accordion(label="Recover previously hidden stems", open=False):
+                gr.Markdown("Automatic stem filtering has been removed. Restore files hidden by older runs here. Select which new instrument, drum and Mega outputs to keep in Separate settings.")
+                hidden_refresh = gr.Button("Show hidden stems")
+                hidden_choice = gr.Dropdown(label="Hidden stem", choices=[], interactive=True)
+                hidden_restore = gr.Button("Restore selected stem")
+                hidden_status = gr.Textbox(label="Recovery status", interactive=False)
+                restored_file = gr.File(label="Restored audio", interactive=False)
+
+    hidden_refresh.click(fn=show_hidden_stems, inputs=[input_project], outputs=[hidden_choice, hidden_status])
+    hidden_restore.click(fn=restore_hidden_stem, inputs=[input_project, hidden_choice],
+                         outputs=[hidden_choice, hidden_status, restored_file])
 
     processor_list.input(
         fn=enforce_defaults,
@@ -675,6 +1054,51 @@ def render(arg_handler: ArgHandler):
         fn=load_project,
         inputs=[input_project, input_files],
         outputs=[input_files]
+    )
+    input_project.change(
+        fn=init_project_lyrics_editor,
+        inputs=[input_project],
+        outputs=[lyrics_track_selector, lyrics_sheet, lyrics_preview, lyrics_status],
+    )
+
+    lyrics_load_btn.click(
+        fn=load_project_lyrics,
+        inputs=[input_project, lyrics_track_selector],
+        outputs=[lyrics_sheet, lyrics_preview, lyrics_status],
+    )
+
+    lyrics_refresh_tracks_btn.click(
+        fn=load_project_tracks,
+        inputs=[input_project],
+        outputs=[lyrics_track_selector],
+    )
+
+    lyrics_track_selector.change(
+        fn=load_project_lyrics,
+        inputs=[input_project, lyrics_track_selector],
+        outputs=[lyrics_sheet, lyrics_preview, lyrics_status],
+    )
+
+    lyrics_transcribe_btn.click(
+        fn=lambda project_name, track_selector, use_whisperx: transcribe_project_lyrics(
+            project_name, track_selector, use_whisperx, overwrite_existing=False
+        ),
+        inputs=[input_project, lyrics_track_selector, lyrics_use_whisperx],
+        outputs=[lyrics_sheet, lyrics_preview, lyrics_status],
+    )
+
+    lyrics_retranscribe_btn.click(
+        fn=lambda project_name, track_selector, use_whisperx: transcribe_project_lyrics(
+            project_name, track_selector, use_whisperx, overwrite_existing=True
+        ),
+        inputs=[input_project, lyrics_track_selector, lyrics_use_whisperx],
+        outputs=[lyrics_sheet, lyrics_preview, lyrics_status],
+    )
+
+    lyrics_save_btn.click(
+        fn=save_project_lyrics_with_alignment,
+        inputs=[input_project, lyrics_track_selector, lyrics_sheet],
+        outputs=[lyrics_preview, lyrics_status],
     )
 
     refresh_projects_button.click(

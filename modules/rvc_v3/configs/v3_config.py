@@ -4,6 +4,7 @@ Configuration for RVC V3 training and inference.
 
 import json
 import logging
+import math
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -16,8 +17,9 @@ class RVCV3Config:
     """Configuration for RVC V3 model and training."""
     
     # Model Architecture
-    spec_channels: int = 128  # Mel bins (increased for 44.1kHz)
-    segment_size: int = 17280  # Segment size for training
+    spec_channels: int = 1025  # Linear STFT bins for the posterior encoder
+    segment_size: int = 16384  # 32 frames at the default 512-sample hop
+    backbone: str = "v2_compatible"
     inter_channels: int = 192
     hidden_channels: int = 192
     filter_channels: int = 768
@@ -32,16 +34,16 @@ class RVCV3Config:
     resblock_dilation_sizes: List[List[int]] = field(
         default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
     )
-    upsample_rates: List[int] = field(default_factory=lambda: [10, 10, 2, 2])
+    upsample_rates: List[int] = field(default_factory=lambda: [8, 8, 2, 2, 2])
     upsample_initial_channel: int = 512
-    upsample_kernel_sizes: List[int] = field(default_factory=lambda: [16, 16, 4, 4])
+    upsample_kernel_sizes: List[int] = field(default_factory=lambda: [16, 16, 4, 4, 4])
     use_spectral_norm: bool = False
     gin_channels: int = 256
     spk_embed_dim: int = 109
-    vocoder_type: str = 'bigvgan'  # 'bigvgan' or 'hifigan'
+    vocoder_type: str = 'hifigan'  # 'bigvgan' or 'hifigan'
     
     # V3-specific: Content Encoders
-    use_dual_encoder: bool = True  # Use both HuBERT and Whisper
+    use_dual_encoder: bool = False  # Dual features require separately trained conditioning
     hubert_dim: int = 768
     whisper_model: str = "large-v3"
     whisper_dim: int = 1280
@@ -50,6 +52,7 @@ class RVCV3Config:
     
     # V3-specific: Text Encoder
     text_encoder_type: str = "transformer"  # 'transformer' or 'bilstm'
+    text_tokenizer: str = "char_v1"
     text_encoder_dim: int = 256
     text_encoder_layers: int = 6
     text_encoder_heads: int = 8
@@ -122,7 +125,24 @@ class RVCV3Config:
         # Filter out keys that aren't in the dataclass
         valid_keys = set(cls.__dataclass_fields__.keys())
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+        # Existing checkpoints use the original custom attention implementation.
+        filtered_data.setdefault('backbone', 'legacy')
+        filtered_data.setdefault('text_tokenizer', 'legacy' if filtered_data['backbone']=='legacy' else 'char_v1')
         return cls(**filtered_data)
+
+    def validate_contract(self):
+        if self.backbone not in {'legacy','v2_compatible'}:
+            raise ValueError(f'Unknown V3 backbone: {self.backbone}')
+        if self.text_tokenizer not in {'legacy','char_v1'}:
+            raise ValueError(f'Unknown V3 text vocabulary: {self.text_tokenizer}')
+        if self.segment_size % self.hop_length:
+            raise ValueError('V3 training segment_size must contain whole spectrogram frames')
+        if math.prod(self.upsample_rates) != self.hop_length:
+            raise ValueError('V3 decoder upsampling must equal the spectrogram hop_length')
+        if self.spec_channels != self.filter_length // 2 + 1:
+            raise ValueError('V3 posterior requires linear spectrogram bins')
+        if self.backbone == 'v2_compatible' and (self.use_dual_encoder or self.hubert_dim != 768):
+            raise ValueError('The V2-compatible backbone requires single 768-D content features')
     
     def save(self, path: str):
         """Save configuration to JSON file."""
@@ -176,16 +196,22 @@ def get_default_config(sample_rate: int = 44100) -> RVCV3Config:
     config = RVCV3Config()
     
     if sample_rate == 32000:
+        config.upsample_rates = [10, 4, 2, 2, 2]
+        config.upsample_kernel_sizes = [16, 8, 4, 4, 4]
         config.sampling_rate = 32000
         config.hop_length = 320
         config.mel_fmax = 16000.0
         config.segment_size = 12800
     elif sample_rate == 40000:
+        config.upsample_rates = [10, 10, 2, 2]
+        config.upsample_kernel_sizes = [16, 16, 4, 4]
         config.sampling_rate = 40000
         config.hop_length = 400
         config.mel_fmax = 20000.0
         config.segment_size = 16000
     elif sample_rate == 48000:
+        config.upsample_rates = [12, 10, 2, 2]
+        config.upsample_kernel_sizes = [24, 20, 4, 4]
         config.sampling_rate = 48000
         config.hop_length = 480
         config.mel_fmax = 24000.0
@@ -194,7 +220,7 @@ def get_default_config(sample_rate: int = 44100) -> RVCV3Config:
         config.sampling_rate = 44100
         config.hop_length = 512
         config.mel_fmax = 22050.0
-        config.segment_size = 17280
+        config.segment_size = 16384
     
     return config
 

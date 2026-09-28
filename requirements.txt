@@ -8,7 +8,7 @@
 #   - requirements-dev.txt      Development tools
 #
 # Recommended installation order:
-#   1. pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#   1. pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 #   2. pip install -r requirements-wheels.txt
 #   3. pip install -r requirements-core.txt
 #   4. pip install -r requirements-cuda.txt
@@ -61,7 +61,7 @@ torchao
 # ============================================================================
 # Audio Separation
 # ============================================================================
-audio-separator[gpu]>=0.41.1
+audio-separator[gpu]==0.47.0
 demucs>=4.0.1
 
 # ============================================================================
@@ -70,9 +70,9 @@ demucs>=4.0.1
 numpy>=2.0.2,<3.0.0
 scipy>=1.15.0
 faiss-cpu>=1.11.0
-onnx>=1.16.0
-onnxruntime-gpu>=1.21.1
-onnxsim
+onnx-weekly==1.20.0.dev20251005
+protobuf==4.25.8
+onnxruntime-gpu==1.22.0
 
 # ============================================================================
 # Audio Codecs
@@ -135,7 +135,8 @@ ffmpeg-python
 ffmpeg_progress_yield
 opencv-python>=4.10.0.84
 matplotlib>=3.10.0
-yt-dlp>=2025.5.22
+yt-dlp[default]>=2025.5.22
+curl-cffi>=0.14,<0.15
 
 # ============================================================================
 # Language & NLP
@@ -146,7 +147,7 @@ whisperx>=3.3.4
 # ============================================================================
 # Training & Logging
 # ============================================================================
-tensorboardX
+tensorboardX==2.6.5
 wandb>=0.17.2
 
 # ============================================================================
@@ -179,6 +180,6 @@ flash_attn>=2.7.4; sys_platform != "win32"
 # ============================================================================
 # causal_conv1d (Windows): https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/causal_conv1d-1.5.0.post8-cp310-cp310-win_amd64.whl
 # mamba_ssm (Windows): https://github.com/d8ahazard/AudioLab/releases/download/1.0.0/mamba_ssm-2.2.4-cp310-cp310-win_amd64.whl
-# flash_attn (Windows 3.10): https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
-# flash_attn (Windows 3.11): https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
-# flash_attn (Windows 3.12): https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp312-cp312-win_amd64.whl
+# flash_attn (Windows 3.10): https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
+# flash_attn (Windows 3.11): https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
+# flash_attn (Windows 3.12): https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl

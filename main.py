@@ -9,6 +9,12 @@ import traceback
 import warnings
 from pathlib import Path
 
+# Ensure project root is importable before any local imports.
+# Critical for Windows multiprocessing spawn children that re-import this file.
+project_root = Path(__file__).parent.resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 # --- Critical runtime patch (must run before importing fairseq) ---
 # This environment has a broken TensorBoard install that tries to import TensorFlow.
 # fairseq pulls in `torch.utils.tensorboard` via its logging stack; we don't need TF.
@@ -19,38 +25,10 @@ try:
 except Exception:
     pass
 
-import gradio as gr
-import uvicorn
-from torchaudio._extension import _init_dll_path
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-
 # Suppress FutureWarnings (particularly from xformers)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-from api import app as api_router
-from handlers.args import ArgHandler
-from handlers.config import model_path
-from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
-    listen as music_listen
-from layouts.process import render as render_process, register_descriptions as process_register_descriptions, \
-    listen as process_listen
-from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
-from layouts.rvc_v3 import create_rvc_v3_tab
-from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
-from layouts.stable_audio import render as render_stable_audio, \
-    register_descriptions as stable_audio_register_descriptions, \
-    listen as stable_audio_listen
-from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
-    render as render_transcribe
-from layouts.wavetransfer import listen as wavetransfer_listen, register_descriptions as wavetransfer_register_descriptions, \
-    render as render_wavetransfer
-from layouts.acestep import listen as acestep_listen, register_descriptions as acestep_register_descriptions, \
-    render as render_acestep
-from layouts.align import listen as align_listen, register_descriptions as align_register_descriptions, \
-    render as render_align
-
-# Configure logging and fix formatting so time, name, level, are each in []
+# Configure logging early so worker processes get consistent formatting.
 logging.basicConfig(format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s', level=logging.DEBUG)
 
 keys_to_silence = [
@@ -83,27 +61,53 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("ADLB")
 logger.setLevel(logging.DEBUG)
 
+# Lightweight env setup only — keep heavy UI/API imports out of module scope so
+# Windows multiprocessing spawn (re-imports __main__) does not boot Gradio/YuE/etc.
+from handlers.config import model_path
+
 hf_dir = os.path.join(model_path, "hf")
 transformers_dir = os.path.join(model_path, "transformers")
 os.makedirs(hf_dir, exist_ok=True)
 os.makedirs(transformers_dir, exist_ok=True)
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
-    _init_dll_path()
-
 os.environ["COQUI_TOS_AGREED"] = "1"
 os.environ["TTS_HOME"] = model_path
 # Stop caching models in limbo!!
 # Set HF_HUB_CACHE_DIR to the model_path
 os.environ["HF_HOME"] = hf_dir
 
-project_root = Path(__file__).parent.resolve()
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 if __name__ == '__main__':
+    from torchaudio._extension import _init_dll_path
+
+    if os.name == "nt" and (3, 8) <= sys.version_info < (3, 99):
+        _init_dll_path()
+
+    import gradio as gr
+    import uvicorn
+    from fastapi import FastAPI
+    from fastapi.staticfiles import StaticFiles
+
+    from api import app as api_router
+    from handlers.args import ArgHandler
+    from layouts.music import render as render_music, register_descriptions as music_register_descriptions, \
+        listen as music_listen
+    from layouts.process import render as render_process, register_descriptions as process_register_descriptions, \
+        listen as process_listen
+    from layouts.rvc_train import render as rvc_render, register_descriptions as rvc_register_descriptions
+    from layouts.tts import render_tts, register_descriptions as tts_register_descriptions, listen as tts_listen
+    from layouts.stable_audio import render as render_stable_audio, \
+        register_descriptions as stable_audio_register_descriptions, \
+        listen as stable_audio_listen
+    from layouts.transcribe import listen as transcribe_listen, register_descriptions as transcribe_register_descriptions, \
+        render as render_transcribe
+    from layouts.wavetransfer import listen as wavetransfer_listen, register_descriptions as wavetransfer_register_descriptions, \
+        render as render_wavetransfer
+    from layouts.acestep import listen as acestep_listen, register_descriptions as acestep_register_descriptions, \
+        render as render_acestep
+    from layouts.align import listen as align_listen, register_descriptions as align_register_descriptions, \
+        render as render_align
+
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="AudioLab Web Server")
     parser.add_argument('--listen', action='store_true', help="Enable server to listen on 0.0.0.0")
@@ -185,8 +189,6 @@ if __name__ == '__main__':
                         render_process(arg_handler)
                     with gr.Tab(label="Train RVC", id="train"):
                         rvc_render()
-                    with gr.Tab(label="RVC V3", id="rvc_v3"):
-                        create_rvc_v3_tab()
                     with gr.Tab(label="Music", id="music"):
                         with gr.Tab(label='ACE-Step', id="acestep"):
                             render_acestep(arg_handler)                    

@@ -75,6 +75,51 @@ def _get_lyrics_for_stem(
     text = None
     source_desc = f"{lyrics_dir}/{stem}.json"
     segments = []
+    annotated_file = lyrics_dir / "annotated_lyrics.json"
+
+    # Canonical edited lyrics file has priority when present.
+    if annotated_file.exists():
+        try:
+            with open(annotated_file, "r", encoding="utf-8") as f:
+                ann = json.load(f)
+            ann_segments = ann.get("segments", []) if isinstance(ann, dict) else []
+            ann_meta = ann.get("metadata", {}) if isinstance(ann, dict) else {}
+            # Optional per-stem override in metadata.by_stem[stem]
+            by_stem = ann_meta.get("by_stem", {}) if isinstance(ann_meta, dict) else {}
+            if isinstance(by_stem, dict):
+                stem_text = str(by_stem.get(stem, "")).strip()
+                if stem_text:
+                    text = stem_text
+                    source_desc = f"{annotated_file}#by_stem.{stem}"
+            if not text and ann_segments:
+                tagged = []
+                for seg in ann_segments:
+                    associated_file = seg.get('file', seg.get('filename',
+                        ann_meta.get('file', ann_meta.get('filename'))))
+                    if not associated_file or Path(associated_file).stem != stem:
+                        continue
+                    t = str(seg.get("text", "")).strip()
+                    if not t:
+                        continue
+                    tags = seg.get("tags", [])
+                    if isinstance(tags, list) and tags:
+                        tag_prefix = " ".join(f"[{str(tag).strip()}]" for tag in tags if str(tag).strip())
+                        if tag_prefix:
+                            t = f"{tag_prefix} {t}"
+                    tagged.append(t)
+                if tagged:
+                    text = " ".join(tagged).strip()
+                    source_desc = str(annotated_file)
+                    segments = ann_segments
+            if not text:
+                meta_full = ann_meta.get("full_text", "") if isinstance(ann_meta, dict) else ""
+                associated_file = ann_meta.get('file', ann_meta.get('filename'))
+                if meta_full and associated_file and Path(associated_file).stem == stem:
+                    text = str(meta_full).strip()
+                    source_desc = f"{annotated_file}#metadata.full_text"
+        except Exception as e:
+            logger.warning("Failed to load annotated lyrics %s: %s", annotated_file, e)
+
     if manifest_override and project_name and stem in manifest_override:
         text = manifest_override.get(stem, "").strip()
     if not text:
@@ -164,7 +209,7 @@ class TextAudioLoaderMultiNSFsidV3(TextAudioLoaderMultiNSFsid):
             self.lyrics_dir,
             stem,
             self.phonemizer,
-            apply_tagging=True,
+            apply_tagging=getattr(self.phonemizer, 'version', 'legacy') == 'legacy',
             manifest_override=self.manifest_override or None,
             project_name=self.project_dir.name,
         )

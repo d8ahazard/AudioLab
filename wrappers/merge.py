@@ -99,8 +99,11 @@ class Merge(BaseWrapper):
                 os.makedirs(output_folder, exist_ok=True)
 
                 inputs, _ = self.filter_inputs(project, "audio")
-
-                ir_file = os.path.join(project.project_dir, "stems", "impulse_response.ir")
+                from modules.separator.stem_manifest import mixable_stems
+                inputs = mixable_stems(inputs, os.path.join(project.project_dir, "stems"))
+                if not inputs:
+                    pj_outputs.append(project)
+                    continue
 
                 new_inputs = []
                 for i, stem_path in enumerate(inputs):
@@ -108,15 +111,27 @@ class Merge(BaseWrapper):
                         callback(i / len(inputs), f"Processing stem: {os.path.basename(stem_path)}", len(inputs))
                     logger.info(f"Processing stem: {os.path.basename(stem_path)}")
                     if "(Vocals)" in stem_path and "(BG_Vocals" not in stem_path:
-
-                        if os.path.exists(ir_file):
+                        from modules.reverb_ir import capture_for_stem, InvalidImpulseResponse
+                        try:
+                            ir_file = capture_for_stem(stem_path, os.path.join(project.project_dir, "stems"))
+                        except (InvalidImpulseResponse, OSError, ValueError) as error:
+                            logger.warning("Skipping unavailable reverb capture: %s", error)
+                            ir_file = None
+                        if ir_file:
                             logger.info(f"Applying reverb to {os.path.basename(stem_path)}")
                             stem_name, ext = os.path.splitext(os.path.basename(stem_path))
                             src_name = stem_name.replace("(Vocals)", "")
                             reverb_stem_path = os.path.join(project.project_dir, "stems",
                                                             f"{stem_name}(Re-Reverb){ext}")
-                            reverb_stem = apply_reverb(stem_path, ir_file, reverb_stem_path)
-                            seg = AudioSegment.from_file(reverb_stem)
+                            from modules.reverb_ir import InvalidImpulseResponse
+                            try:
+                                reverb_stem = apply_reverb(stem_path, ir_file, reverb_stem_path)
+                                seg = AudioSegment.from_file(reverb_stem)
+                            except InvalidImpulseResponse as error:
+                                logger.warning("Skipping reverb restoration: %s", error)
+                                if callback is not None:
+                                    callback(i / len(inputs), f"Reverb not restored: {error}", len(inputs))
+                                seg = AudioSegment.from_file(stem_path)
                         else:
                             seg = AudioSegment.from_file(stem_path)
                     else:

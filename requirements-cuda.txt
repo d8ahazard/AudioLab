@@ -1,11 +1,14 @@
 # AudioLab CUDA/GPU Requirements
 # Platform-specific GPU acceleration packages
-# Install with: pip install -r requirements-cuda.txt --extra-index-url https://download.pytorch.org/whl/cu124
+# Install with: pip install -r requirements-cuda.txt --index-url https://download.pytorch.org/whl/cu128
+#
+# NOTE: RTX 50-series / Blackwell (sm_120) requires CUDA 12.8+ PyTorch builds.
+# cu124 builds will fail with: "CUDA error: no kernel image is available for execution on the device"
 
-# PyTorch with CUDA 12.4 support
-torch==2.6.0
-torchvision==0.21.0
-torchaudio==2.6.0
+# PyTorch with CUDA 12.8 support (Blackwell / sm_120)
+torch==2.7.1
+torchvision==0.22.1
+torchaudio==2.7.1
 
 # Triton (platform-specific)
 triton-windows>=3.2.0; sys_platform == "win32"
@@ -13,11 +16,11 @@ triton>=3.0.0; sys_platform != "win32"
 
 # Flash Attention - Windows (installed via wheel URLs due to complex build requirements)
 # For Windows Python 3.10:
-#   pip install https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
+#   pip install https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
 # For Windows Python 3.11:
-#   pip install https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
+#   pip install https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
 # For Windows Python 3.12:
-#   pip install https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp312-cp312-win_amd64.whl
+#   pip install https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl
 
 # Flash Attention - Linux (direct pip install works)
 flash_attn>=2.7.4; sys_platform != "win32"

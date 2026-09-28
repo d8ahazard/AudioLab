@@ -34,6 +34,50 @@ class SongDownloader:
         
         # Check if yt-dlp is available
         self._check_ytdlp()
+
+    @staticmethod
+    def _register_ca_bundle() -> None:
+        """
+        Point libcurl / requests at certifi's CA bundle when available.
+        This is especially important for yt-dlp's curl_cffi impersonation backend on Windows.
+        """
+        try:
+            import certifi
+        except Exception:
+            return
+        try:
+            bundle = certifi.where()
+            if not bundle or not os.path.isfile(bundle):
+                return
+            for env_var in ("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"):
+                os.environ.setdefault(env_var, bundle)
+        except Exception:
+            return
+
+    @staticmethod
+    def _impersonation_supported() -> bool:
+        """
+        Detect whether yt-dlp impersonation (curl_cffi backend) is available in this environment.
+        """
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget  # noqa: F401
+        except Exception:
+            return False
+        try:
+            import yt_dlp.networking._curlcffi  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _is_chrome_cookie_copy_error(msg: str) -> bool:
+        if not msg:
+            return False
+        msg_low = msg.lower()
+        return (
+            ("could not copy" in msg_low and "cookie database" in msg_low)
+            or "yt-dlp/issues/7271" in msg_low
+        )
     
     def _check_ytdlp(self) -> bool:
         """Check if yt-dlp is installed."""
@@ -81,6 +125,7 @@ class SongDownloader:
         
         # yt-dlp command options
         # Use format and client that avoids SABR streaming issues (see https://github.com/yt-dlp/yt-dlp/issues/12482)
+        self._register_ca_bundle()
         cmd = [
             "python", "-m", "yt_dlp",
             url,
@@ -92,11 +137,40 @@ class SongDownloader:
             "--fragment-retries", "3",  # Retry failed fragments
             "--extractor-retries", "3",  # Retry failed extractors
             "--no-live-from-start",  # Don't try to get live from start
-            # Use cookies from browser to bypass bot detection
-            "--cookies-from-browser", "chrome",
-            # Use TV client (no PO token needed, no SABR) with mweb fallback
-            "--extractor-args", "youtube:player_client=tv,mweb;player_skip=webpage,configs",
+            # Prefer clients that don't require PO tokens / visitor_data
+            "--extractor-args", "youtube:player_client=android,tv",
         ]
+
+        # YouTube EJS: allow remote solver scripts when local yt-dlp-ejs isn't installed.
+        allow_remote = os.getenv("AUDIOLAB_YTDLP_REMOTE_COMPONENTS", "1") != "0"
+        if allow_remote:
+            try:
+                import importlib.util
+
+                has_ejs = importlib.util.find_spec("yt_dlp_ejs") is not None
+            except Exception:
+                has_ejs = False
+            if not has_ejs:
+                cmd.extend(["--remote-components", "ejs:github"])
+
+        # Cookies help with bot checks. Prefer a cookiefile if provided; else try browser cookies.
+        cookiefile = os.getenv("AUDIOLAB_YTDLP_COOKIES", "").strip()
+        cookiefile_args = []
+        cookies_args = []
+        cookie_browsers = ["chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi", "whale"]
+
+        if cookiefile and os.path.isfile(cookiefile):
+            cookiefile_args = ["--cookies", cookiefile]
+            cmd.extend(cookiefile_args)
+        else:
+            # Default: try Chrome browser cookies first
+            cookies_args = ["--cookies-from-browser", "chrome"]
+            cmd.extend(cookies_args)
+
+        # Optional: TLS-fingerprint impersonation (curl_cffi) for sites that block stock clients.
+        # When impersonation is on, disable certificate verification (matches yt-dlp CLI usage).
+        if self._impersonation_supported():
+            cmd.extend(["--impersonate", "chrome", "--no-check-certificate"])
         
         if extract_audio:
             cmd.extend([
@@ -113,12 +187,23 @@ class SongDownloader:
         
         try:
             logger.info(f"Downloading from {url}")
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600  # 10 minute timeout
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # 10 minute timeout
+
+            # If browser cookie DB copy fails, try other browsers before giving up on cookies.
+            if result.returncode != 0 and cookies_args and self._is_chrome_cookie_copy_error(result.stderr or result.stdout):
+                for browser in cookie_browsers[1:]:
+                    logger.warning(f"{cookies_args[-1]} cookies unavailable/locked; retrying with --cookies-from-browser {browser}.")
+                    cmd_retry = [c for c in cmd if c not in cookies_args]
+                    cmd_retry.extend(["--cookies-from-browser", browser])
+                    result = subprocess.run(cmd_retry, capture_output=True, text=True, timeout=600)
+                    if result.returncode == 0:
+                        break
+
+            # As a last resort, retry without browser cookies
+            if result.returncode != 0 and cookies_args and self._is_chrome_cookie_copy_error(result.stderr or result.stdout):
+                logger.warning("Browser cookies unavailable/locked; retrying yt-dlp without --cookies-from-browser.")
+                cmd_retry = [c for c in cmd if c not in cookies_args]
+                result = subprocess.run(cmd_retry, capture_output=True, text=True, timeout=600)
             
             if result.returncode != 0:
                 error_msg = result.stderr or result.stdout

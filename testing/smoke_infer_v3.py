@@ -126,8 +126,29 @@ def infer_v3_to_wav(
         text_encoder.load_state_dict(text_sd, strict=False)
         text_encoder = text_encoder.to(device).eval()
 
-    # Resolve lyrics: explicit, or transcribe source, or load from lyrics dir for first filelist item
+    # Resolve lyrics: explicit, canonical edited, or transcribe source, or stem lyrics fallback
     resolved_lyrics = lyrics
+    if not resolved_lyrics:
+        ann_file = os.path.join(exp_dir, "lyrics", "annotated_lyrics.json")
+        if os.path.isfile(ann_file):
+            try:
+                with open(ann_file, "r", encoding="utf-8") as af:
+                    ann = json.load(af)
+                segs = ann.get("segments", []) if isinstance(ann, dict) else []
+                parts = []
+                for seg in segs:
+                    txt = str(seg.get("text", "")).strip()
+                    if not txt:
+                        continue
+                    tags = seg.get("tags", [])
+                    if isinstance(tags, list) and tags:
+                        prefix = " ".join(f"[{str(t).strip()}]" for t in tags if str(t).strip())
+                        txt = f"{prefix} {txt}".strip() if prefix else txt
+                    parts.append(txt)
+                if parts:
+                    resolved_lyrics = " ".join(parts).strip()
+            except Exception:
+                pass
     if not resolved_lyrics and source_audio_path and os.path.isfile(source_audio_path) and text_encoder:
         try:
             from modules.rvc_v3.data_prep.transcriber import Transcriber
@@ -135,7 +156,9 @@ def infer_v3_to_wav(
             stem = os.path.splitext(os.path.basename(source_audio_path))[0]
             out_json = os.path.join(exp_dir, "lyrics", f"{stem}_infer.json")
             os.makedirs(os.path.dirname(out_json), exist_ok=True)
-            segs = transcriber.transcribe_file(source_audio_path, out_json, language=None, word_timestamps=True)
+            segs = transcriber.transcribe_file(
+                source_audio_path, out_json, language=None, word_timestamps=True, overwrite_existing=False
+            )
             if segs:
                 resolved_lyrics = "[clean] " + " ".join(s.get("text", "") for s in segs)
         except Exception:

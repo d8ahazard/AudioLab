@@ -1,43 +1,9 @@
-"""
-Separation profile definitions for vocal/instrumental separation.
+"""Versioned separation recipes.
 
-Defines different quality presets for separation with their associated models,
-SDR performance metrics, and auto-calculated weights.
-
-## Auto-Weighting System
-
-Model weights are automatically calculated from published SDR (Signal-to-Distortion Ratio)
-performance metrics using exponential scaling. This ensures:
-
-1. Better models automatically get more weight in the ensemble
-2. Adding new models only requires their SDR values - no manual weight tuning
-3. Weights scale appropriately regardless of ensemble size
-4. Vocal and instrumental weights are calculated independently, emphasizing each model's strengths
-
-The algorithm uses temperature-controlled exponential scaling (similar to softmax):
-- Higher SDR → exponentially higher weight
-- Temperature parameter controls how much we emphasize differences
-- Weights normalize to sum(models) * 8.0 for stable blending
-
-Example: If BS Roformer has 17.0 dB inst_sdr and Big Beta 4 has 16.0 dB,
-BS Roformer will get significantly more weight in the instrumental blend.
-
-## Usage Example
-
-To view calculated weights for debugging:
-```python
-from modules.separator.separation_profiles import SeparationProfile, print_model_weights
-print_model_weights(SeparationProfile.V3_MAXIMUM)
-```
-
-Output:
-```
-=== V3 Profile Weights ===
-Model                                              Vocal SDR    Vocal Weight   Inst SDR     Inst Weight
----------------------------------------------------------------------------------------------------------
-model_bs_roformer_ep_368_sdr_12.9628.ckpt          12.97        ...            17.00        ...
-...
-```
+V1-V3 retain historical SDR-derived weights for compatibility; those numbers
+are not a common benchmark and must not be used to rank new models. V4 is an
+experimental three-model candidate with equal weights and no residual fill.
+Promotion requires local listening evidence (see docs/separation-v4.md).
 """
 
 from enum import Enum
@@ -50,7 +16,9 @@ class SeparationProfile(str, Enum):
     V1_STANDARD = "v1"
     V2_HIGH_QUALITY = "v2"
     V3_MAXIMUM = "v3"
-    V4_CLEAN_INSTRUMENTAL = "v4"
+    V4_EXPERIMENTAL = "v4"
+    V4_CLEAN_INSTRUMENTAL = "v4"  # Compatibility alias for existing callers.
+    HYBRID_CLEANED = "hybrid_cleaned"
 
 
 class SeparationPreset(str, Enum):
@@ -95,6 +63,15 @@ class ModelSpec:
 
 # Core ensemble models
 MODELS = {
+    "resurrection_vocals": ModelSpec(
+        id="bs_roformer_vocals_resurrection_unwa.ckpt", vocal_weight=1.0, inst_weight=1.0,
+        description="V4 experimental: Unwa Resurrection vocals"),
+    "beta7": ModelSpec(
+        id="melband_roformer_big_beta7.ckpt", vocal_weight=1.0, inst_weight=1.0,
+        description="V4 experimental: author-pinned Big Beta 7"),
+    "becruily_inst": ModelSpec(
+        id="mel_band_roformer_instrumental_becruily.ckpt", vocal_weight=1.0, inst_weight=1.0,
+        description="V4 experimental: dedicated instrumental estimate"),
     # BS-RoFormer variants (Band-Split RoFormer) - Best overall quality
     "bs_roformer_ep368": ModelSpec(
         id="model_bs_roformer_ep_368_sdr_12.9628.ckpt",
@@ -183,12 +160,11 @@ MODEL_PRESETS: Dict[SeparationProfile, List[ModelSpec]] = {
         MODELS["kim_vocal_2"],
     ],
 
-    # V4 (Clean Instrumental) - 3 models (instrumental purity priority)
-    # Optimized for reducing vocal-section artifacts in the instrumental stem.
+    # Unpromoted candidate: equal weights until local listening evidence selects a recipe.
     SeparationProfile.V4_CLEAN_INSTRUMENTAL: [
-        MODELS["melband_karaoke"],
-        MODELS["bs_roformer_ep368"],
-        MODELS["mdx23c_instvoc_hq"],
+        MODELS["resurrection_vocals"],
+        MODELS["beta7"],
+        MODELS["becruily_inst"],
     ],
 }
 
@@ -287,8 +263,8 @@ PROFILE_DEFAULTS: Dict[SeparationProfile, Dict] = {
     },
     SeparationProfile.V4_CLEAN_INSTRUMENTAL: {
         "ensemble_size": 3,
-        "residual_fill_pct": 0.50,
-        "bleed_guard_multiplier": 1.30,
+        "residual_fill_pct": 0.0,
+        "bleed_guard_multiplier": 1.0,
     },
 }
 
@@ -321,7 +297,7 @@ def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) ->
     vocal_sdrs = [m.vocal_sdr for m in models if m.vocal_sdr is not None]
     inst_sdrs = [m.inst_sdr for m in models if m.inst_sdr is not None]
     
-    if not vocal_sdrs or not inst_sdrs:
+    if len(vocal_sdrs) != len(models) or len(inst_sdrs) != len(models):
         # If no SDR data, use equal weights
         n = len(models)
         return [
@@ -329,8 +305,8 @@ def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) ->
                 id=m.id,
                 vocal_sdr=m.vocal_sdr,
                 inst_sdr=m.inst_sdr,
-                vocal_weight=8.0,
-                inst_weight=8.0,
+                vocal_weight=m.vocal_weight if m.vocal_weight is not None else 8.0,
+                inst_weight=m.inst_weight if m.inst_weight is not None else 8.0,
                 description=m.description,
                 kwargs=m.kwargs
             )
@@ -340,7 +316,7 @@ def auto_calculate_weights(models: List[ModelSpec], temperature: float = 0.5) ->
     # Calculate exponential-scaled weights (softmax-like)
     def calc_weights(sdrs: List[float], temp: float) -> List[float]:
         # Apply temperature scaling and exponential
-        exp_vals = [math.exp(sdr / temp) for sdr in sdrs]
+        exp_vals = [math.exp((sdr - max(sdrs)) / temp) for sdr in sdrs]
         total = sum(exp_vals)
         # Normalize to sum to len(sdrs) * 8.0 (reasonable blending range)
         target_sum = len(sdrs) * 8.0
@@ -376,8 +352,14 @@ def get_profile_models(profile: SeparationProfile, ensemble_size: Optional[int] 
     Returns:
         List of ModelSpec objects for the profile with calculated weights
     """
+    if profile == SeparationProfile.HYBRID_CLEANED:
+        if ensemble_size not in (None, 6):
+            raise ValueError("Cleaned hybrid uses six core models (V2 vocals + V4 instrumental)")
+        return get_profile_models(SeparationProfile.V2_HIGH_QUALITY) + get_profile_models(SeparationProfile.V4_EXPERIMENTAL)
     models = list(MODEL_PRESETS.get(profile, MODEL_PRESETS[SeparationProfile.V2_HIGH_QUALITY]))
     
+    if profile == SeparationProfile.V4_EXPERIMENTAL and ensemble_size not in (None, 3):
+        raise ValueError("V4 uses exactly three core models; quality controls inference effort")
     if ensemble_size is not None:
         # Limit to requested ensemble size
         models = models[:ensemble_size]
@@ -386,6 +368,18 @@ def get_profile_models(profile: SeparationProfile, ensemble_size: Optional[int] 
     models = auto_calculate_weights(models)
     
     return models
+
+
+def selected_models(options):
+    profile = SeparationProfile(options.get("separation_profile", "hybrid_cleaned"))
+    if profile == SeparationProfile.HYBRID_CLEANED:
+        return get_profile_models(profile, options.get("ensemble_size"))
+    preset = options.get("separation_preset")
+    if preset and profile != SeparationProfile.V4_EXPERIMENTAL:
+        models = get_preset_models(SeparationPreset(preset))
+        size = options.get("ensemble_size")
+        return models[:size] if size is not None else models
+    return get_profile_models(profile, options.get("ensemble_size"))
 
 
 def get_preset_models(preset: SeparationPreset) -> List[ModelSpec]:
@@ -419,6 +413,8 @@ def get_profile_defaults(profile: SeparationProfile) -> Dict:
     Returns:
         Dictionary of default parameters
     """
+    if profile == SeparationProfile.HYBRID_CLEANED:
+        return {"ensemble_size": 6, "residual_fill_pct": 0., "bleed_guard_multiplier": 1.}
     return PROFILE_DEFAULTS.get(profile, PROFILE_DEFAULTS[SeparationProfile.V2_HIGH_QUALITY]).copy()
 
 

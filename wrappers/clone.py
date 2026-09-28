@@ -19,6 +19,69 @@ import soundfile as sf
 logger = logging.getLogger(__name__)
 
 
+def _safe_track_key(track_ref: str) -> str:
+    base = os.path.splitext(track_ref)[0].strip().lower()
+    base = base.replace("\\", "/")
+    return re.sub(r"[^a-z0-9/_\-\.]+", "_", base).replace("/", "__")
+
+
+def _lyrics_text_from_json(path: str) -> Optional[str]:
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        segs = data.get("segments", []) if isinstance(data, dict) else []
+        parts = []
+        for seg in segs:
+            txt = str(seg.get("text", "")).strip()
+            if not txt:
+                continue
+            tags = seg.get("tags", [])
+            if isinstance(tags, list) and tags:
+                prefix = " ".join(f"[{str(t).strip()}]" for t in tags if str(t).strip())
+                txt = f"{prefix} {txt}".strip() if prefix else txt
+            parts.append(txt)
+        return " ".join(parts).strip() or None
+    except Exception as e:
+        logger.debug("Could not parse lyrics json %s: %s", path, e)
+        return None
+
+
+def _candidate_track_lyrics_paths(project_dir: str, input_file: str) -> List[str]:
+    lyrics_dir = os.path.join(project_dir, "lyrics")
+    track_dir = os.path.join(lyrics_dir, "tracks")
+    candidates: List[str] = []
+    keys: List[str] = []
+    abs_project = os.path.abspath(project_dir)
+    abs_input = os.path.abspath(input_file)
+    if abs_input.startswith(abs_project):
+        rel = os.path.relpath(abs_input, abs_project).replace("\\", "/")
+        keys.append(_safe_track_key(rel))
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    keys.append(_safe_track_key(base_name))
+    normalized = re.sub(r"\((vocals|bg_vocals|vocals_full)\)", "", base_name, flags=re.IGNORECASE).strip(" _-")
+    if normalized and normalized != base_name:
+        keys.append(_safe_track_key(normalized))
+    keys = list(dict.fromkeys([k for k in keys if k]))
+    for key in keys:
+        candidates.extend(
+            [
+                os.path.join(track_dir, f"{key}.annotated_lyrics.json"),
+                os.path.join(track_dir, f"{key}.transcript.auto.json"),
+                os.path.join(track_dir, f"{key}.transcript.json"),
+            ]
+        )
+    candidates.extend(
+        [
+            os.path.join(lyrics_dir, "annotated_lyrics.json"),
+            os.path.join(lyrics_dir, "transcript.auto.json"),
+            os.path.join(lyrics_dir, "transcript.json"),
+        ]
+    )
+    return candidates
+
+
 def _wav_stats(path: str) -> Dict[str, Any]:
     y, sr = sf.read(path, dtype="float32")
     if y.ndim > 1:
@@ -224,7 +287,9 @@ def toggle_clone_elements(clone_method):
         gr.update(visible=clone_method == "RVC"),
         gr.update(visible=clone_method == "RVC"),
         gr.update(visible=clone_method == "OpenVoice"), 
-        gr.update(visible=show_src_speaker)
+        gr.update(visible=show_src_speaker),
+        gr.update(visible=clone_method == "Singing conversion"),
+        gr.update(visible=clone_method == "Performer V3")
     ]
 
 class Clone(BaseWrapper):
@@ -239,7 +304,7 @@ class Clone(BaseWrapper):
     description = (
         "Clone vocals from one audio file to another using voice cloning models."
     )
-    hidden_groups = ["OpenVoice Controls", "TTS Controls", "Source Speaker"]
+    hidden_groups = ["OpenVoice Controls", "TTS Controls", "Source Speaker", "Singing Conversion", "Performer V3"]
     # Detect all speaker .pth files
     all_speakers = []
     first_speaker = None
@@ -254,14 +319,44 @@ class Clone(BaseWrapper):
         "clone_method": TypedInput(
             default="RVC",
             description="The voice cloning method to use.",
-            choices=["RVC", "OpenVoice", "TTS"],
+            choices=["RVC", "Performer V3", "Singing conversion", "OpenVoice", "TTS"],
             type=str,
             gradio_type="Dropdown",
             on_select=toggle_clone_elements,
-            controls=["RVC Controls", "Advanced RVC Options", "OpenVoice Controls", "Source Speaker"],
+            controls=["RVC Controls", "Advanced RVC Options", "OpenVoice Controls", "Source Speaker", "Singing Conversion", "Performer V3"],
             required=True
         ),
+        "performer_profile": TypedInput(default="huxlxy", type=str, gradio_type="Dropdown",
+            choices=["tupac", "huxlxy", "shinedown", "chester"], description="Experimental performer profile.", group_name="Performer V3"),
+        "performer_mode": TypedInput(default="preserve", type=str, gradio_type="Dropdown",
+            choices=["preserve", "performer"], description="Preserve uses existing RVC. Performer currently runs the untrained feasibility guide.", group_name="Performer V3"),
+        "performer_lyrics": TypedInput(default="", type=str, gradio_type="Textbox",
+            description="Desired words for a phrase preview up to 20 seconds; blank keeps source words.", group_name="Performer V3"),
+        "performer_strength": TypedInput(default=1., type=float, gradio_type="Slider", ge=0, le=1, step=1,
+            description="Delivery strength. This feasibility stage supports only 0 (preserve) or 1 (guide).", group_name="Performer V3"),
+        "performer_seed": TypedInput(default=20260924, type=int, gradio_type="Number", render=False,
+            description="Repeatable generation seed.", group_name="Performer V3"),
+        "performer_source_transcript": TypedInput(default="", type=str, render=False,
+            description="Corrected source words; disagreement with automatic timing requires realignment.", group_name="Performer V3"),
+        "performer_edits": TypedInput(default=[], type=list, render=False,
+            description="Phrase edits containing start, end, and desired text.", group_name="Performer V3"),
         # RVC-specific controls group
+        "svc_backend": TypedInput(default="vevo2", type=str, gradio_type="Dropdown",
+            choices=["seed_vc", "yingmusic", "vevo2"], description="Offline singing backend.", group_name="Singing Conversion"),
+        "svc_reference": TypedInput(default="", type=str, gradio_type="Textbox",
+            description="Target singer reference audio path (use a different song).", group_name="Singing Conversion"),
+        "svc_checkpoint": TypedInput(default="", type=str, gradio_type="Textbox",
+            description="Target checkpoint path; empty uses the official pretrained model. Seed-VC and YingMusic only.", group_name="Singing Conversion"),
+        "svc_config": TypedInput(default="", type=str, gradio_type="Textbox",
+            description="Matching model configuration path, if using a custom checkpoint.", group_name="Singing Conversion"),
+        "svc_mode": TypedInput(default="target_style", type=str, gradio_type="Dropdown",
+            choices=["preserve", "target_style"], description="Preserve source delivery, or use target delivery (Vevo2). Melody and song placement remain the goal.", group_name="Singing Conversion"),
+        "svc_lyrics": TypedInput(default="", type=str, gradio_type="Textbox",
+            description="Optional source lyrics; required for Vevo2 target delivery.", group_name="Singing Conversion"),
+        "svc_reference_text": TypedInput(default="", type=str, gradio_type="Textbox",
+            description="Words sung in the reference clip (Vevo2 target delivery).", group_name="Singing Conversion"),
+        "svc_seed": TypedInput(default=20260924, type=int, gradio_type="Number",
+            description="Random seed for repeatable comparisons.", group_name="Singing Conversion"),
         "selected_voice": TypedInput(
             default=first_speaker,
             description="The voice model to use for RVC cloning.",
@@ -375,7 +470,7 @@ class Clone(BaseWrapper):
             default="rmvpe+",
             description="Pitch extraction algorithm for RVC.",
             type=str,
-            choices=["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "crepe", "crepe-tiny",
+            choices=["hybrid", "pm", "harvest", "dio", "rmvpe", "rmvpe_onnx", "rmvpe+", "fcpe", "crepe", "crepe-tiny",
                      "mangio-crepe", "mangio-crepe-tiny"],
             gradio_type="Dropdown",
             render=True,
@@ -694,6 +789,30 @@ class Clone(BaseWrapper):
                                     f"{base_name}(Cloned)({model_base}_rvcv3).wav",
                                 )
                                 lyrics_for_convert = (custom_text or "").strip() or None
+                                if not lyrics_for_convert:
+                                    # Prefer track-specific edited lyrics, then project-level fallbacks.
+                                    for lyr_path in _candidate_track_lyrics_paths(project.project_dir, proc_file):
+                                        lyrics_for_convert = _lyrics_text_from_json(lyr_path)
+                                        if lyrics_for_convert:
+                                            break
+                                if not lyrics_for_convert:
+                                    # Reuse existing transcript for this file if present.
+                                    existing_transcript = os.path.join(out_dir, f"{base_name}_transcript.json")
+                                    if os.path.isfile(existing_transcript):
+                                        try:
+                                            with open(existing_transcript, "r", encoding="utf-8") as tf:
+                                                tdata = json.load(tf)
+                                            full = (tdata.get("full_text", "") or "").strip()
+                                            if not full:
+                                                full = " ".join(
+                                                    str(s.get("text", "")).strip()
+                                                    for s in tdata.get("segments", [])
+                                                    if isinstance(s, dict)
+                                                ).strip()
+                                            if full:
+                                                lyrics_for_convert = "[clean] " + full
+                                        except Exception as tf_err:
+                                            logger.debug("Could not load existing transcript: %s", tf_err)
                                 # Auto-lyrics can destabilize current V3 conditioning for some songs.
                                 # Keep it opt-in until text-conditioning quality is consistently better.
                                 use_auto_lyrics = os.environ.get("AUDIOCLONE_V3_AUTO_LYRICS", "0").strip() == "1"
@@ -706,6 +825,7 @@ class Clone(BaseWrapper):
                                             os.path.join(out_dir, f"{base_name}_transcript.json"),
                                             language=None,
                                             word_timestamps=True,
+                                            overwrite_existing=False,
                                         )
                                         if segs:
                                             lyrics_for_convert = "[clean] " + " ".join(s.get("text", "") for s in segs)
@@ -792,6 +912,31 @@ class Clone(BaseWrapper):
                                 except Exception as rep_err:
                                     logger.warning("Could not emit V2 A/B report event: %s", rep_err)
                             
+                        elif clone_method == "Performer V3":
+                            from modules.rvc_v3.performer.service import convert
+                            profile_name = filtered_kwargs.get("performer_profile", "huxlxy")
+                            if profile_name not in {"tupac", "huxlxy", "shinedown", "chester"}:
+                                raise ValueError("Unknown performer profile")
+                            clone_outputs.append(convert(proc_file,
+                                os.path.join(output_path, "performer_v3_validation", "profiles", profile_name + ".json"),
+                                os.path.join(project.project_dir, "cloned"),
+                                delivery_mode=filtered_kwargs.get("performer_mode", "preserve"),
+                                target_lyrics=filtered_kwargs.get("performer_lyrics") or None,
+                                source_transcript=filtered_kwargs.get("performer_source_transcript") or None,
+                                phrase_edits=filtered_kwargs.get("performer_edits", []),
+                                delivery_strength=filtered_kwargs.get("performer_strength", 1.),
+                                seed=filtered_kwargs.get("performer_seed", 20260924)))
+                        elif clone_method == "Singing conversion":
+                            from modules.svc_backends import convert
+                            clone_outputs.append(convert(proc_file,
+                                filtered_kwargs.get("svc_reference"), os.path.join(project.project_dir, "cloned"),
+                                backend=filtered_kwargs.get("svc_backend", "vevo2"),
+                                checkpoint=filtered_kwargs.get("svc_checkpoint") or None,
+                                config=filtered_kwargs.get("svc_config") or None,
+                                lyrics=filtered_kwargs.get("svc_lyrics") or None,
+                                reference_text=filtered_kwargs.get("svc_reference_text") or None,
+                                seed=filtered_kwargs.get("svc_seed", 20260924),
+                                mode=filtered_kwargs.get("svc_mode", "target_style")))
                         elif clone_method == "OpenVoice":
                             # Use OpenVoice for cloning
                             if callback is not None:
@@ -1035,6 +1180,8 @@ class Clone(BaseWrapper):
                     "description": "Text-to-speech voice cloning using reference audio"
                 }
             ]
+            methods.append({"id": "Performer V3", "name": "Performer V3 (experimental)",
+                            "description": "Existing V2 preservation or an untrained pronunciation-guide feasibility control"})
             return {"methods": methods}
 
         return [process_clone_json, list_available_voices, list_clone_methods]

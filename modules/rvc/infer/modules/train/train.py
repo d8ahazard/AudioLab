@@ -59,6 +59,57 @@ loss_tracker = None  # Global loss tracker for auto-save/plotting
 early_stop_monitor = None  # Shared early-stop monitor (actually stops training)
 
 
+def _flag_enabled(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _is_interval_weight(filename: str) -> bool:
+    """True for step-interval exports like {name}_s500.pth."""
+    name, ext = os.path.splitext(os.path.basename(filename))
+    if ext not in {".pth", ".index", ".png"}:
+        return False
+    parts = name.rsplit("_s", 1)
+    return len(parts) == 2 and parts[1].split("_")[0].isdigit()
+
+
+def _save_interval_weights(net_g, hps, epoch, step, logger):
+    """Save inference weights at a step interval without deleting previous interval files."""
+    if hasattr(net_g, "module"):
+        ckpt = net_g.module.state_dict()
+    else:
+        ckpt = net_g.state_dict()
+    model_name = f"{hps.name}_s{step}"
+    os.makedirs(os.path.join(model_path, "trained"), exist_ok=True)
+    save_result = savee(
+        ckpt,
+        hps.sample_rate,
+        hps.if_f0,
+        model_name,
+        epoch,
+        hps.version,
+        hps,
+    )
+    if save_result != "Success.":
+        logger.error(f"Failed to save interval weights {model_name}: {save_result}")
+        return
+    index_path = None
+    if os.path.isdir(hps.model_dir):
+        for file in os.listdir(hps.model_dir):
+            if file.endswith(".index") and ("added_" in file or file.startswith("added")):
+                index_path = os.path.join(hps.model_dir, file)
+                break
+    if index_path is not None and os.path.exists(index_path):
+        shutil.copy2(index_path, os.path.join(model_path, "trained", f"{model_name}.index"))
+    logger.info(
+        "Saved interval weights (kept): %s",
+        os.path.join(model_path, "trained", f"{model_name}.pth"),
+    )
+
+
 class LossTracker:
     """
     Tracks moving averages and trends of losses to detect overtraining/plateaus
@@ -295,6 +346,8 @@ class LossTracker:
             saves_to_remove = self.best_saves_history[:-self.max_best_saves]
             for old_save in saves_to_remove:
                 try:
+                    if _is_interval_weight(old_save):
+                        continue
                     if os.path.exists(old_save):
                         os.remove(old_save)
                         print(f"Cleaned up old best save: {old_save}")
@@ -397,6 +450,51 @@ class LossTracker:
             pass
 
 
+@torch.no_grad()
+def evaluate_heldout(net_g, loader, hps, epoch, logger):
+    """Fixed seeded conversion samples; mel is diagnostic, not a perceptual quality claim."""
+    import json
+    import soundfile as sf
+    from pathlib import Path
+    model = net_g.module if hasattr(net_g, 'module') else net_g
+    device = next(model.parameters()).device
+    was_training = model.training
+    model.eval()
+    folder = Path(hps.model_dir) / 'validation' / f'epoch_{epoch:04d}'
+    folder.mkdir(parents=True, exist_ok=True)
+    scores = []
+    try:
+        with torch.random.fork_rng(devices=[device.index or 0] if device.type == 'cuda' else []):
+            torch.manual_seed(hps.train.seed)
+            for i, batch in enumerate(loader):
+                if i >= 8:
+                    break
+                phone, lengths, pitch, pitchf, spec, _, wave, _, sid = [x.to(device) for x in batch]
+                generated = model.infer(phone, lengths, pitch, pitchf, sid)[0].float()
+                length = min(generated.size(-1), wave.size(-1))
+                if length < hps.data.filter_length:
+                    continue
+                args = (hps.data.filter_length, hps.data.n_mel_channels, hps.data.sampling_rate,
+                        hps.data.hop_length, hps.data.win_length, hps.data.mel_fmin, hps.data.mel_fmax)
+                a = mel_spectrogram_torch(generated[:,0,:length], *args, center=False)
+                b = mel_spectrogram_torch(wave[:,0,:length], *args, center=False)
+                scores.append(float(F.l1_loss(a,b)))
+                sf.write(folder / f'{i:02d}.wav', generated[0,0].cpu().numpy(),
+                         hps.data.sampling_rate, subtype='FLOAT')
+        if not scores:
+            raise RuntimeError('Held-out validation produced no usable samples')
+        score = sum(scores) / len(scores)
+        (folder / 'metrics.json').write_text(json.dumps(dict(epoch=epoch, mel_l1=score,
+            samples=len(scores), purpose='Held-out conversion regression diagnostic; listening required'),indent=2))
+        best_file = folder.parent / 'best.json'
+        previous = json.loads(best_file.read_text())['mel_l1'] if best_file.exists() else float('inf')
+        if score < previous:
+            best_file.write_text(json.dumps(dict(epoch=epoch,mel_l1=score),indent=2))
+        logger.info('Held-out mel L1: %.4f (%s)', score, folder)
+    finally:
+        model.train(was_training)
+
+
 class EpochRecorder:
     def __init__(self):
         self.last_time = ttime()
@@ -489,6 +587,11 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
         persistent_workers=True,
         prefetch_factor=8,
     )
+    eval_loader = None
+    validation_files = getattr(hps.data, 'validation_files', None)
+    if validation_files and hps.if_f0 == 1 and rank == 0:
+        eval_loader = DataLoader(TextAudioLoaderMultiNSFsid(validation_files, hps.data),
+                                 batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_fn)
     if hps.if_f0 == 1:
         net_g = RVC_Model_f0(
             hps.data.filter_length // 2 + 1,
@@ -577,7 +680,7 @@ def run(rank, n_gpus, hps, logger: logging.Logger, progress: gr.Progress):
             [optim_g, optim_d],
             [scheduler_g, scheduler_d],
             scaler,
-            [train_loader, None],
+            [train_loader, eval_loader],
             logger,
             None,
             cache,
@@ -790,7 +893,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 plateau_patience_epochs=10,  # 10 epoch rolling window for plateau detection
                 composite_weight_fm=0.3,  # Weight for FM in composite score (mel + 0.3*fm)
             )
-        if early_stop_monitor is None and rank == 0:
+        auto_stop_disabled = bool(getattr(hps.train, "disable_auto_stop", False))
+        if auto_stop_disabled and rank == 0 and early_stop_monitor is not None:
+            early_stop_monitor = None
+        if early_stop_monitor is None and rank == 0 and not auto_stop_disabled:
             early_stop_monitor = EarlyStoppingMonitor(
                 ema_alpha=0.05,
                 plateau_patience=getattr(hps.train, "early_stop_plateau_patience", 20),
@@ -819,23 +925,35 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 logger.info(f"[Tracker] {loss_tracker.status_str()}")
 
             # Early stop based on mel loss plateau or uptrend (actually stops training)
-            if early_stop_monitor is not None and early_stop_monitor.should_stop():
+            min_steps = int(getattr(hps.train, "min_steps", 0) or 0)
+            if (
+                not auto_stop_disabled
+                and early_stop_monitor is not None
+                and early_stop_monitor.should_stop()
+                and global_step >= min_steps
+            ):
                 logger.info("[EarlyStop] %s", early_stop_monitor.reason())
                 break
 
         global_step += 1
+        save_every_steps = int(getattr(hps, "save_every_steps", 0) or 0)
+        if rank == 0 and save_every_steps > 0 and global_step % save_every_steps == 0:
+            _save_interval_weights(net_g, hps, epoch, global_step, logger)
 
     early_stopped = False
     if rank == 0:
         # Update epoch tracking at the end of each epoch
         if loss_tracker is not None:
             loss_tracker.on_epoch_end(epoch)
-        if early_stop_monitor is not None:
+        if not bool(getattr(hps.train, "disable_auto_stop", False)) and early_stop_monitor is not None:
             early_stop_monitor.on_epoch_end(epoch)
-            early_stopped = early_stop_monitor._stopped
+            min_steps = int(getattr(hps.train, "min_steps", 0) or 0)
+            if global_step >= min_steps:
+                early_stopped = early_stop_monitor._stopped
         
         # Save model if it's time for a periodic save or if training is complete
         should_save = (epoch % hps.save_epoch_frequency == 0) or (epoch >= hps.train.epochs)
+        should_save_intelligent = False
 
         # Also save if we have a very good loss (intelligent auto-save at epoch boundaries)
         if loss_tracker is not None:
@@ -849,14 +967,23 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 should_save = True
                 logger.info("[Tracker] Auto-saving at epoch boundary due to near-zero mel loss (excellent reconstruction).")
         
+        if should_save and eval_loader is not None:
+            evaluate_heldout(net_g, eval_loader, hps, epoch, logger)
+
         if should_save:
             # If save_latest_only is True and we have a previous save, clean up old checkpoints
-            if hps.save_latest_only and last_saved_epoch is not None:
-                # Clean up files from previous save in both directories
+            if _flag_enabled(hps.save_latest_only) and last_saved_epoch is not None:
+                # Clean up files from previous save in both directories.
+                # Match this voice's epoch export only — never interval `_s{step}` weights,
+                # and never a substring like `_v2` inside names such as huxlxy_v2.
+                prev_weight = f"{hps.name}_v{last_saved_epoch}.pth"
+                prev_index = f"{hps.name}_v{last_saved_epoch}.index"
                 for save_dir in [os.path.join(model_path, "trained"), os.path.join(hps.model_dir, "saves")]:
                     if os.path.exists(save_dir):
                         for file in os.listdir(save_dir):
-                            if f"_v{last_saved_epoch}" in file and (file.endswith(".pth") or file.endswith(".index")):
+                            if _is_interval_weight(file):
+                                continue
+                            if file in (prev_weight, prev_index):
                                 try:
                                     os.remove(os.path.join(save_dir, file))
                                 except Exception as e:

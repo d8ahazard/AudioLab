@@ -1,5 +1,4 @@
 import torch
-import onnxsim
 import onnx
 from modules.rvc.infer.lib.infer_pack.models_onnx import SynthesizerTrnMsNSFsidM
 
@@ -50,6 +49,8 @@ def export_onnx(ModelPath, ExportedPath):
         input_names=input_names,
         output_names=output_names,
     )
-    model, _ = onnxsim.simplify(ExportedPath)
-    onnx.save(model, ExportedPath)
+    # Validate the exported graph directly. onnxsim pulls in stable `onnx`, which
+    # overwrites the `onnx` namespace owned by audio-separator's onnx-weekly.
+    # Constant folding remains controlled by torch.onnx.export above.
+    onnx.checker.check_model(ExportedPath)
     return "Finished"

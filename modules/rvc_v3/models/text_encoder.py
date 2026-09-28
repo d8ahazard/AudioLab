@@ -131,12 +131,16 @@ class TextEncoder(nn.Module):
         # Generate attention mask for transformer
         # PyTorch transformer expects False for valid positions
         if mask is not None:
-            attn_mask = mask  # (batch, seq_len)
+            attn_mask = mask.clone()  # (batch, seq_len)
+            # Fully unlabelled rows occur in mixed text/no-text batches.
+            attn_mask[mask.all(dim=1), 0] = False
         else:
             attn_mask = None
         
         # Encode
         encoded = self.transformer_encoder(x, src_key_padding_mask=attn_mask)
+        if mask is not None:
+            encoded = encoded.masked_fill(mask.unsqueeze(-1), 0.)
         
         return encoded
     

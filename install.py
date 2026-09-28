@@ -52,17 +52,17 @@ logger = logging.getLogger("AudioLab Installer")
 # Version requirements
 MIN_PYTHON_VERSION = (3, 10)
 MAX_PYTHON_VERSION = (3, 13)
-CUDA_VERSION = "12.4"
-TORCH_VERSION = "2.6.0"
+CUDA_VERSION = "12.8"
+TORCH_VERSION = "2.7.1"
 
 # Wheel URLs for platform-specific packages
 WHEEL_URLS = {
     "flash_attn": {
         "win32": {
-            "3.10": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp310-cp310-win_amd64.whl",
-            "3.11": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl",
-            "3.12": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp312-cp312-win_amd64.whl",
-            "3.13": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp313-cp313-win_amd64.whl",
+            "3.10": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl",
+            "3.11": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp311-cp311-win_amd64.whl",
+            "3.12": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl",
+            "3.13": "https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp313-cp313-win_amd64.whl",
         }
     },
     "causal_conv1d": {
@@ -274,7 +274,7 @@ def install_pytorch(info: SystemInfo, cpu_only: bool = False) -> bool:
     """Install PyTorch with appropriate CUDA support."""
     logger.info("Installing PyTorch...")
     
-    packages = [f"torch=={TORCH_VERSION}", f"torchvision==0.21.0", f"torchaudio=={TORCH_VERSION}"]
+    packages = [f"torch=={TORCH_VERSION}", f"torchvision==0.22.1", f"torchaudio=={TORCH_VERSION}"]
     
     if cpu_only or not info.cuda_available:
         logger.info("Installing CPU-only PyTorch...")
@@ -433,6 +433,33 @@ def verify_installation() -> bool:
     return all_passed
 
 
+def normalize_separator_runtime(cpu_only=False):
+    """Stage one ONNX namespace owner without replacing DLLs in a live app."""
+    import json
+    import tempfile
+    import site
+    runtime = "onnxruntime==1.22.0" if cpu_only else "onnxruntime-gpu==1.22.0"
+    runtime_root = Path(sys.prefix) / "audio_separator_runtime"
+    runtime_root.mkdir(exist_ok=True)
+    target = Path(tempfile.mkdtemp(prefix="0.47.0-", dir=runtime_root))
+    logger.info("Staging AudioSeparator runtime in %s", target)
+    try:
+        run_pip(["install", "--target", str(target), "--no-deps", "audio-separator==0.47.0",
+                 "onnx-weekly==1.20.0.dev20251005", "onnx2torch-py313==1.6.0",
+                 "protobuf==4.25.8", "ml_dtypes==0.6.0", "tensorboardX==2.6.5", runtime])
+        probe = "import sys; sys.path.insert(0, " + repr(str(target)) + "); import torch, onnx, onnxruntime, onnx2torch, tensorboardX; from audio_separator.separator import Separator"
+        subprocess.run([sys.executable, "-c", probe], check=True)
+        site_dir = next(Path(x) for x in site.getsitepackages() if Path(x).name == "site-packages")
+        (site_dir / "audiolab_separator_runtime.pth").write_text(
+            "import sys; sys.path.insert(0, " + repr(str(target)) + ")\n", encoding="utf-8")
+        (target / "audiolab-runtime.json").write_text(json.dumps({"audio_separator": "0.47.0", "runtime": runtime}))
+        logger.info("AudioSeparator runtime activated for new processes; restart running AudioLab sessions.")
+        return True
+    except (subprocess.CalledProcessError, OSError):
+        logger.exception("Runtime staging failed; the previous runtime remains selected")
+        return False
+
+
 def main():
     """Main installation function."""
     parser = argparse.ArgumentParser(
@@ -523,6 +550,10 @@ Examples:
             logger.info("Installing development dependencies...")
             install_requirements_file(str(dev_file))
     
+    if not normalize_separator_runtime(cpu_only=args.cpu):
+        logger.error("AudioSeparator runtime normalization failed. Aborting.")
+        sys.exit(1)
+
     # Install espeak-ng
     if not args.skip_espeak:
         install_espeak(info)

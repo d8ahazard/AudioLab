@@ -51,6 +51,7 @@ class RVCV3Pipeline:
             device: Device to run on
         """
         self.config = config
+        self.config.validate_contract()
         self.device = device
         
         # Initialize content encoder
@@ -78,12 +79,10 @@ class RVCV3Pipeline:
         logger.info("RVCV3Pipeline initialized")
 
     def _encode_lyrics_tokens(self, lyrics: str) -> Tuple[list[int], str]:
-        """
-        Encode lyrics text to token IDs.
-
-        NOTE: Current V3 training path uses SimplePhonemizer (character-level IDs).
-        For inference, default to the same tokenizer to avoid train/infer mismatch.
-        """
+        """Use the checkpoint's token vocabulary; preserve legacy token IDs explicitly."""
+        if self.config.text_tokenizer == 'char_v1':
+            from modules.rvc_v3.text_tokens import encode_char_v1
+            return encode_char_v1(lyrics), 'char_v1'
         mode = os.environ.get("AUDIOCLONE_V3_TEXT_TOKENIZER", "simple").strip().lower()
         max_tokens = int(os.environ.get("AUDIOCLONE_V3_MAX_TEXT_TOKENS", "4096"))
         text = (lyrics or "").strip()
@@ -128,7 +127,7 @@ class RVCV3Pipeline:
     
     def _init_pitch_extractor(self):
         """Initialize pitch extractor."""
-        self.pitch_method = os.environ.get("AUDIOCLONE_V3_PITCH_METHOD", "rmvpe").strip().lower()
+        self.pitch_method = os.environ.get("AUDIOCLONE_V3_PITCH_METHOD", "rmvpe+").strip().lower()
         if self.pitch_method == "rmvpe+":
             from modules.rvc.pitch_extraction import FeatureExtractor
             from modules.rvc.configs.config import Config as RVCConfig
@@ -154,7 +153,7 @@ class RVCV3Pipeline:
         """Initialize generator."""
         self.generator = RVCV3Generator(
             spec_channels=self.config.spec_channels,
-            segment_size=self.config.segment_size,
+            segment_size=self.config.segment_size // self.config.hop_length,
             inter_channels=self.config.inter_channels,
             hidden_channels=self.config.hidden_channels,
             filter_channels=self.config.filter_channels,
@@ -174,7 +173,8 @@ class RVCV3Pipeline:
             vocoder_type=self.config.vocoder_type,
             text_encoder_dim=self.config.text_encoder_dim,
             n_cross_attn_layers=self.config.n_cross_attn_layers,
-            ppg_dim=self.config.get_content_feature_dim()
+            ppg_dim=self.config.get_content_feature_dim(),
+            backbone=self.config.backbone,
         ).to(self.device)
         self.generator.eval()
     
@@ -272,22 +272,37 @@ class RVCV3Pipeline:
         # High index rates can over-impose target timbre and collapse consonants into humming.
         effective_rate = float(index_rate)
         effective_rate = min(effective_rate, 0.35)
+        retrieval_k = int(os.environ.get("AUDIOCLONE_V3_RETRIEVAL_K", "8"))
+        retrieval_k = int(np.clip(retrieval_k, 1, 16))
+        retrieval_weighting = os.environ.get("AUDIOCLONE_V3_RETRIEVAL_WEIGHTING", "distance").strip().lower()
+        if retrieval_weighting not in {"uniform", "distance"}:
+            retrieval_weighting = "distance"
         if self.retrieval_index is not None and getattr(
             self.retrieval_index, "is_v2_reconstructed", False
         ):
             effective_rate = min(effective_rate, 0.25)
         if self.retrieval_index is not None and effective_rate > 0:
-            content_mixed = self.retrieval_index.mix_features(
-                content_np,
-                alpha=1.0 - effective_rate,  # Convert to retrieval weight
-                k=1
-            )
-            content_np = content_mixed.astype(np.float32, copy=False)
+            try:
+                content_mixed = self.retrieval_index.mix_features(
+                    content_np,
+                    alpha=1.0 - effective_rate,  # Convert to retrieval weight
+                    k=retrieval_k,
+                    weighting=retrieval_weighting,
+                )
+                content_np = content_mixed.astype(np.float32, copy=False)
+            except Exception as retrieval_err:
+                logger.warning("V3 retrieval disabled for this conversion: %s", retrieval_err)
+                effective_rate = 0.0
 
         # RVC contract in many v2 paths uses ~100 Hz phone timeline (x2 vs HuBERT).
         # Keep this switchable per-checkpoint because some V3 runs are trained on native rate.
         phone_x2 = os.environ.get("AUDIOCLONE_V3_PHONE_X2", "1").strip() not in {"0", "false", "False"}
-        if phone_x2:
+        if self.config.backbone == 'v2_compatible':
+            target_frames = max(1, int(len(audio) / sr * self.config.sampling_rate / self.config.hop_length))
+            indices = np.minimum(np.arange(target_frames) * len(content_np) // target_frames, len(content_np)-1)
+            content_np = content_np[indices]
+            content_np_base = content_np_base[indices]
+        elif phone_x2:
             content_np = np.repeat(content_np, 2, axis=0)
             content_np_base = np.repeat(content_np_base, 2, axis=0)
         content_len_model = int(content_np.shape[0])
@@ -303,10 +318,12 @@ class RVCV3Pipeline:
         f0_coarse = np.rint(f0_mel).astype(np.int64)
         
         # Align pitch to model content length (~100 Hz after x2 upsample)
+        voiced_threshold_hz = float(os.environ.get("AUDIOCLONE_V3_VOICED_THRESHOLD_HZ", "25.0"))
+        voiced_threshold_hz = float(np.clip(voiced_threshold_hz, 1.0, 80.0))
         if len(f0) != content_len_model:
             x_old = np.linspace(0, 1, len(f0))
             x_new = np.linspace(0, 1, content_len_model)
-            voiced = f0 > 1.0  # Unvoiced frames
+            voiced = f0 > voiced_threshold_hz  # Unvoiced frames
             f0_interp = np.interp(x_new, x_old, f0)
             f0_coarse_interp = np.interp(x_new, x_old, f0_coarse.astype(np.float64))
             # Preserve unvoiced: mask interpolated values where source was unvoiced
@@ -317,10 +334,10 @@ class RVCV3Pipeline:
 
         # V2-style protect blend: in unvoiced regions, preserve more source content features.
         # This helps reduce sustained humming artifacts after retrieval mixing.
-        protect = float(os.environ.get("AUDIOCLONE_V3_PROTECT", "0.20"))
+        protect = float(os.environ.get("AUDIOCLONE_V3_PROTECT", "0.15"))
         protect = float(np.clip(protect, 0.0, 0.5))
         if self.retrieval_index is not None and effective_rate > 0.0 and protect < 0.5:
-            voiced_mask = (f0 > 1.0).astype(np.float32).reshape(-1, 1)
+            voiced_mask = (f0 > voiced_threshold_hz).astype(np.float32).reshape(-1, 1)
             blend = voiced_mask + (1.0 - voiced_mask) * protect
             if content_np_base.shape[0] == content_np.shape[0]:
                 content_np = content_np * blend + content_np_base * (1.0 - blend)
@@ -453,8 +470,8 @@ class RVCV3Pipeline:
             audio_out = audio_out * gain
 
         # Source-guided silence gate: suppress synthetic HF modulation in silent spots.
-        gate_db = float(os.environ.get("AUDIOCLONE_V3_SILENCE_GATE_DB", "-48.0"))
-        gate_strength = float(np.clip(float(os.environ.get("AUDIOCLONE_V3_SILENCE_GATE_STRENGTH", "0.90")), 0.0, 1.0))
+        gate_db = float(os.environ.get("AUDIOCLONE_V3_SILENCE_GATE_DB", "-52.0"))
+        gate_strength = float(np.clip(float(os.environ.get("AUDIOCLONE_V3_SILENCE_GATE_STRENGTH", "0.55")), 0.0, 1.0))
         gate_min = float(np.clip(float(os.environ.get("AUDIOCLONE_V3_SILENCE_MIN_GAIN", "0.05")), 0.0, 1.0))
         if audio_out.size and gate_strength > 0.0:
             frame_len = 320  # 20 ms @ 16k
@@ -480,7 +497,7 @@ class RVCV3Pipeline:
         audio_out = np.clip(audio_out, -1.0, 1.0)
 
         clipped_frac = float(np.mean(np.abs(audio_out) > 0.99)) if audio_out.size else 0.0
-        voiced_ratio = float(np.mean(f0 > 1.0)) if len(f0) else 0.0
+        voiced_ratio = float(np.mean(f0 > voiced_threshold_hz)) if len(f0) else 0.0
         self.last_convert_debug = {
             "audio_path": audio_path,
             "input_samples_16k": int(len(audio)),
@@ -492,7 +509,10 @@ class RVCV3Pipeline:
             "phone_x2": bool(phone_x2),
             "index_rate_requested": float(index_rate),
             "index_rate_effective": float(effective_rate),
+            "retrieval_k": int(retrieval_k),
+            "retrieval_weighting": str(retrieval_weighting),
             "protect": float(protect),
+            "voiced_threshold_hz": float(voiced_threshold_hz),
             "text_strength": float(text_strength),
             "noise_scale": float(noise_scale),
             "pitch_method": str(getattr(self, "pitch_method", "rmvpe")),
@@ -518,4 +538,3 @@ class RVCV3Pipeline:
             logger.info(f"Output saved to {output_path}")
         
         return audio_out, self.config.sampling_rate
-

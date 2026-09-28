@@ -410,7 +410,7 @@ def _run_smoke_main(
             out_path = os.path.join(lyrics_dir, f"{stem}.json")
             if not os.path.isfile(out_path):
                 segs = transcriber.transcribe_file(
-                    wav_path, out_path, language=None, word_timestamps=True
+                    wav_path, out_path, language=None, word_timestamps=True, overwrite_existing=False
                 )
                 if segs:
                     print(f"[smoke] transcribed {stem} -> {len(segs)} segments")

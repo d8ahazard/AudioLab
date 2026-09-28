@@ -85,7 +85,8 @@ class HuBERTEncoder:
                     "Please manually download from https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt"
                 )
         
-        models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
+        from modules.rvc.infer.modules.vc.utils import load_model_ensemble_and_task
+        models, saved_cfg, task = load_model_ensemble_and_task(
             [self.model_path],
             suffix="",
         )
@@ -372,4 +373,3 @@ class DualContentEncoder(nn.Module):
     def get_output_dim(self) -> int:
         """Get the output feature dimension."""
         return self.fused_dim
-

@@ -85,7 +85,7 @@ class RVCV3Dataset(Dataset):
                 files = [line.strip() for line in f if line.strip()]
         else:
             # Auto-split: use all vocal files
-            vocal_files = list(self.vocals_dir.glob("*.wav"))
+            vocal_files = sorted(self.vocals_dir.glob("*.wav"))
             
             # Simple train/val split (90/10)
             if self.split == "train":
@@ -134,27 +134,32 @@ class RVCV3Dataset(Dataset):
         # Load pre-extracted features
         features_file = self.features_dir / f"{file_stem}.pt"
         if features_file.exists():
-            features_data = torch.load(features_file)
+            features_data = torch.load(features_file, map_location='cpu', weights_only=True)
             content_features = features_data['content']  # (T', feature_dim)
             pitch = features_data['pitch']  # (T',)
             pitchf = features_data['pitchf']  # (T',)
         else:
-            # Features not extracted yet - return dummy data or raise error
-            logger.warning(f"Features not found for {file_stem}")
-            # Return dummy data for now
-            n_frames = len(audio) // self.hop_length
-            feature_dim = self.config.get_content_feature_dim()
-            content_features = torch.zeros(n_frames, feature_dim)
-            pitch = torch.zeros(n_frames)
-            pitchf = torch.zeros(n_frames)
-        
-        # Get corresponding lyrics segment
-        text_tokens, text_mask = self._get_text_tokens(file_stem)
+            raise FileNotFoundError(f'Extract content and pitch before training: {features_file}')
+
+        # Cached encoder frames (~50 Hz) and STFT frames have different clocks.
+        # Align the entire utterance before taking a hop-aligned audio crop.
+        n_frames = max(1, len(audio) // self.hop_length)
+        content_features = F.interpolate(content_features.T[None], size=n_frames,
+                                         mode='nearest')[0].T
+        voiced = F.interpolate((pitchf > 0).float()[None,None], size=n_frames,
+                               mode='nearest')[0,0].bool()
+        pitchf = F.interpolate(pitchf.float()[None,None], size=n_frames,
+                               mode='linear', align_corners=False)[0,0]
+        pitchf = torch.where(voiced, pitchf, 0.)
+        pitch = F.interpolate(pitch.float()[None,None], size=n_frames,
+                              mode='nearest')[0,0].long()
         
         # Random segment extraction for training
+        start = 0
         if len(audio) > self.segment_size:
             max_start = len(audio) - self.segment_size
-            start = random.randint(0, max_start)
+            start = (random.randint(0, max_start // self.hop_length) * self.hop_length
+                     if self.split == 'train' else 0)
             audio = audio[start:start + self.segment_size]
             
             # Adjust feature indices
@@ -168,6 +173,9 @@ class RVCV3Dataset(Dataset):
             # Pad if too short
             pad_len = self.segment_size - len(audio)
             audio = np.pad(audio, (0, pad_len), mode='constant')
+
+        text_tokens, text_mask = self._get_text_tokens(
+            file_stem, start / self.sr, (start + self.segment_size) / self.sr)
         
         # Augmentation
         if self.augment and self.split == "train":
@@ -196,18 +204,33 @@ class RVCV3Dataset(Dataset):
             'filename': file_stem
         }
     
-    def _get_text_tokens(self, file_stem: str) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get text tokens for a file."""
-        # Look for segment-specific lyrics in annotated data
-        segments = self.lyrics_data.get('segments', [])
+    def _get_text_tokens(self, file_stem: str, start: float = 0.,
+                         end: float = float('inf')) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Use only file-associated words overlapping the actual audio crop."""
+        own_file = self.lyrics_dir / f'{file_stem}.json'
+        data = json.loads(own_file.read_text(encoding='utf-8')) if own_file.exists() else self.lyrics_data
+        segments = []
+        for seg in data.get('segments', []):
+            name = seg.get('file', seg.get('filename', data.get('file', data.get('filename'))))
+            if not own_file.exists() and (not name or Path(name).stem != file_stem):
+                continue  # Ambiguous project-wide text must not condition every training song.
+            units = seg.get('words') or [seg]
+            for unit in units:
+                if 'start' not in unit or 'end' not in unit: continue
+                if float(unit['start']) < end and float(unit['end']) > start:
+                    segments.append(dict(text=unit.get('text', unit.get('word', '')),
+                                         tags=seg.get('tags', [])))
         
         if not segments:
             # No lyrics - return empty
             return torch.zeros(1, dtype=torch.long), torch.ones(1, dtype=torch.bool)
         
-        # For now, concatenate all lyric text
-        # In a more sophisticated version, we'd align segments to audio timestamps
         all_text = ' '.join([seg.get('text', '') for seg in segments])
+        if getattr(self.config, 'text_tokenizer', 'legacy') == 'char_v1':
+            from modules.rvc_v3.text_tokens import encode_char_v1
+            ids=encode_char_v1(all_text)
+            if not ids: return torch.zeros(1,dtype=torch.long),torch.ones(1,dtype=torch.bool)
+            return torch.tensor(ids,dtype=torch.long),torch.zeros(len(ids),dtype=torch.bool)
         
         # Get tags
         all_tags = []
@@ -224,6 +247,8 @@ class RVCV3Dataset(Dataset):
         
         # Encode to IDs
         token_ids = self.phonemizer.encode(phonemes)
+        if not token_ids:
+            return torch.zeros(1, dtype=torch.long), torch.ones(1, dtype=torch.bool)
         
         # Create mask (all valid for now)
         mask = torch.zeros(len(token_ids), dtype=torch.bool)

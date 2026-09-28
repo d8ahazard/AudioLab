@@ -365,8 +365,11 @@ def click_train(
         more_gpu_ids,
         cache_dataset_to_gpu,
         save_weights_each_ckpt,
+        disable_auto_stop,
         model_version,
         progress=gr.Progress(),
+        save_every_steps=0,
+        min_steps=0,
 ):
     try:
         config_obj = Config()
@@ -414,7 +417,8 @@ def click_train(
                 transcribe_results = transcriber.transcribe_project_vocals(
                     project_dir=exp_dir,
                     gt_wavs_dir=gt_wavs_dir,
-                    language=None
+                    language=None,
+                    overwrite_existing=False,
                 )
                 n_transcribed = sum(1 for v in transcribe_results.values() if v)
                 logger.info(f"V3 transcription: {n_transcribed}/{len(transcribe_results)} vocals transcribed")
@@ -460,10 +464,12 @@ def click_train(
             logger.info("No pretrained Generator")
         if pretrained_discriminator == "":
             logger.info("No pretrained Discriminator")
-        if model_version == "v1" or sample_rate == "40k":
+        if model_version == "v1":
             config_path = "v1/%s.json" % sample_rate
-        else:
+        elif model_version == "v3":
             config_path = "v3/%s.json" % sample_rate
+        else:
+            config_path = "v2/%s.json" % sample_rate
         config_save_path = os.path.join(exp_dir, "config.json")
         if not pathlib.Path(config_save_path).exists():
             with open(config_save_path, "w", encoding="utf-8") as f:
@@ -491,8 +497,14 @@ def click_train(
         hparams.train.epochs = total_epochs
         hparams.sample_rate = sample_rate
         hparams.if_f0 = 1 if use_pitch_guidance else 0
-        hparams.save_latest_only = save_latest_only
+        if isinstance(save_latest_only, str):
+            hparams.save_latest_only = save_latest_only.strip().lower() in {"1", "true", "yes", "y", "on"}
+        else:
+            hparams.save_latest_only = bool(save_latest_only)
         hparams.save_every_weights = 1 if save_weights_each_ckpt == "Yes" else 0
+        hparams.save_every_steps = int(save_every_steps or 0)
+        hparams.train.disable_auto_stop = bool(disable_auto_stop)
+        hparams.train.min_steps = int(min_steps or 0)
         hparams.if_cache_data_in_gpu = 1 if cache_dataset_to_gpu == "Yes" else 0
         hparams.data.training_files = os.path.join(exp_dir, "filelist.txt")
 
@@ -609,11 +621,14 @@ def train1key(
         tgt_gpus,
         cache_to_gpu,
         save_weights_every,
+        disable_auto_stop,
         project_version,
         gpus_rmvpe,
         separate_bg_vocals=True,
         pause_after_separation=False,
-        progress=gr.Progress()
+        progress=gr.Progress(),
+        save_every_steps=0,
+        min_steps=0,
 ):
     infos = []
     resuming_training = False
@@ -753,8 +768,11 @@ def train1key(
             tgt_gpus,
             cache_to_gpu,
             save_weights_every,
+            disable_auto_stop,
             project_version,
-            progress
+            progress,
+            save_every_steps=save_every_steps,
+            min_steps=min_steps,
         )
     except Exception as e:
         error_msg = f"Error during model training: {str(e)}"
@@ -812,6 +830,7 @@ def resume_training(
         tgt_gpus,
         cache_to_gpu,
         save_weights_every,
+        disable_auto_stop,
         project_version,
         gpus_rmvpe,
         separate_bg_vocals=True,
@@ -847,6 +866,7 @@ def resume_training(
             tgt_gpus,
             cache_to_gpu,
             save_weights_every,
+            disable_auto_stop,
             project_version,
             gpus_rmvpe,
             separate_bg_vocals,
@@ -1068,6 +1088,12 @@ def render():
                         interactive=True,
                         elem_classes="hintitem", elem_id="rvc_save_weights"
                     )
+                    disable_auto_stop = gr.Checkbox(
+                        label="Disable Auto-Stop",
+                        value=False,
+                        interactive=True,
+                        elem_classes="hintitem", elem_id="rvc_disable_auto_stop"
+                    )
                     pretrained_generator = gr.Textbox(
                         label="Pretrained Generator Path",
                         value=os.path.join(model_path, "rvc", "pretrained_v2", "f0G48k.pth"),
@@ -1176,6 +1202,7 @@ def render():
                         more_gpu_ids,
                         cache_dataset_to_gpu,
                         save_weights_each_ckpt,
+                        disable_auto_stop,
                         model_version,
                         gpus_rmvpe,
                         separate_bg_vocals,
@@ -1203,6 +1230,7 @@ def render():
                         more_gpu_ids,
                         cache_dataset_to_gpu,
                         save_weights_each_ckpt,
+                        disable_auto_stop,
                         model_version,
                         gpus_rmvpe,
                         separate_bg_vocals
@@ -1269,6 +1297,7 @@ def register_descriptions(arg_handler: ArgHandler):
         "save_latest_only": "Enable this to keep only the latest checkpoint and save disk space.",
         "cache_dataset": "Choose whether to cache the dataset to GPU memory for faster training.",
         "save_weights": "Enable this to save model weights at every checkpoint.",
+        "disable_auto_stop": "Disable early auto-stopping from loss plateau/uptrend detection. Useful for testing longer training runs.",
         "pretrained_generator": "Path to the pretrained generator model used for fine-tuning.",
         "pretrained_discriminator": "Path to the pretrained discriminator model used for training.",
         "gpu_ids": "Specify GPU IDs for multi-GPU training, separated by dashes (e.g., 0-1-2).",
@@ -1305,6 +1334,7 @@ def register_api_endpoints(api):
         batch_size: int = Field(16, description="Training batch size")
         save_latest_only: str = Field("Yes", description="Whether to save only the latest checkpoint")
         save_weights_every: str = Field("Yes", description="Whether to save weights with each checkpoint")
+        disable_auto_stop: bool = Field(False, description="Disable automatic early stopping from plateau/uptrend detection")
         project_version: str = Field("v2", description="RVC model version (v1 or v2)")
         gpus_rmvpe: str = Field("0", description="GPU indices for RMVPE")
         separate_vocals: bool = Field(True, description="Whether to separate vocals from input")
@@ -1381,6 +1411,7 @@ def register_api_endpoints(api):
                 batch_size=request.batch_size,
                 save_latest_only=request.save_latest_only,
                 save_weights_every=request.save_weights_every,
+                disable_auto_stop=request.disable_auto_stop,
                 project_version=request.project_version,
                 gpus_rmvpe=request.gpus_rmvpe,
                 separate_vocals=request.separate_vocals,
@@ -1795,7 +1826,7 @@ def run_train_job(
         job_id, project_name, audio_files, sample_rate, use_pitch_guidance,
         speaker_id, extraction_method, epoch_save_freq, train_epochs,
         batch_size, save_latest_only, save_weights_every, project_version,
-        gpus_rmvpe, separate_vocals, cache_to_gpu, temp_dir
+        gpus_rmvpe, separate_vocals, cache_to_gpu, temp_dir, disable_auto_stop=False
 ):
     """Run a training job in the background"""
     try:
@@ -1857,6 +1888,7 @@ def run_train_job(
             tgt_gpus="0",
             cache_to_gpu=cache_to_gpu == "Yes",
             save_weights_every=save_weights_every,
+            disable_auto_stop=disable_auto_stop,
             project_version=project_version,
             gpus_rmvpe=gpus_rmvpe,
             pause_after_separation=False,

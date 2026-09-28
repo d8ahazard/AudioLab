@@ -109,26 +109,27 @@ class TextConditionedTextEncoder(nn.Module):
         p_dropout: float,
         text_d_model: int = 256,
         n_cross_attn_layers: int = 2,
-        ppg_dim: Optional[int] = None
+        ppg_dim: Optional[int] = None,
+        backbone: str = 'legacy',
     ):
         super().__init__()
         
         # Base RVC TextEncoder
-        self.base_encoder = RVCTextEncoder(
-            inter_channels,
-            hidden_channels,
-            filter_channels,
-            n_heads,
-            n_layers,
-            kernel_size,
-            p_dropout,
-            ppg_dim=ppg_dim
-        )
+        self.backbone = backbone
+        if backbone == 'v2_compatible':
+            from modules.rvc.infer.lib.infer_pack.models import TextEncoder as CompatibleEncoder
+            self.base_encoder = CompatibleEncoder(768, inter_channels, hidden_channels,
+                filter_channels, n_heads, n_layers, kernel_size, p_dropout)
+        else:
+            self.base_encoder = RVCTextEncoder(
+                inter_channels, hidden_channels, filter_channels, n_heads,
+                n_layers, kernel_size, p_dropout, ppg_dim=ppg_dim,
+            )
         
         # Cross-attention layers
         self.cross_attn_layers = nn.ModuleList([
             CrossAttentionLayer(
-                hidden_channels,
+                inter_channels,
                 n_heads=n_heads,
                 dropout=p_dropout
             )
@@ -136,8 +137,8 @@ class TextConditionedTextEncoder(nn.Module):
         ])
         
         # Project text features to hidden_channels if needed
-        if text_d_model != hidden_channels:
-            self.text_projection = nn.Linear(text_d_model, hidden_channels)
+        if text_d_model != inter_channels:
+            self.text_projection = nn.Linear(text_d_model, inter_channels)
         else:
             self.text_projection = None
         
@@ -170,16 +171,28 @@ class TextConditionedTextEncoder(nn.Module):
             Encoded features, log scales, and mask
         """
         # Base encoding
-        m_p, logs_p, x_mask = self.base_encoder(phone, pitch, lengths, ppg=ppg)
+        if self.backbone == 'v2_compatible':
+            if ppg is not None:
+                raise ValueError('PPG conditioning is not supported by the V2-compatible backbone')
+            m_p, logs_p, x_mask = self.base_encoder(phone, pitch, lengths)
+        else:
+            m_p, logs_p, x_mask = self.base_encoder(phone, pitch, lengths, ppg=ppg)
         
         # If text features provided, apply cross-attention with controllable strength.
         if text_features is not None and text_strength > 0.0:
+            valid_rows = (torch.ones(phone.size(0), dtype=torch.bool, device=phone.device)
+                          if text_mask is None else ~text_mask.all(dim=1))
+            if not valid_rows.any():
+                return m_p, logs_p, x_mask
+            text_features = text_features[valid_rows]
+            if text_mask is not None:
+                text_mask = text_mask[valid_rows]
             # Project text if needed
             if self.text_projection is not None:
                 text_features = self.text_projection(text_features)
             
             # Transpose for cross-attention (batch, time, channels)
-            content = m_p.transpose(1, 2)  # (batch, time, channels)
+            content = m_p[valid_rows].transpose(1, 2)
             
             # Apply cross-attention layers
             for layer in self.cross_attn_layers:
@@ -188,10 +201,9 @@ class TextConditionedTextEncoder(nn.Module):
             # Transpose back and blend with base encoding.
             m_p_text = content.transpose(1, 2)  # (batch, channels, time)
             ts = float(max(0.0, min(1.0, text_strength)))
-            if ts < 1.0:
-                m_p = (1.0 - ts) * m_p + ts * m_p_text
-            else:
-                m_p = m_p_text
+            m_p = m_p.clone()
+            m_p[valid_rows] = (1.0 - ts) * m_p[valid_rows] + ts * m_p_text
+            m_p = m_p * x_mask
         
         return m_p, logs_p, x_mask
 
@@ -227,6 +239,7 @@ class RVCV3Generator(nn.Module):
         text_encoder_dim: int = 256,
         n_cross_attn_layers: int = 2,
         ppg_dim: Optional[int] = None,
+        backbone: str = 'legacy',
         **kwargs
     ):
         """
@@ -261,11 +274,16 @@ class RVCV3Generator(nn.Module):
             p_dropout,
             text_d_model=text_encoder_dim,
             n_cross_attn_layers=n_cross_attn_layers,
-            ppg_dim=ppg_dim
+            ppg_dim=ppg_dim,
+            backbone=backbone,
         )
         
         # Posterior encoder (unchanged from v2)
-        self.enc_q = PosteriorEncoder(
+        posterior_cls, flow_cls = PosteriorEncoder, ResidualCouplingBlock
+        if backbone == 'v2_compatible':
+            from modules.rvc.infer.lib.infer_pack.models import (
+                PosteriorEncoder as posterior_cls, ResidualCouplingBlock as flow_cls)
+        self.enc_q = posterior_cls(
             spec_channels,
             inter_channels,
             hidden_channels,
@@ -276,13 +294,15 @@ class RVCV3Generator(nn.Module):
         )
         
         # Normalizing flow (unchanged from v2)
-        self.flow = ResidualCouplingBlock(
+        self.flow = flow_cls(
             inter_channels, hidden_channels, 5, 1, 3, gin_channels=gin_channels
         )
         
         # Decoder (vocoder) - will be replaced with stereo version
         # For now, use the standard decoder
         from modules.rvc.lib.models import GeneratorNSF, GeneratorBigVgan
+        if backbone == 'v2_compatible':
+            from modules.rvc.infer.lib.infer_pack.models import GeneratorNSF
         
         if vocoder_type == 'hifigan':
             self.dec = GeneratorNSF(

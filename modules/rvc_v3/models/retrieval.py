@@ -167,9 +167,21 @@ class RetrievalIndex:
             Retrieved features (N, k, feature_dim) or with distances
         """
         distances, indices = self.search(query, k)
+
+        # faiss can return -1 for invalid neighbors (common with sparse IVF recall).
+        # Fall back to source frame for those rows to avoid injecting garbage timbre.
+        safe_indices = indices.copy()
+        invalid = safe_indices < 0
+        if np.any(invalid):
+            safe_indices[invalid] = 0
         
         # Get features
-        retrieved = self.features[indices]  # (N, k, feature_dim)
+        retrieved = self.features[safe_indices]  # (N, k, feature_dim)
+        if np.any(invalid):
+            query2d = query if query.ndim == 2 else np.expand_dims(query, axis=0)
+            retrieved[invalid] = np.repeat(query2d[:, np.newaxis, :], k, axis=1)[invalid]
+            distances = distances.copy()
+            distances[invalid] = np.max(distances[~invalid]) if np.any(~invalid) else 1.0
         
         if return_distances:
             return retrieved, distances
@@ -213,7 +225,9 @@ class RetrievalIndex:
             elif weighting == "distance":
                 # Weight by inverse distance
                 weights = 1.0 / (distances + 1e-8)  # (N, k)
-                weights = weights / weights.sum(axis=1, keepdims=True)  # Normalize
+                denom = weights.sum(axis=1, keepdims=True)
+                denom = np.where(denom <= 0.0, 1.0, denom)
+                weights = weights / denom  # Normalize
                 
                 # Weighted sum
                 retrieved = (retrieved * weights[:, :, np.newaxis]).sum(axis=1)

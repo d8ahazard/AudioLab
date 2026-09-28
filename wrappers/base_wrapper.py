@@ -724,6 +724,8 @@ class BaseWrapper:
                 elem = gr.Textbox(label=key, value=value.field.default, lines=3)
             case "Dropdown":
                 elem = gr.Dropdown(label=key, choices=choices, value=value.field.default)
+            case "CheckboxGroup":
+                elem = gr.CheckboxGroup(label=key, choices=choices, value=value.field.default)
             case "File":
                 elem = gr.File(label=key)
             case _:
@@ -750,11 +752,21 @@ class BaseWrapper:
         filtered_inputs, outputs = [], []
         extensions = []
         inputs = project.last_outputs
+        if not inputs and "stems" in getattr(project, "output_dict", {}):
+            # An explicitly empty separation result is not permission to process
+            # the original mix again (e.g. all stems were hidden as silence).
+            if not project.output_dict["stems"]:
+                return [], []
         
         # If no previous outputs exist, add the source file 
         if not inputs:
             # Check if a stems folder exists with files that match the naming convention
             stem_dir = os.path.join(project.project_dir, "stems")
+            from modules.separator.stem_manifest import MANIFEST_NAME, read_manifest
+            if os.path.isfile(os.path.join(stem_dir, MANIFEST_NAME)):
+                recorded = read_manifest(stem_dir)["stems"]
+                if recorded and all(s.get("hidden") for s in recorded):
+                    return [], []
             if os.path.exists(stem_dir):
                 # If we have a vocals file in the stems directory, use that
                 for f in os.listdir(stem_dir):

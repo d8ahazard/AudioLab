@@ -58,7 +58,8 @@ class Transcriber:
         audio_path: str,
         project_name: str,
         language: Optional[str] = None,
-        word_timestamps: bool = True
+        word_timestamps: bool = True,
+        overwrite_existing: bool = False,
     ) -> Optional[List[Dict]]:
         """
         Transcribe audio to text with timestamps.
@@ -78,6 +79,16 @@ class Transcriber:
         lyrics_dir = project_dir / "lyrics"
         lyrics_dir.mkdir(parents=True, exist_ok=True)
         
+        output_file = lyrics_dir / "transcript.auto.json"
+        if output_file.exists() and not overwrite_existing:
+            try:
+                with open(output_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                logger.info("Skipping transcription; preserved existing lyrics: %s", output_file)
+                return data.get("segments", [])
+            except Exception:
+                logger.warning("Could not read existing transcript %s; regenerating", output_file)
+
         try:
             logger.info(f"Transcribing {audio_path}")
             
@@ -122,7 +133,6 @@ class Transcriber:
                     })
             
             # Save transcript
-            output_file = lyrics_dir / "transcript.json"
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump({
                     'language': result.get('language', 'unknown'),
@@ -141,7 +151,8 @@ class Transcriber:
         self,
         audio_path: str,
         project_name: str,
-        language: Optional[str] = None
+        language: Optional[str] = None,
+        overwrite_existing: bool = False,
     ) -> Optional[List[Dict]]:
         """
         Transcribe using WhisperX for better word alignment.
@@ -161,12 +172,22 @@ class Transcriber:
             logger.info("Using WhisperX for enhanced alignment")
         except ImportError:
             logger.warning("WhisperX not available, falling back to standard Whisper")
-            return self.transcribe(audio_path, project_name, language)
+            return self.transcribe(audio_path, project_name, language, overwrite_existing=overwrite_existing)
         
         project_dir = self.output_dir / project_name
         lyrics_dir = project_dir / "lyrics"
         lyrics_dir.mkdir(parents=True, exist_ok=True)
         
+        output_file = lyrics_dir / "transcript.auto.json"
+        if output_file.exists() and not overwrite_existing:
+            try:
+                with open(output_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                logger.info("Skipping WhisperX transcription; preserved existing lyrics: %s", output_file)
+                return data.get("segments", [])
+            except Exception:
+                logger.warning("Could not read existing transcript %s; regenerating", output_file)
+
         try:
             logger.info(f"Transcribing with WhisperX: {audio_path}")
             
@@ -204,7 +225,6 @@ class Transcriber:
                         })
             
             # Save transcript
-            output_file = lyrics_dir / "transcript.json"
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump({
                     'language': result.get('language', 'unknown'),
@@ -218,14 +238,16 @@ class Transcriber:
         except Exception as e:
             logger.error(f"WhisperX transcription failed: {e}")
             # Fallback to standard Whisper
-            return self.transcribe(audio_path, project_name, language)
+            return self.transcribe(audio_path, project_name, language, overwrite_existing=overwrite_existing)
     
     def get_transcript(self, project_name: str) -> Optional[Dict]:
         """Load existing transcript for a project."""
-        transcript_file = self.output_dir / project_name / "lyrics" / "transcript.json"
-        
+        transcript_file = self.output_dir / project_name / "lyrics" / "transcript.auto.json"
         if not transcript_file.exists():
-            return None
+            legacy_file = self.output_dir / project_name / "lyrics" / "transcript.json"
+            transcript_file = legacy_file if legacy_file.exists() else transcript_file
+            if not transcript_file.exists():
+                return None
         
         try:
             with open(transcript_file, 'r', encoding='utf-8') as f:
@@ -239,7 +261,8 @@ class Transcriber:
         audio_path: str,
         output_path: str,
         language: Optional[str] = None,
-        word_timestamps: bool = True
+        word_timestamps: bool = True,
+        overwrite_existing: bool = False,
     ) -> Optional[List[Dict]]:
         """
         Transcribe a single audio file and save to specified path.
@@ -258,6 +281,15 @@ class Transcriber:
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         
+        if out.exists() and not overwrite_existing:
+            try:
+                with open(out, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                logger.info("Skipping transcription; preserved existing lyrics: %s", out)
+                return data.get("segments", [])
+            except Exception:
+                logger.warning("Could not read existing transcript %s; regenerating", out)
+
         try:
             logger.info(f"Transcribing {audio_path}")
             result = self.model.transcribe(
@@ -314,7 +346,8 @@ class Transcriber:
         self,
         project_dir: str,
         gt_wavs_dir: Optional[str] = None,
-        language: Optional[str] = None
+        language: Optional[str] = None,
+        overwrite_existing: bool = False,
     ) -> Dict[str, bool]:
         """
         Transcribe all vocal wavs in a project's 0_gt_wavs directory.
@@ -348,7 +381,8 @@ class Transcriber:
                 str(wav_path),
                 str(out_path),
                 language=language,
-                word_timestamps=True
+                word_timestamps=True,
+                overwrite_existing=overwrite_existing,
             )
             results[stem] = segs is not None
         
